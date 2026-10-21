@@ -8,6 +8,17 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.4.3] — 2026-10-22
+
+### Fixed
+- **Restoring a bind mount wiped its `BIND_EXCLUDE_PATHS`.** The restore deleted the whole folder and unpacked the
+  backup, so excluded subfolders (which are not in the backup) were lost. The folder was also deleted itself, which
+  fails, or empties a disk, when it is a mount point. Now the folder stays, only its contents are cleared, and the
+  excluded subfolders are left as they are.
+
+### Added
+- The dry-run plan shows exclusions inside a bind mount: `/srv/files (without /srv/files/nobackup)`.
+
 ## [1.4.2] — 2026-10-22
 
 ### Fixed
@@ -214,6 +225,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.4.3]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.3
 [1.4.2]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.2
 [1.4.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.1
 [1.4.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.0

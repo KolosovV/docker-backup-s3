@@ -356,7 +356,15 @@ if [[ "$DRY_RUN" == "true" ]]; then
                 if is_bind_blacklisted "$b" || path_within "$b" "${PROJECTS[$proj]}"; then
                     log "     ${C_DIM}- $b (skipped)${C_RESET}"
                 else
-                    log "     - $b"
+                    # BIND_EXCLUDE_PATHS that fall inside this bind — shown, so the plan says what really goes in
+                    plan_excl=(); plan_in=()
+                    mapfile -t plan_excl < <(split_words "${BIND_EXCLUDE_PATHS:-}")
+                    for x in ${plan_excl[@]+"${plan_excl[@]}"}; do path_within "$x" "$b" && plan_in+=("$x"); done
+                    if (( ${#plan_in[@]} )); then
+                        log "     - $b ${C_DIM}(without $(printf '%s, ' "${plan_in[@]}" | sed 's/, $//'))${C_RESET}"
+                    else
+                        log "     - $b"
+                    fi
                 fi
             done <<< "$local_binds"
         fi

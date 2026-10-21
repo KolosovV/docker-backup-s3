@@ -137,6 +137,30 @@ if [[ "$CONTENTS_MODE" == "true" && -n "$EXTRACT_TO" ]]; then
     fail "--contents and --extract-to together make no sense: pick one mode"
 fi
 
+# clear_bind_target <path> — empty a bind mount's folder before unpacking its backup into it:
+#  - the folder itself stays (it may be a mount point: rm -rf of it fails, or empties a whole disk image);
+#  - BIND_EXCLUDE_PATHS inside it stay too — they are not in the backup, and wiping them would lose them.
+clear_bind_target() {
+    local target="${1%/}" x
+    if [[ ! -d "$target" || -L "$target" ]]; then rm -rf "$target"; return; fi
+    local -a excl=() keep=()
+    mapfile -t excl < <(split_words "${BIND_EXCLUDE_PATHS:-}")
+    for x in ${excl[@]+"${excl[@]}"}; do
+        path_within "$x" "$target" && [[ "${x%/}" != "$target" ]] && keep+=(-path "${x%/}" -o)
+    done
+    if (( ${#keep[@]} )); then
+        unset 'keep[${#keep[@]}-1]'   # the last -o
+        log "      Keeping the excluded: $(split_words "${BIND_EXCLUDE_PATHS:-}" | while IFS= read -r x; do path_within "$x" "$target" && printf '%s ' "$x"; done)"
+        # Everything but the excluded subtrees, then the folders left empty (the excluded ones' parents are not)
+        find "$target" -mindepth 1 \( "${keep[@]}" \) -prune -o ! -type d -exec rm -f {} +
+        find "$target" -mindepth 1 \( "${keep[@]}" \) -prune -o -type d -print | sort -r | while IFS= read -r x; do
+            rmdir "$x" 2>/dev/null || true
+        done
+    else
+        find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    fi
+}
+
 # bind_target_for <archive name without .tar.gz> — the original path of a bind archive, from BIND_MAP
 # (safe name → path) of the caller. Projects name the archives bind_<n>_<path>, standalone containers
 # bind_<container>_<n>_<path>: match by the path part, the longest match wins. Empty if none.
@@ -835,7 +859,7 @@ restore_one_project() {
                     log "      Skipped"; continue
                 fi
             fi
-            [[ -e "$target_path" ]] && rm -rf "$target_path"
+            [[ -e "$target_path" ]] && clear_bind_target "$target_path"
             if ! tar xzf "$bind_archive" -C "$(dirname "$target_path")"; then
                 log_err "      Error unpacking $archive_basename"
                 part_errors=$((part_errors + 1))

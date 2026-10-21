@@ -127,6 +127,7 @@ printf 'SECRET_SETTING=%s\n' "$RANDOM$RANDOM" > "$PDIR/.env"
 echo "alpha $RANDOM" > "$PDIR/files/a.txt"
 echo "beta $RANDOM" > "$PDIR/files/sub/b.txt"
 echo "outside the project folder $RANDOM" > "$EXT/ext.txt"
+mkdir -p "$EXT/rebuildable"; echo "must not be backed up" > "$EXT/rebuildable/big.cache"   # BIND_EXCLUDE_PATHS
 docker compose -p "$PROJ" -f "$PDIR/compose.yaml" up -d --quiet-pull >/dev/null 2>&1 || die "compose up failed"
 wait_pg || die "Postgres did not start"
 psql_q "create table t(id int primary key, v text); insert into t select g, md5(g::text) from generate_series(1, 5000) g;" >/dev/null
@@ -148,6 +149,7 @@ WORK_DIR="$IT/work"
 LOG_FILE="$IT/backup.log"
 LOCK_FILE="$IT/lock"
 LAST_RUN_FILE="$IT/last-run.json"
+BIND_EXCLUDE_PATHS="$EXT/rebuildable"
 MIN_FREE_SPACE_MB=100
 ENCRYPT_BACKUPS="true"
 GPG_PASSPHRASE_FILE="$IT/pass"
@@ -185,6 +187,10 @@ check "the secondary got nothing (disabled)" test -z "$(s3 s3 ls --recursive s3:
 check "webhook: backup done, worded right" grep -qE '^success\|backup done\|Saved 1 project in the primary storage \(127\.0\.0\.1:[0-9]+\)\. / [0-9.]+ [MG]B in ' <<< "$(hook_msgs)"
 check "the containers run again after the backup" test "$(docker compose -p "$PROJ" -f "$PDIR/compose.yaml" ps -q --status running | wc -l)" -eq 2
 
+step "The plan shows the exclusion"
+run plan docker-backup.sh -c "$CONF" -p "$PROJ" --dry-run
+check "the dry-run plan names the excluded folder" grep -q "$EXT (without $EXT/rebuildable)" "$IT/plan.out"
+
 step "What is inside"
 if run contents docker-restore.sh -c "$CONF" -p "$PROJ" -t "$TS" --contents -y; then ok "--contents exit 0"; else bad "--contents failed"; show_tail contents; fi
 check "the Postgres volume is in it" grep -q "${PROJ}_pgdata" "$IT/contents.out"
@@ -209,13 +215,18 @@ else bad "the second sync was not a no-op"; show_tail sync2; fi
 # ------------------------------------------------------------------------------
 step "Disaster: the project, its volumes and folders are gone"
 docker compose -p "$PROJ" -f "$PDIR/compose.yaml" down -v >/dev/null 2>&1
-rm -rf "$PDIR" "$EXT"
+rm -rf "$PDIR"
+# The bind mount's data is gone too — all but the excluded (rebuildable) folder, which must survive the restore
+find "$EXT" -mindepth 1 -maxdepth 1 ! -name rebuildable -exec rm -rf {} +
+echo "rebuilt since" > "$EXT/rebuildable/big.cache"
 check "the volumes are gone" test -z "$(docker volume ls -q --filter "name=${PROJ}_")"
 
 step "Restore from the secondary"
 if run restore docker-restore.sh -c "$CONF" -p "$PROJ" -t "$TS" --from secondary -y; then ok "docker-restore.sh exit 0"
 else bad "docker-restore.sh failed"; show_tail restore; fi
 check "compose.yaml is back" test -f "$PDIR/compose.yaml"
+check "the excluded folder on the host survived the restore (BIND_EXCLUDE_PATHS)" grep -qx "rebuilt since" "$EXT/rebuildable/big.cache"
+check "the rest of that bind mount did" test -f "$EXT/ext.txt"
 if wait_pg; then ok "Postgres is up after the restore"; else bad "Postgres did not come up"; show_tail restore; fi
 fingerprint > "$IT/after.txt" 2>&1
 if [[ "$(cat "$IT/before.txt")" == "$(cat "$IT/after.txt")" ]]; then ok "the data matches: database, volume, bind mounts, project folder"
