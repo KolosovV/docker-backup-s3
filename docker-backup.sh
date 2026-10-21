@@ -631,7 +631,7 @@ backup_project() {
         echo "BACKUP_TIMESTAMP=$TIMESTAMP"
         echo "BACKUP_MODE=$BACKUP_MODE"
         echo "DOCKER_VERSION=$(docker --version)"
-        echo "HOSTNAME=$(hostname)"
+        echo "HOSTNAME=$(uname -n)"
         echo "ENCRYPTED=${ENCRYPT_BACKUPS:-false}"
     } > "${proj_dir}/metadata.txt"
 

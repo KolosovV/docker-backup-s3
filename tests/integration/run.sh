@@ -217,8 +217,8 @@ else bad "docker-restore.sh failed"; show_tail restore; fi
 check "compose.yaml is back" test -f "$PDIR/compose.yaml"
 if wait_pg; then ok "Postgres is up after the restore"; else bad "Postgres did not come up"; show_tail restore; fi
 fingerprint > "$IT/after.txt" 2>&1
-if diff "$IT/before.txt" "$IT/after.txt" > "$IT/diff.txt"; then ok "the data matches: database, volume, bind mounts, project folder"
-else bad "the data differs"; cat "$IT/diff.txt"; fi
+if [[ "$(cat "$IT/before.txt")" == "$(cat "$IT/after.txt")" ]]; then ok "the data matches: database, volume, bind mounts, project folder"
+else bad "the data differs"; echo "--- before:"; cat "$IT/before.txt"; echo "--- after:"; cat "$IT/after.txt"; fi
 
 # ------------------------------------------------------------------------------
 step "A failed run: the primary S3 is down"

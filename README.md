@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.1-2496ED" alt="version 1.2.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.0-2496ED" alt="version 1.3.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -214,15 +214,33 @@ In each compose project folder (optional):
 
 ### Supported systems
 
-Works on any modern Linux distribution with systemd:
+Tested on every push. On each of these systems CI runs `install.sh -y` on a fresh install, then the
+tests and the full integration test (backup → restore → compare), see `tests/distros/`:
 
-- **Debian / Ubuntu** (apt), **CentOS / RHEL / AlmaLinux / Rocky** 7+ (yum/dnf),
-  **Fedora** (dnf), **openSUSE** (zypper), **Arch** (pacman).
-- Requires **bash 4+** (associative arrays), GNU coreutils (`stat`, `date`, `sed`, `grep`) — present by default in all of the above.
-- **Docker** + Compose: both v2 (the `docker compose` plugin) and v1 (`docker-compose`) are supported — picked automatically.
-- **AWS CLI v2** — installed with the official AWS installer into `/usr/local/bin`; snap is only a fallback.
+| Distribution | Package manager | AWS CLI v2 from |
+|---|---|---|
+| Debian 12, 13 | apt | the official installer |
+| Ubuntu 22.04, 24.04 | apt | the official installer |
+| Rocky Linux 9, AlmaLinux 8 (RHEL family) | dnf | the official installer |
+| Fedora 41 | dnf | the official installer |
+| Amazon Linux 2023 | dnf | the official installer |
+| openSUSE Leap 15.6 | zypper | the official installer |
+| Arch Linux | pacman | the official installer |
+| Alpine 3.20 | apk | the `aws-cli` package (the official build needs glibc) |
 
-> The installer itself installs the dependencies and AWS CLI for your package manager. On CentOS/RHEL the `dos2unix` package lives in the EPEL repository; if it didn't install, that's not critical (the scripts normalize line endings via `sed`).
+- **bash 4+.** On Alpine, install it first: `apk add bash`. Everything else, `install.sh` installs itself: only
+  what is missing, under each distro's own package names. That includes the GNU versions of `date`, `stat`, `tar`
+  and `grep` on Alpine and the full `gnupg` (with `gpg-agent`) on Amazon Linux.
+- **Docker** + Compose: both v2 (the `docker compose` plugin) and v1 (`docker-compose`) are supported and picked
+  automatically. The installer does not install Docker.
+- **Scheduling:** cron (cronie, cron or dcron) or a systemd timer. Without systemd (Alpine with OpenRC) cron is
+  used and `crond` is enabled through OpenRC.
+- **AWS CLI v2:** the official AWS installer into `/usr/local/bin` comes first. Where it does not run (musl), the
+  distro package is used if it is v2, and snap is the last fallback.
+- x86_64 and aarch64. Other Linux distributions with bash 4+ and these tools work too; they are just not in CI.
+
+> On CentOS/RHEL `dos2unix` lives in EPEL. If it did not install, that is not critical: the scripts fix line
+> endings with `sed`.
 
 ### With `install.sh`
 
@@ -1622,8 +1640,17 @@ secondary and compares the database, the volume, the bind mounts and the project
 it runs a backup with S3 down, which must fail. It also checks that each step sends its notification. It needs
 Docker with Compose v2, AWS CLI v2, jq, python3 and gpg, and it removes everything it created.
 
-On every push GitHub Actions runs ShellCheck (warnings and errors), the tests and the integration test: see
-`.github/workflows/ci.yml`.
+The distro test repeats all of that on each supported distribution, in a fresh container that shares the host's
+Docker. In each one it runs `install.sh -y`, checks that every tool is there (and is the GNU one where it matters),
+sets up and removes the cron job, then runs the tests and the integration test:
+
+```bash
+tests/distros/run.sh                    # all of them (a Linux host with Docker)
+tests/distros/run.sh alpine:3.20        # one
+```
+
+On every push GitHub Actions runs ShellCheck (warnings and errors), the tests, the integration test and the distro
+test for each distribution: see `.github/workflows/ci.yml`.
 
 ---
 

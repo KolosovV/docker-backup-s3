@@ -520,7 +520,7 @@ menu_notify() {
         UI_TITLE="Notifications"
         choice="$(ui_menu "Where messages about backups go. Any channels can be on at once." \
             when     "When: $(notify_when)" \
-            name     "Server name in messages: ${NOTIFY_NAME:-$(hostname) (the hostname)}" \
+            name     "Server name in messages: ${NOTIFY_NAME:-$(uname -n) (the hostname)}" \
             telegram "Telegram — $(notify_line telegram)" \
             webhook  "Webhook — $(notify_line webhook)" \
             email    "Email — $(notify_line email)" \
@@ -601,7 +601,7 @@ fi
 
 choice="status"
 while true; do
-    UI_TITLE="docker-backup-s3 $(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null) — $(hostname)"
+    UI_TITLE="docker-backup-s3 $(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null) — $(uname -n)"
     UI_DEFAULT="$choice"
     choice="$(ui_menu "Storages: $(storages_summary)" \
         status   "Status overview" \

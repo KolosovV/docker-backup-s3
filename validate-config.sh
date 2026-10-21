@@ -263,6 +263,20 @@ if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
             else
                 ok "$GPG_PASSPHRASE_FILE: chmod $pass_perms"
             fi
+            # A real round trip, the way the backup does it: gpg can be installed and still not work
+            # (no gpg-agent with gnupg2-minimal, say)
+            gpg_tmp="$(mktemp -d)"
+            echo "validate-config" > "$gpg_tmp/t"
+            if gpg_out="$(gpg --batch --yes --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" --symmetric --cipher-algo AES256 \
+                    -o "$gpg_tmp/t.gpg" "$gpg_tmp/t" 2>&1 \
+                 && gpg --batch --yes --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" -d -o "$gpg_tmp/t.out" "$gpg_tmp/t.gpg" 2>&1)" \
+               && [[ "$(cat "$gpg_tmp/t.out" 2>/dev/null)" == "validate-config" ]]; then
+                ok "Test encryption and decryption work"
+            else
+                err "gpg cannot encrypt here: $(printf '%s' "$gpg_out" | head -n 2 | tr '\n' ' ')"
+                [[ "$gpg_out" == *gpg-agent* ]] && echo "      💡 Install the full gnupg (gpg-agent): e.g. dnf install --allowerasing gnupg2"
+            fi
+            rm -rf "$gpg_tmp"
         else
             err "GPG_PASSPHRASE_FILE does not exist: ${GPG_PASSPHRASE_FILE:-(not set)}"
         fi
@@ -382,7 +396,7 @@ if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" || -n "${EMAI
                 ok "Telegram bot is valid: @$bot_name"
 
                 # 2) Test sending a message to the chat_id
-                test_msg="🧪 validate-config test from $(hostname) [$(date +%H:%M:%S)]"
+                test_msg="🧪 validate-config test from $(uname -n) [$(date +%H:%M:%S)]"
                 send_resp=$(curl -s -m 10 -X POST \
                     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
                     --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \

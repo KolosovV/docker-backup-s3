@@ -201,7 +201,8 @@ remove_cron() {
 }
 
 remove_systemd() {
-    if ! systemctl list-unit-files docker-backup.timer >/dev/null 2>&1; then
+    # By the unit file: without systemd as init (containers) some systemctl versions still answer 0 here
+    if [[ ! -f /etc/systemd/system/docker-backup.timer ]]; then
         log_info "No systemd timer for docker-backup found"
         return 0
     fi
@@ -211,7 +212,7 @@ remove_systemd() {
     if ask_yn "Stop and remove it?" "y"; then
         systemctl disable --now docker-backup.timer 2>/dev/null || true
         rm -f /etc/systemd/system/docker-backup.service /etc/systemd/system/docker-backup.timer
-        systemctl daemon-reload
+        systemctl daemon-reload 2>/dev/null || true
         log_ok "systemd timer removed"
     fi
 }
@@ -386,7 +387,15 @@ $schedule ${nice_prefix}$BACKUP_SCRIPT >> $cron_log 2>&1
                 break
             fi
         done
-        if [[ -n "$cron_unit" ]]; then
+        if command -v rc-service >/dev/null 2>&1 && ! command -v systemctl >/dev/null 2>&1; then
+            # OpenRC (Alpine): the service is crond
+            if rc-update add crond default >/dev/null 2>&1 && rc-service crond start >/dev/null 2>&1; then
+                log_ok "Service crond started and enabled (OpenRC)"
+            else
+                log "  Could not do it automatically. Start it manually:"
+                log "    sudo rc-update add crond default && sudo rc-service crond start"
+            fi
+        elif [[ -n "$cron_unit" ]]; then
             if systemctl enable --now "$cron_unit" 2>/dev/null; then
                 log_ok "Service $cron_unit started and enabled"
             else
@@ -479,6 +488,10 @@ EOF
 # logrotate setup
 # ==============================================================================
 setup_logrotate() {
+    if [[ ! -d /etc/logrotate.d ]]; then
+        log_warn "logrotate is not installed (no /etc/logrotate.d) — the logs will not be rotated"
+        return 0
+    fi
     if [[ -f /etc/logrotate.d/docker-backup ]]; then
         log_info "Logrotate is already configured (/etc/logrotate.d/docker-backup)"
         return 0

@@ -5,7 +5,7 @@
 # Run it to understand why a false warning about cron may appear.
 # ==============================================================================
 
-echo "=== Cron diagnostics on $(hostname) ==="
+echo "=== Cron diagnostics on $(uname -n) ==="
 echo "Date: $(date)"
 echo "OS: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | head -1)"
 echo

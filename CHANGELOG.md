@@ -8,6 +8,36 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.3.0] — 2026-10-21
+
+Tested on 11 Linux distributions. On each one CI now runs `install.sh -y` on a fresh system, then the tests and
+the full integration test: Debian 12 and 13, Ubuntu 22.04 and 24.04, Rocky Linux 9, AlmaLinux 8, Fedora 41,
+Amazon Linux 2023, openSUSE Leap 15.6, Arch Linux and Alpine 3.20.
+
+### Fixed
+- **`hostname` is not installed on minimal Fedora, Arch, Amazon Linux and openSUSE.** On those systems
+  notifications had an empty server name (and an error mixed into the message), `install.sh` stopped halfway, and
+  the server names in the menu and in `status.sh` were empty. The scripts now use `uname -n`, which is always there.
+- **`install.sh` stopped on systems without logrotate** (Fedora, Arch) before it created the `docker-backup`
+  command. It now installs logrotate, and it skips log rotation with a warning when logrotate cannot be installed.
+  `setup-cron.sh` does the same.
+- **Encryption failed on Amazon Linux 2023:** its `gnupg2-minimal` has no `gpg-agent`. The installer now replaces it
+  with the full `gnupg2`. `validate-config.sh` now encrypts and decrypts a test file for real, so a gpg that is
+  installed but cannot work shows up before the night's backup.
+- **Alpine:** the official AWS CLI was installed but could not run (it needs glibc). The musl check did not work
+  without `ldd`. Now it works, and the installer checks that the installed aws actually runs. On Alpine aws comes
+  from the `aws-cli` package (v2), and so do GNU `tar`, `date`, `stat` and `grep`, in place of busybox ones that lack
+  options the scripts use. `crond` is enabled through OpenRC.
+- **AWS CLI v2 from the distro package** is tried when the official installer cannot be used: `aws-cli` on Alpine,
+  `aws-cli-v2` on Arch, `awscli2` on Fedora. Before, the next step was straight to snap.
+- `install.sh` installs only what is missing, and one package at a time if the whole list fails. On RHEL 9 one
+  conflict (curl with curl-minimal) used to fail the whole list.
+- `whiptail` is now installed (`newt`, `libnewt`): before, the dialogs fell back to plain prompts on most systems
+  other than Debian and Ubuntu.
+- `setup-cron.sh --remove` failed in containers and on hosts without systemd as init: it found a systemd timer that
+  was not there. It now checks for the unit file.
+- `update.sh` no longer needs `cmp` (no diffutils on minimal Rocky and Fedora).
+
 ## [1.2.1] — 2026-10-21
 
 ### Fixed
@@ -122,6 +152,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.3.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.3.0
 [1.2.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.1
 [1.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.0
 [1.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.1.0

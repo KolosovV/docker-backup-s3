@@ -504,7 +504,7 @@ notify_send() {
         error) icon="🔴" ;;
         warn)  icon="🟠" ;;
     esac
-    local name="${NOTIFY_NAME:-$(hostname)}"
+    local name="${NOTIFY_NAME:-$(uname -n)}"
     local full
     full="${icon} <b>Server $(html_esc "$name"): $(html_esc "$title")</b>"
     [[ -n "$body" ]] && full+=$'\n'"$body"
@@ -655,7 +655,7 @@ _notify_email() {
         printf 'To: %s\n' "$to_hdr"
         printf 'Subject: =?UTF-8?B?%s?=\n' "$(printf '%s' "$subject" | base64 | tr -d '\n')"
         printf 'Date: %s\n' "$(LC_ALL=C date -R)"
-        printf 'Message-ID: <%s.%s.%s@%s>\n' "$(date +%s)" "$$" "$RANDOM" "$(hostname)"
+        printf 'Message-ID: <%s.%s.%s@%s>\n' "$(date +%s)" "$$" "$RANDOM" "$(uname -n)"
         printf 'Auto-Submitted: auto-generated\n'
         printf 'MIME-Version: 1.0\n'
         printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$boundary"

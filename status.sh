@@ -88,7 +88,7 @@ cat <<EOF
 ${C_BOLD}${C_BLUE}╔═══════════════════════════════════════════════════════════════╗
 ║   📊  Docker Backup System — Status                            ║
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
-${C_DIM}  Host: $(hostname)    Date: $(date '+%Y-%m-%d %H:%M:%S')${C_RESET}
+${C_DIM}  Host: $(uname -n)    Date: $(date '+%Y-%m-%d %H:%M:%S')${C_RESET}
 
 EOF
 

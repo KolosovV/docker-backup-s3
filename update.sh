@@ -271,7 +271,7 @@ for f in "${ALL_FILES[@]}"; do
     fi
     if [[ ! -f "$TARGET_DIR/$f" ]]; then
         NEW_FILES+=("$f")
-    elif cmp -s "$SOURCE_DIR/$f" "$TARGET_DIR/$f"; then
+    elif [[ "$(sha256sum < "$SOURCE_DIR/$f")" == "$(sha256sum < "$TARGET_DIR/$f")" ]]; then   # not cmp: no diffutils on minimal systems
         UNCHANGED_FILES+=("$f")
     else
         CHANGED_FILES+=("$f")

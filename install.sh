@@ -186,40 +186,72 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         log "    Install manually: jq tar gzip dos2unix curl gpg cron, and aws-cli."
     fi
 
-    # --- Base packages (package names differ between distros) ---
-    install_base_deps() {
-        case "$PKG_MGR" in
-            apt-get)
-                apt-get update -qq || true
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-                    jq tar gzip dos2unix curl gnupg coreutils util-linux cron ca-certificates unzip
-                ;;
-            dnf|yum)
-                "$PKG_MGR" install -y \
-                    jq tar gzip dos2unix curl gnupg2 coreutils util-linux cronie ca-certificates unzip
-                ;;
-            zypper)
-                zypper --non-interactive install -y \
-                    jq tar gzip dos2unix curl gpg2 coreutils util-linux cron ca-certificates unzip
-                ;;
-            pacman)
-                pacman -Sy --noconfirm --needed \
-                    jq tar gzip dos2unix curl gnupg coreutils util-linux cronie ca-certificates unzip
-                ;;
-            apk)
-                apk add --no-cache \
-                    bash jq tar gzip dos2unix curl gnupg coreutils util-linux dcron ca-certificates unzip
-                ;;
-            *) return 1 ;;
+    # --- Base packages: only what is missing, names per distro ---
+    # pkg_for <command> — the package that provides it with this package manager
+    pkg_for() {
+        case "$PKG_MGR:$1" in
+            apt-get:gpg)              echo gnupg ;;
+            dnf:gpg|yum:gpg)          echo gnupg2 ;;
+            zypper:gpg)               echo gpg2 ;;
+            *:gpg)                    echo gnupg ;;
+            apt-get:gpg-agent)        echo gpg-agent ;;
+            dnf:gpg-agent|yum:gpg-agent) echo gnupg2 ;;      # replaces gnupg2-minimal (it has no agent)
+            zypper:gpg-agent)         echo gpg2 ;;
+            *:gpg-agent)              echo gnupg ;;
+            apt-get:crontab|zypper:crontab) echo cron ;;
+            apk:crontab)              echo dcron ;;
+            *:crontab)                echo cronie ;;
+            apt-get:whiptail)         echo whiptail ;;
+            pacman:whiptail)          echo libnewt ;;
+            *:whiptail)               echo newt ;;
+            *:flock)                  echo util-linux ;;
+            *:find)                   echo findutils ;;
+            apt-get:pgrep|apk:pgrep|zypper:pgrep) echo procps ;;
+            *:pgrep)                  echo procps-ng ;;
+            *)                        echo "$1" ;;
         esac
     }
-    if [[ -n "$PKG_MGR" ]]; then
-        log "  Base packages: jq, tar, gzip, dos2unix, curl, gpg, cron, coreutils…"
-        if install_base_deps; then
-            log_ok "Base packages installed"
-        else
-            log_warn "Some base packages did not install — check the output above"
+    pm_install() {   # pm_install <package…> — exit code of the package manager
+        case "$PKG_MGR" in
+            apt-get) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" ;;
+            dnf|yum) "$PKG_MGR" install -y -q "$@" ;;
+            zypper)  zypper --non-interactive -q install -y "$@" ;;
+            pacman)  pacman -S --noconfirm --needed "$@" ;;
+            apk)     apk add --no-cache -q "$@" ;;
+            *)       return 1 ;;
+        esac
+    }
+    install_base_deps() {
+        local -a want=() failed=()
+        local c p
+        for c in jq tar gzip dos2unix curl gpg gpg-agent crontab whiptail flock unzip find pgrep logrotate; do
+            command -v "$c" >/dev/null 2>&1 || want+=("$(pkg_for "$c")")
+        done
+        [[ -e /etc/ssl/certs/ca-certificates.crt || -e /etc/pki/tls/certs/ca-bundle.crt ]] || want+=(ca-certificates)
+        # Alpine: busybox has date/stat/sed/grep/find, but not the GNU options the scripts use (date -d, stat -c…)
+        [[ "$PKG_MGR" == "apk" ]] && want+=(coreutils findutils grep sed tar gzip util-linux procps)
+        (( ${#want[@]} )) || { log_ok "Base packages are already there"; return 0; }
+        log "  Installing: ${want[*]}"
+        case "$PKG_MGR" in
+            apt-get) apt-get update -qq || true ;;
+            pacman)  pacman -Sy --noconfirm >/dev/null || true ;;
+        esac
+        pm_install "${want[@]}" && { log_ok "Base packages installed"; return 0; }
+        # One bad name (or a conflict, like curl with curl-minimal) fails the whole list — one by one
+        for p in "${want[@]}"; do
+            pm_install "$p" >/dev/null 2>&1 && continue
+            # dnf: a -minimal variant (gnupg2-minimal on Amazon Linux) blocks the full package — swap it
+            [[ "$PKG_MGR" == "dnf" ]] && dnf install -y -q --allowerasing "$p" >/dev/null 2>&1 && continue
+            failed+=("$p")
+        done
+        if (( ${#failed[@]} )); then
+            log_warn "Could not install: ${failed[*]} — install them by hand"
+            return 1
         fi
+        log_ok "Base packages installed"
+    }
+    if [[ -n "$PKG_MGR" ]]; then
+        install_base_deps || true
     fi
 
     # --- snapd — only a fallback path for aws-cli (see below) ---
@@ -265,7 +297,7 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
     # aws-cli from snap updates itself in the background, and that has broken uploads: a new version
     # started sending checksums some S3-compatible storages do not accept (see lib.sh), and its CA bundle turned out
     # to lack GlobalSign Root R46 (see s3_cert_check in ui.sh). The official version
-    # only changes through update.sh / install.sh. On musl (Alpine) neither way works.
+    # only changes through update.sh / install.sh. Where it does not run (musl: Alpine), the distro package is used if it is v2.
 
     # Portable version parsing (no grep -P): "aws-cli/2.15.0 …" -> "2"
     aws_major_ver() { aws --version 2>&1 | sed -n 's#.*aws-cli/\([0-9][0-9]*\).*#\1#p' | head -1; }
@@ -296,7 +328,8 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
             *) log_warn "The official AWS CLI v2 bundle exists only for x86_64/aarch64 (yours: ${arch})"; return 1 ;;
         esac
         # The official bundle is built for glibc — it won't run on musl (Alpine)
-        if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+        # (ldd is not always there; the musl loader is)
+        if compgen -G '/lib/ld-musl-*' >/dev/null || { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }; then
             log_warn "The system uses musl libc — the official AWS CLI v2 bundle (glibc) does not work."
             log "    Install the gcompat compatibility layer, or use a glibc-based distro."
             return 1
@@ -314,7 +347,12 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         fi
         # --update in case a version is already installed; otherwise a normal install
         if "${tmp}/aws/install" --update >/dev/null 2>&1 || "${tmp}/aws/install" >/dev/null 2>&1; then
-            rm -rf "$tmp"; return 0
+            rm -rf "$tmp"
+            # Installed is not the same as working: check that it runs here
+            if /usr/local/bin/aws --version >/dev/null 2>&1; then return 0; fi
+            log_warn "The official AWS CLI v2 installed but does not run on this system — removing it"
+            rm -rf /usr/local/aws-cli /usr/local/bin/aws /usr/local/bin/aws_completer
+            return 1
         fi
         rm -rf "$tmp"; return 1
     }
@@ -350,10 +388,29 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
             case ":$PATH:" in *":/usr/local/bin:"*) ;; *) export PATH="/usr/local/bin:$PATH" ;; esac
             aws_installed="true"
         else
-            log_warn "The official installer failed — trying snap"
+            log_warn "The official installer did not work here — trying the distro package, then snap"
         fi
 
-        # 2) fallback — snap
+        # 2) the distro's own package — where it is v2 (Alpine, Arch, Fedora); a v1 package is removed again
+        if [[ "$aws_installed" != "true" ]]; then
+            _aws_pkg=""
+            case "$PKG_MGR" in
+                apk)    _aws_pkg="aws-cli" ;;
+                pacman) _aws_pkg="aws-cli-v2" ;;
+                dnf)    _aws_pkg="awscli2" ;;
+            esac
+            if [[ -n "$_aws_pkg" ]] && pm_install "$_aws_pkg" >/dev/null 2>&1; then
+                hash -r 2>/dev/null || true
+                if [[ "$(aws_major_ver || echo 0)" -ge 2 ]]; then
+                    aws_installed="true"
+                    log_ok "AWS CLI v2 from the ${PKG_MGR} package ${_aws_pkg}"
+                else
+                    remove_aws_v1
+                fi
+            fi
+        fi
+
+        # 3) fallback — snap
         if [[ "$aws_installed" != "true" ]] && ensure_snapd; then
             log "  Installing AWS CLI v2 via snap (snap install aws-cli --classic)..."
             if snap install aws-cli --classic; then
@@ -559,7 +616,7 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     ui_note "Useful if one bucket holds backups from several servers:"
     ui_note "  backups/         — a common prefix (default)"
     ui_note "  backups/srv1/    — a separate folder for this server"
-    ui_note "  backups/$(hostname)/  — split by hostname automatically"
+    ui_note "  backups/$(uname -n)/  — split by hostname automatically"
     BACKUP_PREFIX_VAL=$(ask_value "  Prefix" "backups"); BACKUP_PREFIX_VAL="$(trim "$BACKUP_PREFIX_VAL")"
     # Strip slashes on both ends if any
     BACKUP_PREFIX_VAL="${BACKUP_PREFIX_VAL#/}"
@@ -617,7 +674,10 @@ log_ok "chmod 600 on backup.conf (it holds secrets)"
 # 6. LOGROTATE
 # ==============================================================================
 if [[ "$SKIP_LOGROTATE" != "true" ]]; then
-    if [[ -f /etc/logrotate.d/docker-backup ]]; then
+    if [[ ! -d /etc/logrotate.d ]]; then
+        log_step "Logrotate"
+        log_warn "logrotate is not installed (no /etc/logrotate.d) — the logs will not be rotated"
+    elif [[ -f /etc/logrotate.d/docker-backup ]]; then
         log_step "Logrotate"
         log_ok "Already configured (/etc/logrotate.d/docker-backup)"
     else

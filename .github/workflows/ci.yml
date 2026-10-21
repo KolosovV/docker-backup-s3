@@ -18,7 +18,7 @@ jobs:
       - name: ShellCheck (warnings and errors)
         run: |
           shellcheck --version
-          shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh tests/integration/*.sh
+          shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh tests/integration/*.sh tests/distros/*.sh
 
   tests:
     runs-on: ubuntu-24.04
@@ -45,3 +45,28 @@ jobs:
           command -v jq gpg python3
       - name: Integration test
         run: tests/integration/run.sh
+
+  distros:
+    # install.sh -y on a fresh system, then the tests and the integration test there
+    name: distro ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:12
+          - debian:13
+          - ubuntu:24.04
+          - ubuntu:22.04
+          - rockylinux:9
+          - almalinux:8
+          - fedora:41
+          - amazonlinux:2023
+          - opensuse/leap:15.6
+          - archlinux:latest
+          - alpine:3.20
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh, tests and the integration test on ${{ matrix.image }}
+        run: tests/distros/run.sh "${{ matrix.image }}"
