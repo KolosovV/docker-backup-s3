@@ -150,20 +150,24 @@ check_pair() {  # $1 = source, $2 = destination
 # (important: an empty bucket and an unreachable bucket are DIFFERENT situations; they used to
 # merge, so an access failure looked like "the bucket is empty").
 list_bucket() {  # $1 = bucket; reads with the current _aws_setup
-    local out rc
+    local out rc errf
+    # stderr apart from the listing: any warning aws prints (SSL, Python) would otherwise
+    # become a "key" that sync then tries to copy
+    errf="$(mktemp)" || return 1
     out="$(aws "${S3_OPTS[@]}" s3api list-objects-v2 --bucket "$1" --prefix "${BACKUP_PREFIX}/" \
-            --query 'Contents[].[Key,Size]' --output text 2>&1)"; rc=$?
+            --query 'Contents[].[Key,Size]' --output text 2>"$errf")"; rc=$?
     if (( rc != 0 )); then
-        local reason; reason="$(_clean_aws_err "$out")"
+        local reason; reason="$(_clean_aws_err "$(cat "$errf")")"
+        rm -f "$errf"
         log_err "  s3://${1}/${BACKUP_PREFIX}/ — ${reason:-unknown aws error (exit ${rc})}"
         return "$rc"
     fi
-    # Remove: SSL noise, the literal None (empty result), empty lines and
+    rm -f "$errf"
+    # Remove: the literal None (empty result), empty lines and
     # "folder markers" — zero-size objects with a key ending in "/"
     # (S3 web consoles create them; aws s3 cp behaves oddly with such a key, and they are
     # not backups but artifacts — no need to synchronize them).
     printf '%s\n' "$out" \
-        | grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' \
         | sed 's/^None$//' | grep -v '^[[:space:]]*$' \
         | awk -F'\t' '$1 !~ /\/$/' || true
 }

@@ -46,6 +46,18 @@ check "standalone bind_nginx_2_srv_www" test "$(bind_target_for bind_nginx_2_srv
 check "the longest match wins" test "$(bind_target_for bind_3_srv_www_html)" == /srv/www/html
 check "an unknown name stays unknown" test -z "$(bind_target_for bind_1_other)"
 
+section "sync-s3.sh listing: aws warnings are not object keys"
+eval "$(sed -n '/^_clean_aws_err() {/,/^}/p; /^list_bucket() {/,/^}/p' "$REPO/sync-s3.sh")"
+S3_OPTS=(); BACKUP_PREFIX=it
+aws() { echo "Invalid -W option ignored: invalid module name: 'urllib3.exceptions'" >&2
+        printf 'it/p/1/a.tar.gz\t10\nit/p/1/\t0\n'; }
+check "only the real key, no warning, no folder marker" test "$(list_bucket b)" == $'it/p/1/a.tar.gz\t10'
+aws() { echo "An error occurred (NoSuchBucket) when calling ListObjectsV2" >&2; return 254; }
+list_bucket b > "$W/lb" 2>&1; rc=$?
+check "a listing error keeps its exit code" test "$rc" -eq 254
+check "and says why" grep -q 'NoSuchBucket' "$W/lb"
+unset -f aws
+
 section "helpers"
 check "plural 1" test "$(plural 1 project projects)" == project
 check "plural 2" test "$(plural 2 project projects)" == projects

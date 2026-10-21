@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.0-2496ED" alt="version 1.2.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.1-2496ED" alt="version 1.2.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -1609,7 +1609,21 @@ the executable bit, and that `VERSION`, the changelog and the badge agree. `test
 restore name matching, `test_notify` covers every notification channel and format, and `test_menu` drives the
 menu's notification section end to end from a file of answers (it needs root, so it uses `sudo` or skips itself).
 
-On every push GitHub Actions runs ShellCheck (warnings and errors) and the tests: see `.github/workflows/ci.yml`.
+The integration test runs everything for real: Docker, a compose project with Postgres, named volumes and bind
+mounts, and S3 in a container (Versity Gateway):
+
+```bash
+sudo tests/integration/run.sh       # -k keeps the containers and files for a look
+```
+
+It checks the config, makes an encrypted backup to the primary, shows its contents, runs `verify-restore.sh` and
+syncs to the secondary. Then it wipes out the project (containers, volumes, folders), restores it from the
+secondary and compares the database, the volume, the bind mounts and the project folder with what was there. Last,
+it runs a backup with S3 down, which must fail. It also checks that each step sends its notification. It needs
+Docker with Compose v2, AWS CLI v2, jq, python3 and gpg, and it removes everything it created.
+
+On every push GitHub Actions runs ShellCheck (warnings and errors), the tests and the integration test: see
+`.github/workflows/ci.yml`.
 
 ---
 

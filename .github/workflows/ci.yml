@@ -18,7 +18,7 @@ jobs:
       - name: ShellCheck (warnings and errors)
         run: |
           shellcheck --version
-          shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh
+          shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh tests/integration/*.sh
 
   tests:
     runs-on: ubuntu-24.04
@@ -30,3 +30,18 @@ jobs:
           python3 --version
       - name: Tests
         run: tests/run.sh
+
+  integration:
+    # Real Docker and S3 (Versity Gateway): backup → verify → sync → wipe → restore → compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          docker compose version
+          aws --version
+          command -v jq gpg python3
+      - name: Integration test
+        run: tests/integration/run.sh

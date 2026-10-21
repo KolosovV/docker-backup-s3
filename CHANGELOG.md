@@ -8,6 +8,22 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.2.1] — 2026-10-21
+
+### Fixed
+- **`sync-s3.sh` took aws warnings for object names.** The object listing was read together with aws's stderr, so
+  any warning aws printed became a "key" that sync tried to copy and failed on, and the sync ended with an error.
+  This happened on every run on systems where aws prints such warnings (Alpine, for one). Now the listing ignores
+  stderr, and stderr is read only to explain a listing error.
+- The template no longer has `export PYTHONWARNINGS="ignore::urllib3…"`. It was the source of those warnings on such
+  systems, and it never helped: the warning it muted appears only with `--no-verify-ssl`, which the project does
+  not use. Remove the line from your `backup.conf` too.
+
+### Added
+- An integration test (`tests/integration/run.sh`, also in CI) on real Docker and S3: backup → contents →
+  verify-restore → sync → wipe the project → restore from the secondary → compare the data, plus a run with S3 down.
+  It also checks the notification of each step.
+
 ## [1.2.0] — 2026-10-21
 
 ### Added
@@ -106,6 +122,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.2.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.1
 [1.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.0
 [1.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.1.0
 [1.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.0.1

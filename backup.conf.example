@@ -58,7 +58,6 @@ PRIMARY_S3_ADDRESSING_STYLE="path"
 # install.sh checks this itself (head-bucket without options, on error — with --ca-bundle) and writes the option
 # only if it is needed; validate-config.sh suggests a ready line on this error.
 PRIMARY_S3_OPTS_EXTRA=""
-export PYTHONWARNINGS="ignore::urllib3.exceptions.InsecureRequestWarning"
 
 # ==============================================================================
 # GENERAL aws SETTINGS FOR ALL STORAGES
