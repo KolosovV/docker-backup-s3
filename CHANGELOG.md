@@ -8,6 +8,22 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.2.0] — 2026-10-21
+
+### Added
+- **Notifications in the menu**: `docker-backup` → Notifications. There you set when to notify and the server name
+  in messages, set up, test or turn off Telegram, the webhook and email, or send a test message to every channel.
+  The wizards are shared with `install.sh`, and each one checks the settings with a test message.
+- Tests in `tests/` (`tests/run.sh`) need no Docker, S3 or network. GitHub Actions runs them on every push
+  together with ShellCheck, and the README has a CI badge.
+
+### Fixed
+- `install.sh -y` passed the schedule options to `setup-cron.sh` as one argument, so scheduled runs were not
+  set up.
+
+### Removed
+- `status.sh --detailed`, which did nothing.
+
 ## [1.1.0] — 2026-10-21
 
 ### Added
@@ -90,6 +106,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.0
 [1.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.1.0
 [1.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.0.0

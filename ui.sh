@@ -481,3 +481,170 @@ s3_cert_check() {
     fi
     return 0
 }
+
+# ==============================================================================
+# Notification settings — shared by install.sh and the menu.
+# The wizards keep the answers in NT[VAR] (VAR = the backup.conf name); notify_save writes them.
+# A test message goes through lib.sh in a separate bash with only these settings (NOTIFY_LIB — its path).
+# ==============================================================================
+NT_KEYS=(TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID NOTIFY_WEBHOOK_URL NOTIFY_WEBHOOK_FORMAT
+         EMAIL_TO SMTP_HOST SMTP_SECURITY SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM)
+declare -A NT=()
+
+# notify_load — the current values (from the sourced config) into NT
+notify_load() {
+    local k
+    for k in "${NT_KEYS[@]}"; do NT[$k]="${!k:-}"; done
+    NT[NOTIFY_WEBHOOK_FORMAT]="${NT[NOTIFY_WEBHOOK_FORMAT]:-auto}"
+    NT[SMTP_SECURITY]="${NT[SMTP_SECURITY]:-starttls}"
+    return 0
+}
+
+# notify_save — NT into CONF_FILE (empty values too: that is how a channel is turned off)
+notify_save() {
+    local k
+    for k in "${NT_KEYS[@]}"; do conf_set "$k" "${NT[$k]:-}" --allow-empty; done
+}
+
+# _nt_clear <telegram|webhook|email> — turn a channel off in NT
+_nt_clear() {
+    local k
+    case "$1" in
+        telegram) NT[TELEGRAM_BOT_TOKEN]=""; NT[TELEGRAM_CHAT_ID]="" ;;
+        webhook)  NT[NOTIFY_WEBHOOK_URL]=""; NT[NOTIFY_WEBHOOK_FORMAT]="auto" ;;
+        email)    for k in EMAIL_TO SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM; do NT[$k]=""; done
+                  NT[SMTP_SECURITY]="starttls" ;;
+    esac
+}
+
+# notify_probe <channel> — a test message with the NT settings. 0 if delivered; the error on stdout.
+notify_probe() {
+    local ch="$1" lib="${NOTIFY_LIB:-${SCRIPT_DIR:-.}/lib.sh}" k
+    local -a envs=("NOTIFY_NAME=${NOTIFY_NAME:-}")
+    for k in "${NT_KEYS[@]}"; do envs+=("$k=${NT[$k]:-}"); done
+    command -v curl >/dev/null 2>&1 || { echo "curl is not installed"; return 1; }
+    # shellcheck disable=SC2016 # $1/$2 belong to the inner bash
+    env "${envs[@]}" bash -c 'source "$1" >/dev/null 2>&1 || { echo "cannot load $1"; exit 1; }
+        notify_test "$2" 2>&1 >/dev/null' _ "$lib" "$ch"
+}
+
+# notify_hint <channel> <error> — a note on what usually causes this error
+notify_hint() {
+    case "$1:$2" in
+        telegram:*"chat not found"*)
+            ui_note "💡 The chat ID is wrong, or nobody has started the bot yet: open the bot in Telegram and press Start." ;;
+        telegram:*Unauthorized*|telegram:*"Not Found"*)
+            ui_note "💡 The token is wrong or revoked: copy it again from @BotFather." ;;
+        telegram:*blocked*|telegram:*Forbidden*|telegram:*"not a member"*)
+            ui_note "💡 The bot is blocked, or it is not in the group: unblock it, or add it to the group." ;;
+        webhook:*"HTTP 400"*)
+            ui_note "💡 The receiver rejected the payload: pick its format explicitly (discord / slack / json)." ;;
+        webhook:*"HTTP 401"*|webhook:*"HTTP 403"*|webhook:*"HTTP 404"*)
+            ui_note "💡 The URL or its token is wrong, or the webhook was deleted." ;;
+        email:*"Login denied"*|email:*535*)
+            ui_note "💡 Wrong login or password (Gmail, Outlook and others need an app password)." ;;
+        email:*connect*|email:*"timed out"*)
+            ui_note "💡 The server or port is unreachable: check them; many hosting providers block outgoing port 25." ;;
+        email:*SSL*|email:*certificate*)
+            ui_note "💡 TLS failed: tls is for port 465, starttls for 587." ;;
+    esac
+    return 0
+}
+
+# _nt_verify <channel> <where to look> — sends a test message.
+# 0: keep the settings (delivered, kept anyway, or turned off); 1: enter them again.
+_nt_verify() {
+    local ch="$1" where="$2" err
+    [[ "${NON_INTERACTIVE:-false}" == "true" ]] && return 0
+    if err="$(notify_probe "$ch")"; then
+        ui_note "✓ The test message was sent — check ${where}."
+        return 0
+    fi
+    ui_note "✗ ${err:-unknown error}"
+    notify_hint "$ch" "$err"
+    ui_yesno "Enter the settings again?" y && return 1
+    ui_yesno "Keep these settings anyway?" n || _nt_clear "$ch"
+    return 0
+}
+
+# The wizards: 0 when done (an empty first answer turns the channel off), 1 if cancelled.
+tg_wizard() {
+    local token chat
+    ui_title "Telegram"
+    ui_note "The bot: @BotFather → /newbot → copy the token."
+    ui_note "The chat ID: @userinfobot → /start. For a group, add the bot to it: the ID is negative."
+    ui_note "⚠ Open a chat with the bot and press Start first: a bot cannot message you before that."
+    while true; do
+        token="$(ui_input "  Bot token (empty — no Telegram)" "${NT[TELEGRAM_BOT_TOKEN]:-}")" || return 1
+        token="$(trim "$token")"
+        [[ -z "$token" ]] && { _nt_clear telegram; return 0; }
+        [[ "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || ui_note "⚠ An unusual token format (expected 123456789:ABCdef…)."
+        chat="$(ui_input "  Chat ID" "${NT[TELEGRAM_CHAT_ID]:-}")" || return 1
+        chat="$(trim "$chat")"
+        [[ -z "$chat" ]] && { _nt_clear telegram; return 0; }
+        [[ "$chat" =~ ^-?[0-9]+$ || "$chat" == @* ]] || ui_note "⚠ A chat ID is a number (negative for groups) or @channel."
+        NT[TELEGRAM_BOT_TOKEN]="$token"; NT[TELEGRAM_CHAT_ID]="$chat"
+        _nt_verify telegram "Telegram" && return 0
+    done
+}
+
+webhook_wizard() {
+    local url fmt
+    ui_title "Webhook"
+    ui_note "Discord: channel settings → Integrations → Webhooks → Copy Webhook URL."
+    ui_note "Slack and Mattermost: an incoming webhook. Any other URL gets JSON: text, level, server, title, details, time."
+    while true; do
+        url="$(ui_input "  Webhook URL (empty — no webhook)" "${NT[NOTIFY_WEBHOOK_URL]:-}")" || return 1
+        url="$(trim "$url")"
+        [[ -z "$url" ]] && { _nt_clear webhook; return 0; }
+        if ! [[ "$url" =~ ^https?:// ]]; then
+            ui_note "✗ The URL must start with http:// or https://"
+            [[ "${NON_INTERACTIVE:-false}" == "true" ]] && { _nt_clear webhook; return 0; }
+            continue
+        fi
+        fmt="$(UI_DEFAULT="${NT[NOTIFY_WEBHOOK_FORMAT]:-auto}" ui_menu "Payload format" \
+            auto    "auto — by the URL (Discord, Slack, otherwise json)" \
+            discord "discord — {\"content\"}" \
+            slack   "slack — {\"text\"} (also Mattermost, Rocket.Chat)" \
+            json    "json — text, level, server, title, details, time")" || return 1
+        NT[NOTIFY_WEBHOOK_URL]="$url"; NT[NOTIFY_WEBHOOK_FORMAT]="$fmt"
+        _nt_verify webhook "the channel" && return 0
+    done
+}
+
+email_wizard() {
+    local to host sec port def user pass from
+    ui_title "Email"
+    ui_note "Any SMTP account works: your mail server, a mail service, Gmail or Outlook with an app password."
+    while true; do
+        to="$(ui_input "  Send to (addresses, space-separated; empty — no email)" "${NT[EMAIL_TO]:-}")" || return 1
+        to="$(trim "$to")"
+        [[ -z "$to" ]] && { _nt_clear email; return 0; }
+        host="$(ui_input "  SMTP server" "${NT[SMTP_HOST]:-}")" || return 1
+        host="$(trim "$host")"
+        [[ -z "$host" ]] && { _nt_clear email; return 0; }
+        sec="$(UI_DEFAULT="${NT[SMTP_SECURITY]:-starttls}" ui_menu "Connection security" \
+            starttls "STARTTLS, port 587 (most servers)" \
+            tls      "TLS, port 465" \
+            none     "none, port 25 (unencrypted)")" || return 1
+        case "$sec" in tls) def=465 ;; none) def=25 ;; *) def=587 ;; esac
+        port="$(ui_input "  Port" "${NT[SMTP_PORT]:-$def}")" || return 1
+        port="$(trim "$port")"; [[ "$port" == "$def" ]] && port=""
+        user="$(ui_input "  Login (empty — without login)" "${NT[SMTP_USER]:-}")" || return 1
+        user="$(trim "$user")"
+        pass=""
+        if [[ -n "$user" ]]; then
+            if [[ -n "${NT[SMTP_PASSWORD]:-}" ]]; then
+                pass="$(ui_password "  Password (empty — keep the current one)")" || return 1
+                [[ -z "$pass" ]] && pass="${NT[SMTP_PASSWORD]}"
+            else
+                pass="$(ui_password "  Password")" || return 1
+            fi
+        fi
+        from="$(ui_input "  Sender address" "${NT[SMTP_FROM]:-$user}")" || return 1
+        from="$(trim "$from")"
+        NT[EMAIL_TO]="$to"; NT[SMTP_HOST]="$host"; NT[SMTP_SECURITY]="$sec"; NT[SMTP_PORT]="$port"
+        NT[SMTP_USER]="$user"; NT[SMTP_PASSWORD]="$pass"; NT[SMTP_FROM]="$from"
+        _nt_verify email "the inbox (and spam)" && return 0
+    done
+}

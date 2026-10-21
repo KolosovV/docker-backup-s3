@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1.0-2496ED" alt="version 1.1.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.2.0-2496ED" alt="version 1.2.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -142,9 +142,10 @@ The installer links `/usr/local/bin/docker-backup` → `menu.sh`. Without argume
 | Logs | the last lines, errors, the last run, today's errors, one project, follow live |
 | Scheduled runs | the current setup, a method (cron / systemd timer) and a preset or your own schedule, removal |
 | Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key |
+| Notifications | when to notify (problems only / every run / never), the server name in messages, and Telegram, the webhook and email: set up, test, turn off; every change is checked with a test message |
 
 Destructive actions (an in-place restore, `--prune`, writing to the primary from a copy) ask for confirmation first;
-the scripts themselves keep their own confirmations too. Before the first change in **Storage settings** the menu
+the scripts themselves keep their own confirmations too. Before the first change to the config the menu
 saves a copy `backup.conf.bak.<time>`; if the config still uses the old `S3_*` names, it offers to rename them first.
 
 The menu uses `whiptail` (it is in Debian/Ubuntu by default; on RHEL — the `newt` package). Without it, or with
@@ -928,6 +929,9 @@ Without the passphrase, encrypted backups are lost for good. **Keep a copy of th
 
 ## Notifications
 
+The easiest way: `sudo docker-backup` → **Notifications**. Each channel is set up there with a test message, and
+the same wizards run in `install.sh`. By hand, in `backup.conf`:
+
 ### Telegram
 
 **1.** Create a bot via [@BotFather](https://t.me/BotFather):
@@ -1602,7 +1606,8 @@ tests/run.sh -v notify  # one file, every check printed
 They need only bash, jq, python3 and the usual coreutils: no Docker, no S3 and no network, because curl is
 replaced by a stub that records what it was given. `test_repo` checks that every script parses, has LF line endings and
 the executable bit, and that `VERSION`, the changelog and the badge agree. `test_core` covers paths, archiving and
-restore name matching, and `test_notify` covers every notification channel and format.
+restore name matching, `test_notify` covers every notification channel and format, and `test_menu` drives the
+menu's notification section end to end from a file of answers (it needs root, so it uses `sudo` or skips itself).
 
 On every push GitHub Actions runs ShellCheck (warnings and errors) and the tests: see `.github/workflows/ci.yml`.
 

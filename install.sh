@@ -91,14 +91,6 @@ ask_yn()     { ui_yesno "$@"; }
 ask_value()  { ui_input "$@"    || { echo "Cancelled." >&2; exit 130; }; }
 ask_secret() { ui_password "$@" || { echo "Cancelled." >&2; exit 130; }; }
 
-# notify_try <channel> VAR=value… — a test message with these settings, via the installed lib.sh in a
-# separate bash (so it doesn't replace the functions here). The error goes to stdout.
-notify_try() {
-    local ch="$1"; shift
-    env "$@" bash -c 'source "$1" >/dev/null 2>&1 || { echo "cannot load lib.sh"; exit 1; }; notify_test "$2" 2>&1 >/dev/null' \
-        _ "$TARGET_DIR/lib.sh" "$ch"
-}
-
 # Checks whether the minimum required fields in backup.conf hold real values
 # usage: is_conf_filled <path-to-conf>
 # returns: 0 if everything holds real values, 1 if something is a placeholder/empty
@@ -591,177 +583,16 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     ui_title "Where to look for compose projects"
     SCAN_DIRS=$(ask_value "  Directories, space-separated" "/opt /home /root /srv")
 
-    # ─── Notifications ───
+    # ─── Notifications (wizards in ui.sh, each sends a test message) ───
+    NOTIFY_LIB="$TARGET_DIR/lib.sh"
+    NOTIFY_SET=""
+    notify_load   # the template defaults (auto, starttls) stay if a wizard is skipped
     ui_title "Notifications (optional)"
-    if ask_yn "  Set up Telegram notifications on errors?" "n"; then
-        ui_title "Telegram"
-        ui_note "Creating a bot: @BotFather → /newbot → name → username"
-        ui_note "Getting the chat_id: @userinfobot → send /start, copy the ID"
-        ui_note "⚠ IMPORTANT: once you have the token, open a chat with the bot and send it /start,"
-        ui_note "  otherwise it can't message you first!"
-
-        while true; do
-            TG_TOKEN=$(ask_value "    Bot Token" ""); TG_TOKEN="$(trim "$TG_TOKEN")"
-
-            if [[ -z "$TG_TOKEN" ]]; then
-                log_warn "    The token is empty — skipping Telegram"
-                break
-            fi
-
-            # Token format: a number:a string of Latin letters/digits/hyphens/underscores
-            if ! [[ "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
-                ui_note "⚠ The token has an unusual format."
-                ui_note "Expected format: 123456789:ABCdef1234XYZ_abc-DEF"
-                if ! ask_yn "    Use it as is?" "n"; then
-                    continue
-                fi
-            fi
-
-            # Check via getMe
-            if command -v curl >/dev/null 2>&1; then
-                [[ "$UI_MODE" == "plain" ]] && echo -n "    Checking the token via the Telegram API... "
-                tg_response=$(curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/getMe" 2>/dev/null || echo "")
-                if echo "$tg_response" | grep -q '"ok":true'; then
-                    bot_name=$(echo "$tg_response" | sed -n 's/.*"username":"\([^"]*\)".*/\1/p' | head -1)
-                    [[ "$UI_MODE" == "plain" ]] && echo "${C_GREEN}OK — @${bot_name}${C_RESET}"
-                    ui_later "✓ The token works: @${bot_name}"
-                    break
-                fi
-                [[ "$UI_MODE" == "plain" ]] && echo "${C_RED}FAIL${C_RESET}"
-                if [[ -n "$tg_response" ]]; then
-                    err_msg=$(echo "$tg_response" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p' || echo "")
-                    [[ -n "$err_msg" ]] && ui_note "✗ Telegram replied: $err_msg"
-                else
-                    ui_note "✗ No response from api.telegram.org (check the internet connection)"
-                fi
-                if ! ask_yn "    Try entering the token again?" "y"; then
-                    TG_TOKEN=""
-                    break
-                fi
-            else
-                ui_note "Token check skipped (curl not found)"
-                break
-            fi
-        done
-
-        if [[ -n "$TG_TOKEN" ]]; then
-            while true; do
-                TG_CHAT=$(ask_value "    Chat ID" ""); TG_CHAT="$(trim "$TG_CHAT")"
-
-                if [[ -z "$TG_CHAT" ]]; then
-                    log_warn "    Chat ID is empty — skipping Telegram"
-                    TG_TOKEN=""
-                    break
-                fi
-
-                # Format: a number (negative for groups)
-                if ! [[ "$TG_CHAT" =~ ^-?[0-9]+$ ]]; then
-                    ui_note "⚠ Chat ID must be a number (negative for groups)"
-                    if ! ask_yn "    Try again?" "y"; then
-                        TG_TOKEN=""
-                        TG_CHAT=""
-                        break
-                    fi
-                    continue
-                fi
-
-                # Test message
-                [[ "$UI_MODE" == "plain" ]] && echo -n "    Sending a test message... "
-                test_msg="🧪 Test message from the installer on $(hostname). Installation succeeded!"
-                send_response=$(curl -s -m 10 -X POST \
-                    "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-                    --data-urlencode "chat_id=${TG_CHAT}" \
-                    --data-urlencode "text=${test_msg}" 2>/dev/null || echo "")
-
-                if echo "$send_response" | grep -q '"ok":true'; then
-                    [[ "$UI_MODE" == "plain" ]] && echo "${C_GREEN}OK${C_RESET}"
-                    ui_note "✓ Check Telegram — the test message should be there"
-                    break
-                fi
-                [[ "$UI_MODE" == "plain" ]] && echo "${C_RED}FAIL${C_RESET}"
-                err_msg=$(echo "$send_response" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p' || echo "")
-                if [[ -n "$err_msg" ]]; then
-                    ui_note "✗ Telegram replied: $err_msg"
-                    # Hints for common errors
-                    case "$err_msg" in
-                        *"chat not found"*)
-                            ui_note "💡 Hint: the chat_id is wrong, OR you haven't messaged the bot yet."
-                            ui_note "   Open Telegram → find your bot → press Start or send /start"
-                            ;;
-                        *"bot was blocked"*|*"Forbidden"*)
-                            ui_note "💡 Hint: the bot is blocked by the user — unblock it in Telegram"
-                            ;;
-                        *"chat_id is empty"*)
-                            ui_note "💡 Hint: Chat ID is empty or invalid"
-                            ;;
-                    esac
-                fi
-                if ! ask_yn "    Try another Chat ID?" "y"; then
-                    TG_TOKEN=""
-                    TG_CHAT=""
-                    break
-                fi
-            done
-        fi
-    fi
-
-    # Optional: webhook
+    if ask_yn "  Set up Telegram notifications?" "n"; then tg_wizard && NOTIFY_SET=1; fi
     ui_title "Notifications (optional)"
-    if ask_yn "  Set up a webhook (Discord/Slack/Mattermost/custom)?" "n"; then
-        ui_title "Webhook"
-        ui_note "Discord: channel settings → Integrations → Webhooks → Copy Webhook URL."
-        ui_note "Slack: an app with Incoming Webhooks. Any other URL gets JSON with level, server, title, details."
-        while true; do
-            NOTIFY_URL=$(ask_value "    Webhook URL" ""); NOTIFY_URL="$(trim "$NOTIFY_URL")"
-            [[ -z "$NOTIFY_URL" ]] && break
-            if ! [[ "$NOTIFY_URL" =~ ^https?:// ]]; then
-                ui_note "✗ The URL must start with http:// or https://"
-                NOTIFY_URL=""
-                [[ "$NON_INTERACTIVE" == "true" ]] && break
-                continue
-            fi
-            if _t_err="$(notify_try webhook NOTIFY_WEBHOOK_URL="$NOTIFY_URL")"; then
-                ui_note "✓ The test message was accepted — check the channel"
-                break
-            fi
-            ui_note "✗ $_t_err"
-            ask_yn "    Enter the URL again?" "y" || { ask_yn "    Keep this URL anyway?" "n" || NOTIFY_URL=""; break; }
-        done
-    fi
-
-    # Optional: email
+    if ask_yn "  Set up a webhook (Discord/Slack/Mattermost/custom)?" "n"; then webhook_wizard && NOTIFY_SET=1; fi
     ui_title "Notifications (optional)"
-    if ask_yn "  Set up email notifications (your SMTP server)?" "n"; then
-        ui_title "Email"
-        ui_note "Any SMTP account works: your mail server, Gmail/Outlook (with an app password), a mail service."
-        while true; do
-            MAIL_TO=$(ask_value "    Send to (addresses, space-separated)" "${MAIL_TO:-}"); MAIL_TO="$(trim "$MAIL_TO")"
-            [[ -z "$MAIL_TO" ]] && break
-            SMTP_HOST_VAL=$(ask_value "    SMTP server" "${SMTP_HOST_VAL:-}"); SMTP_HOST_VAL="$(trim "$SMTP_HOST_VAL")"
-            [[ -z "$SMTP_HOST_VAL" ]] && { MAIL_TO=""; break; }
-            UI_DEFAULT="${SMTP_SEC_VAL:-starttls}"
-            SMTP_SEC_VAL=$(ui_menu "    Connection security" \
-                starttls "STARTTLS, port 587 (most servers)" \
-                tls      "TLS, port 465" \
-                none     "none, port 25 (unencrypted)") || SMTP_SEC_VAL="starttls"
-            UI_DEFAULT=""
-            case "$SMTP_SEC_VAL" in tls) _p=465 ;; none) _p=25 ;; *) _p=587 ;; esac
-            SMTP_PORT_VAL=$(ask_value "    Port" "$_p"); SMTP_PORT_VAL="$(trim "$SMTP_PORT_VAL")"
-            [[ "$SMTP_PORT_VAL" == "$_p" ]] && SMTP_PORT_VAL=""
-            SMTP_USER_VAL=$(ask_value "    Login (empty — without login)" "${SMTP_USER_VAL:-}"); SMTP_USER_VAL="$(trim "$SMTP_USER_VAL")"
-            SMTP_PASS_VAL=""
-            [[ -n "$SMTP_USER_VAL" ]] && SMTP_PASS_VAL=$(ask_secret "    Password")
-            SMTP_FROM_VAL=$(ask_value "    Sender address" "${SMTP_FROM_VAL:-$SMTP_USER_VAL}"); SMTP_FROM_VAL="$(trim "$SMTP_FROM_VAL")"
-            [[ "$NON_INTERACTIVE" == "true" ]] && break
-            if _t_err="$(notify_try email EMAIL_TO="$MAIL_TO" SMTP_HOST="$SMTP_HOST_VAL" SMTP_SECURITY="$SMTP_SEC_VAL" \
-                    SMTP_PORT="$SMTP_PORT_VAL" SMTP_USER="$SMTP_USER_VAL" SMTP_PASSWORD="$SMTP_PASS_VAL" SMTP_FROM="$SMTP_FROM_VAL")"; then
-                ui_note "✓ The test email was sent — check the inbox (and spam)"
-                break
-            fi
-            ui_note "✗ $_t_err"
-            ask_yn "    Enter the settings again?" "y" || { ask_yn "    Keep these settings anyway?" "n" || MAIL_TO=""; break; }
-        done
-    fi
+    if ask_yn "  Set up email notifications (your SMTP server)?" "n"; then email_wizard && NOTIFY_SET=1; fi
     UI_TITLE=""
 
     # ─── Applying the settings to backup.conf ───
@@ -773,18 +604,7 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     conf_set BACKUP_PREFIX  "$BACKUP_PREFIX_VAL"
     conf_set RETENTION_DAYS "$RETENTION_VAL" --raw
     conf_set SCAN_DIRS      "$SCAN_DIRS"
-    conf_set TELEGRAM_BOT_TOKEN "${TG_TOKEN:-}"
-    conf_set TELEGRAM_CHAT_ID   "${TG_CHAT:-}"
-    conf_set NOTIFY_WEBHOOK_URL "${NOTIFY_URL:-}"
-    conf_set EMAIL_TO      "${MAIL_TO:-}"
-    if [[ -n "${MAIL_TO:-}" ]]; then
-        conf_set SMTP_HOST     "${SMTP_HOST_VAL:-}"
-        conf_set SMTP_SECURITY "${SMTP_SEC_VAL:-starttls}"
-        conf_set SMTP_PORT     "${SMTP_PORT_VAL:-}"
-        conf_set SMTP_USER     "${SMTP_USER_VAL:-}"
-        conf_set SMTP_PASSWORD "${SMTP_PASS_VAL:-}"
-        conf_set SMTP_FROM     "${SMTP_FROM_VAL:-}"
-    fi
+    [[ -n "$NOTIFY_SET" ]] && notify_save
 
     log_ok "backup.conf configured"
 fi

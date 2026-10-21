@@ -494,6 +494,100 @@ Write ${p}_OPTS_EXTRA=\"${CERT_OPTS}\" to the config?" y; then
 }
 
 # ==============================================================================
+# NOTIFICATIONS
+# ==============================================================================
+# One line about a channel for the list
+notify_line() {
+    if ! notify_configured "$1"; then printf 'off'; return 0; fi
+    case "$1" in
+        telegram) printf 'chat %s' "$TELEGRAM_CHAT_ID" ;;
+        webhook)  printf '%s (%s)' "$(s3_host "$NOTIFY_WEBHOOK_URL")" "$(webhook_format)" ;;
+        email)    printf 'to %s via %s' "$EMAIL_TO" "$SMTP_HOST" ;;
+    esac
+}
+
+notify_when() {
+    case "${NOTIFY_ON:-error}" in
+        none)   printf 'never' ;;
+        always) printf 'every run' ;;
+        *)      printf 'problems only' ;;
+    esac
+}
+
+menu_notify() {
+    local choice v ch err out
+    while true; do
+        UI_TITLE="Notifications"
+        choice="$(ui_menu "Where messages about backups go. Any channels can be on at once." \
+            when     "When: $(notify_when)" \
+            name     "Server name in messages: ${NOTIFY_NAME:-$(hostname) (the hostname)}" \
+            telegram "Telegram — $(notify_line telegram)" \
+            webhook  "Webhook — $(notify_line webhook)" \
+            email    "Email — $(notify_line email)" \
+            test     "Send a test message to every channel")" || return 0
+        case "$choice" in
+            when)
+                v="$(UI_DEFAULT="${NOTIFY_ON:-error}" ui_menu "When to send a message?" \
+                    error  "Problems only (recommended)" \
+                    always "Every run, the successful ones too" \
+                    none   "Never")" || continue
+                backup_conf_once; conf_set NOTIFY_ON "$v"; reload_conf ;;
+            name)
+                v="$(ui_input "Server name in messages (empty — the hostname)" "${NOTIFY_NAME:-}")" || continue
+                backup_conf_once; conf_set NOTIFY_NAME "$(trim "$v")" --allow-empty; reload_conf ;;
+            telegram|webhook|email)
+                menu_channel "$choice" ;;
+            test)
+                out=""
+                notify_load
+                for ch in telegram webhook email; do
+                    notify_configured "$ch" || continue
+                    if err="$(notify_probe "$ch")"; then out+="✓ ${ch}: sent"$'\n'
+                    else out+="✗ ${ch}: ${err:-unknown error}"$'\n'; notify_hint "$ch" "$err"; fi
+                done
+                ui_msg "${out:-No channel is set up.}" ;;
+        esac
+    done
+}
+
+menu_channel() {
+    local ch="$1" label choice err
+    case "$ch" in telegram) label="Telegram" ;; webhook) label="Webhook" ;; *) label="Email" ;; esac
+    while true; do
+        UI_TITLE="$label"
+        if notify_configured "$ch"; then
+            choice="$(ui_menu "${label}: $(notify_line "$ch")" \
+                edit "Change the settings…" \
+                test "Send a test message" \
+                off  "Turn ${label} off")" || return 0
+        else
+            choice="edit"
+        fi
+        case "$choice" in
+            edit)
+                notify_load
+                case "$ch" in
+                    telegram) tg_wizard ;;
+                    webhook)  webhook_wizard ;;
+                    email)    email_wizard ;;
+                esac || return 0
+                backup_conf_once; notify_save; reload_conf
+                if notify_configured "$ch"; then ui_msg "${label}: saved to ${CONFIG_FILE}."
+                else ui_msg "${label}: off."; return 0; fi ;;
+            test)
+                notify_load
+                if err="$(notify_probe "$ch")"; then ui_msg "✓ ${label}: the test message was sent."
+                else notify_hint "$ch" "$err"; ui_msg "✗ ${label}: ${err:-unknown error}"; fi ;;
+            off)
+                ui_yesno "Turn ${label} off? Its settings are removed from the config." n || continue
+                notify_load; _nt_clear "$ch"
+                backup_conf_once; notify_save; reload_conf
+                return 0 ;;
+        esac
+    done
+}
+
+# ==============================================================================
 # MAIN
 # ==============================================================================
 # Old names of the primary storage — offer the rename right away: the editor writes the new ones
@@ -518,6 +612,7 @@ while true; do
         logs     "Logs…" \
         schedule "Scheduled runs…" \
         storages "Storage settings…" \
+        notify   "Notifications…" \
         quit     "Exit")" || break
     UI_DEFAULT=""
     case "$choice" in
@@ -529,6 +624,7 @@ while true; do
         logs)     menu_logs ;;
         schedule) menu_schedule ;;
         storages) menu_storages ;;
+        notify)   menu_notify ;;
         quit)     break ;;
     esac
 done
