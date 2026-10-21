@@ -404,17 +404,10 @@ if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" || -n "${EMAI
                 bot_name=$(echo "$response" | jq -r '.result.username' 2>/dev/null || echo "?")
                 ok "Telegram bot is valid: @$bot_name"
 
-                # 2) Test sending a message to the chat_id
-                test_msg="🧪 validate-config test from $(uname -n) [$(date +%H:%M:%S)]"
-                send_resp=$(curl -s -m 10 -X POST \
-                    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-                    --data-urlencode "text=${test_msg}" 2>/dev/null || echo "")
-
-                if echo "$send_resp" | grep -q '"ok":true'; then
+                # 2) A test message — the same one, in the same look, as every other notification
+                if err_msg="$(notify_test telegram 2>&1)"; then
                     ok "Test message delivered to Telegram (chat_id: $TELEGRAM_CHAT_ID)"
                 else
-                    err_msg=$(echo "$send_resp" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p' || echo "?")
                     err "Cannot send to Telegram chat_id=$TELEGRAM_CHAT_ID: $err_msg"
 
                     case "$err_msg" in

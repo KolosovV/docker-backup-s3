@@ -182,7 +182,7 @@ check "a timestamped backup in the primary ($TS)" test -n "$TS"
 check "the archive is encrypted (.gpg)" grep -q "${PROJ}.*\.tar\.gz\.gpg$" "$IT/primary.ls"
 check "a sha256 manifest next to it" grep -q '\.sha256$' "$IT/primary.ls"
 check "the secondary got nothing (disabled)" test -z "$(s3 s3 ls --recursive s3://secondary/ 2>/dev/null)"
-check "webhook: backup done" grep -q '^success|backup done|' <<< "$(hook_msgs)"
+check "webhook: backup done, worded right" grep -qE '^success\|backup done\|Saved 1 project in the primary storage \(127\.0\.0\.1:[0-9]+\)\. / [0-9.]+ [MG]B in ' <<< "$(hook_msgs)"
 check "the containers run again after the backup" test "$(docker compose -p "$PROJ" -f "$PDIR/compose.yaml" ps -q --status running | wc -l)" -eq 2
 
 step "What is inside"

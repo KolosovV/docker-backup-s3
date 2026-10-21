@@ -109,9 +109,9 @@ _on_exit() {
     if [[ "${RUN_STARTED:-false}" == "true" && "${RUN_DONE:-false}" != "true" ]]; then
         RUN_DONE=true
         local body=""
-        [[ -n "${INTERRUPT_SIGNAL:-}" ]] && body+="Stopped by signal ${INTERRUPT_SIGNAL} — server shutdown or kill."$'\n'
+        [[ -n "${INTERRUPT_SIGNAL:-}" ]] && body+="Stopped by signal ${INTERRUPT_SIGNAL} (a shutdown or a kill)."$'\n'
         [[ -n "${CURRENT_PROJECT:-}" ]] && body+="Interrupted on project <b>$(html_esc "$CURRENT_PROJECT")</b>, its containers were brought back."$'\n'
-        body+="No summary for this run, some projects were not saved. $(notify_log_hint)"
+        body+="Some projects were not saved."$'\n'"$(notify_log_hint)"
         notify error "backup interrupted" "$body"
     fi
     # Let the log pipe finish writing: close our end, wait for it (see "Logging to a file")
@@ -443,10 +443,10 @@ for role in ${S3_COPIES[@]+"${S3_COPIES[@]}"}; do
     if ! s3_complete "$role"; then
         msg="${label} is enabled, but not all ${var}_* are filled in"
         if s3_required "$role"; then
-            notify error "backup did not start" "${label} is required (${var}_REQUIRED=true), but not all ${var}_* are filled in in backup.conf."
+            notify error "backup did not start" "${label} is required (${var}_REQUIRED=true), but some of its ${var}_* settings in backup.conf are empty."
             fail "$msg (and ${var}_REQUIRED=true)"
         fi
-        COPY_DOWN[$role]="is not configured: not all ${var}_* are filled in in backup.conf"
+        COPY_DOWN[$role]="is not configured: some of its ${var}_* settings in backup.conf are empty"
         log_warn "$msg — uploads $(s3_label "$role" to) will be skipped"
         continue
     fi
@@ -1203,7 +1203,7 @@ for role in ${S3_COPIES[@]+"${S3_COPIES[@]}"}; do
     s3_required "$role" && copy_bad_required=true
     copy_lines+="${copy_lines:+$'\n'}${line}"
 done
-stats="${size_txt}, $(fmt_duration $TOTAL_DURATION), timestamp ${TIMESTAMP}."
+stats="${size_txt} in $(fmt_duration $TOTAL_DURATION), timestamp <code>${TIMESTAMP}</code>."
 if (( ${#ORPHAN_DROPPED[@]} > 0 )); then
     stats+=$'\n'"Deleted copies older than ${RETENTION_DAYS:-30} days of projects no longer on the server: <b>$(_join "${!ORPHAN_DROPPED[@]}")</b>."
 fi
@@ -1226,7 +1226,7 @@ else
         2) where="in both storages" ;;
         *) where="in all ${stores} storages" ;;
     esac
-    notify success "backup done" "${saved} $(plural "$saved" project projects) ${where}, ${stats}"
+    notify success "backup done" "Saved ${saved} $(plural "$saved" project projects) ${where}."$'\n'"${stats^}"
 fi
 
 [[ "$TOTAL_FAILED" -eq 0 ]] && exit 0 || exit 1

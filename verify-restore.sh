@@ -471,7 +471,7 @@ if [[ "$TOTAL_FAIL" -eq 0 ]]; then
     log "    Time:    $(fmt_duration $TOTAL_DURATION)"
 
     if [[ "$NOTIFY" == "true" && "${NOTIFY_ON:-error}" == "always" ]]; then
-        notify success "backups restore fine" "Checked ${TOTAL_OK} of ${TOTAL_PROJECTS} $(plural "$TOTAL_PROJECTS" project projects), mode ${MODE}, $(fmt_duration $TOTAL_DURATION)."
+        notify success "backups restore fine" "Checked ${TOTAL_OK} of ${TOTAL_PROJECTS} $(plural "$TOTAL_PROJECTS" project projects) (${MODE} mode) in $(fmt_duration $TOTAL_DURATION)."
     fi
 else
     log "${C_RED}${C_BOLD}❌ PROBLEMS WITH BACKUPS FOUND${C_RESET}"

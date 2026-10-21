@@ -431,12 +431,12 @@ sync_pair() {  # $1 = source role, $2 = destination role
 
         # The notification gets the SPECIFIC first failure, not just a count.
         IFS='|' read -r e_op e_key e_reason <<< "${FAILED[0]}"
-        notify error "storage synchronization with errors" "$(html_esc "${SRC_LABEL} → ${DST_LABEL}"): ${errors} $(plural "$errors" error errors). Copied ${copied}, re-uploaded ${replaced}, deleted ${pruned}."$'\n'"First: [$(html_esc "$e_op")] <code>$(html_esc "$e_key")</code> — $(html_esc "${e_reason:-reason unknown}")."
+        notify error "storage synchronization with errors" "$(html_esc "${SRC_LABEL^} → ${DST_LABEL}"): ${errors} $(plural "$errors" error errors). Copied ${copied}, re-uploaded ${replaced}, deleted ${pruned}."$'\n'"First: [$(html_esc "$e_op")] <code>$(html_esc "$e_key")</code> — $(html_esc "${e_reason:-reason unknown}")."
         log_err "Synchronization ${SRC_LABEL} → ${DST_LABEL} finished with errors (${errors}). The specific reasons are above."
         return 1
     fi
 
-    notify_msg="$(html_esc "${SRC_LABEL} → ${DST_LABEL}"): copied ${copied}, re-uploaded ${replaced}"
+    notify_msg="$(html_esc "${SRC_LABEL^} → ${DST_LABEL}"): copied ${copied}, re-uploaded ${replaced}"
     [[ "$PRUNE" == "true" ]] && notify_msg="${notify_msg}, deleted ${pruned}"
     notify success "storages synchronized" "${notify_msg}."
 

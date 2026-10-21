@@ -11,6 +11,11 @@ The installed version: `docker-backup version` (or the `VERSION` file).
 ## [1.4.2] — 2026-10-22
 
 ### Fixed
+- `validate-config.sh` sent its own bare Telegram test ("🧪 validate-config test from host [time]"). It now sends the
+  same test message, in the same look, as the menu and the installer.
+- Notification texts reworded: "Saved 7 projects in both storages." with the size, time and timestamp on the next
+  line; "some of its SECONDARY_S3_* settings in backup.conf are empty" in place of "not all … are filled in in
+  backup.conf"; "Checked 3 of 3 projects (quick mode) in 2m 10s."
 - In the dry-run plan the database lines came before their "Database auto-dump:" heading and did not reach the log
   (they went to stdout).
 - `validate-config.sh` warns about a `SCAN_DIRS` folder inside another one of the list. That is usually an
