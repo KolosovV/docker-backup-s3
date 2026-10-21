@@ -8,6 +8,14 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.4.4] — 2026-10-22
+
+### Fixed
+- With `S3_BANDWIDTH_LIMIT` set, AWS CLI 2.3x warned on every upload that its new 'crt' transfer client does not
+  support `max_bandwidth`, and that a future version would use 'crt' by default and ignore the limit. The
+  'classic' client is now pinned for every run. The limit keeps working after aws updates, uploads to
+  S3-compatible storages go the same, tested way, and the warning is gone.
+
 ## [1.4.3] — 2026-10-22
 
 ### Fixed
@@ -225,6 +233,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.4.4]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.4
 [1.4.3]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.3
 [1.4.2]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.2
 [1.4.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.1

@@ -172,6 +172,10 @@ _aws_config_init() {
     # Retries: by default aws gives up after two ("reached max retries: 2"), and a brief storage failure
     # (InternalError, SlowDown — a storage under load) turned into a backup error. standard —
     # retries with growing backoff; S3_MAX_ATTEMPTS — total number of attempts.
+    # The 'classic' transfer client, always: AWS CLI is moving its default to 'crt', which has no max_bandwidth
+    # (S3_BANDWIDTH_LIMIT would be silently ignored) and is built for Amazon S3 rather than S3-compatible storages.
+    # Pinned, an aws update does not change how uploads go — and aws stops warning about it.
+    aws configure set default.s3.preferred_transfer_client classic 2>/dev/null || true
     aws configure set default.retry_mode standard 2>/dev/null || true
     aws configure set default.max_attempts "${S3_MAX_ATTEMPTS:-8}" 2>/dev/null || true
     if [[ -n "${S3_MULTIPART_THRESHOLD:-}" ]]; then
