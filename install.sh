@@ -406,7 +406,6 @@ NORM_TARGET="$(realpath -m "$TARGET_DIR")"
 
 if [[ "$NORM_SOURCE" == "$NORM_TARGET" ]]; then
     # In-place: already in the right directory, no copying needed
-    INPLACE_INSTALL="true"
     log_ok "In-place installation (source = target = $NORM_TARGET)"
     log "    The files are already in place, no copying needed"
 
@@ -420,7 +419,6 @@ if [[ "$NORM_SOURCE" == "$NORM_TARGET" ]]; then
     fi
 else
     # Normal mode: copy from source to target
-    INPLACE_INSTALL="false"
 
     # Back up existing files if there are any
     if [[ -d "$TARGET_DIR" ]]; then
@@ -864,7 +862,10 @@ if [[ "$SKIP_CRON" != "true" && "$NON_INTERACTIVE" == "true" && "$_cron_exists" 
 elif [[ "$SKIP_CRON" != "true" ]]; then
     echo
     if ask_yn "Set up scheduled runs (cron / systemd timer)?" "y"; then
-        "$TARGET_DIR/setup-cron.sh" $([[ "$NON_INTERACTIVE" == "true" ]] && echo "-y -m cron -s daily")
+        # An array: with IFS=$'\n\t' "$(echo -y -m …)" would reach setup-cron.sh as one argument
+        _cron_args=()
+        [[ "$NON_INTERACTIVE" == "true" ]] && _cron_args=(-y -m cron -s daily)
+        "$TARGET_DIR/setup-cron.sh" ${_cron_args[@]+"${_cron_args[@]}"}
     else
         log "  Skipped. To set up later: sudo $TARGET_DIR/setup-cron.sh"
     fi

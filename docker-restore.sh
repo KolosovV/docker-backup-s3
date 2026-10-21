@@ -137,6 +137,20 @@ if [[ "$CONTENTS_MODE" == "true" && -n "$EXTRACT_TO" ]]; then
     fail "--contents and --extract-to together make no sense: pick one mode"
 fi
 
+# bind_target_for <archive name without .tar.gz> — the original path of a bind archive, from BIND_MAP
+# (safe name → path) of the caller. Projects name the archives bind_<n>_<path>, standalone containers
+# bind_<container>_<n>_<path>: match by the path part, the longest match wins. Empty if none.
+bind_target_for() {
+    local name="$1" key best=""
+    for key in "${!BIND_MAP[@]}"; do
+        if [[ "$name" == bind_*"_${key}" && ${#key} -gt ${#best} ]]; then
+            best="$key"
+        fi
+    done
+    [[ -n "$best" ]] && printf '%s' "${BIND_MAP[$best]}"
+    return 0
+}
+
 # ==============================================================================
 # What is inside an unpacked backup (--contents)
 # ==============================================================================
@@ -671,7 +685,8 @@ restore_one_project() {
                 is_yes "$ow" || { log "    Cancelled for $PROJECT"; return 1; }
             fi
             if [[ -e "$TARGET_DIR" ]]; then
-                local backup_existing="${TARGET_DIR}.before-restore-$(date +%s)"
+                local backup_existing
+                backup_existing="${TARGET_DIR}.before-restore-$(date +%s)"
                 log "    📦 Saving the current folder to: $backup_existing"
                 mv "$TARGET_DIR" "$backup_existing"
             fi
@@ -795,15 +810,8 @@ restore_one_project() {
         for bind_archive in "${PROJ_BACKUP_DIR}/binds/"bind_*.tar.gz; do
             [[ -f "$bind_archive" ]] || continue
             local archive_basename; archive_basename="$(basename "$bind_archive" .tar.gz)"
-            # Projects name the archives bind_<n>_<path>, standalone containers
-            # bind_<container>_<n>_<path>: match by the path part, the longest match wins
-            local target_path="" key best=""
-            for key in "${!BIND_MAP[@]}"; do
-                if [[ "$archive_basename" == bind_*"_${key}" && ${#key} -gt ${#best} ]]; then
-                    best="$key"
-                fi
-            done
-            [[ -n "$best" ]] && target_path="${BIND_MAP[$best]}"
+            local target_path
+            target_path="$(bind_target_for "$archive_basename")"
             if [[ -z "$target_path" ]]; then
                 log_warn "Cannot determine the path for $archive_basename — skipping"
                 continue

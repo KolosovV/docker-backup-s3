@@ -80,9 +80,10 @@ _ui_text() {
 # Runs whiptail: dialog on the terminal, answer to stdout. Exit code is whiptail's (0 OK, 1 Cancel, 255 Esc).
 _ui_whiptail() {
     # An array, not ${UI_TITLE:+--title "$UI_TITLE"}: with IFS=$'\n\t' that would be one word
-    local -a title=()
-    [[ -n "$UI_TITLE" ]] && title=(--title "$UI_TITLE")
-    whiptail --backtitle "$UI_BACKTITLE" ${title[@]+"${title[@]}"} "$@" 2>&1 >"$UI_TTY" <"$UI_TTY"
+    local -a title_opt=()
+    [[ -n "$UI_TITLE" ]] && title_opt=(--title "$UI_TITLE")
+    # shellcheck disable=SC2094 # the terminal, not a file: dialog drawn to it, keys read from it
+    whiptail --backtitle "$UI_BACKTITLE" ${title_opt[@]+"${title_opt[@]}"} "$@" 2>&1 >"$UI_TTY" <"$UI_TTY"
 }
 
 # ui_title <text> — section heading: a title for the next dialogs, a bold line in plain mode
@@ -324,6 +325,7 @@ _s3_probe() {
     local -a cmd=(aws --endpoint-url "$endpoint" "$@" --cli-connect-timeout 10 --cli-read-timeout 20
                   s3api head-bucket --bucket "$bucket")
     command -v timeout >/dev/null 2>&1 && cmd=(timeout 60 "${cmd[@]}")
+    # shellcheck disable=SC2069 # on purpose: only stderr goes to the caller
     env -u AWS_PROFILE -u AWS_SESSION_TOKEN -u AWS_CA_BUNDLE \
         AWS_ACCESS_KEY_ID="$access" AWS_SECRET_ACCESS_KEY="$secret" \
         AWS_DEFAULT_REGION="${region:-us-east-1}" AWS_S3_ADDRESSING_STYLE="$addressing" \

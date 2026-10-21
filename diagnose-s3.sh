@@ -107,7 +107,8 @@ diagnose_store() {
 
     echo "############ TEST 3: test write (path-style) ############"
     export AWS_S3_ADDRESSING_STYLE=path
-    local testkey="${PREFIX}/.diag-$(date +%s).tmp" wout dout cleaned_w
+    local testkey wout dout cleaned_w
+    testkey="${PREFIX}/.diag-$(date +%s).tmp"
     echo "─── 3a. Write and delete a test object (a 9 MB file, multipart — like a backup archive) ───"
     # Not "echo diag | s3 cp -": a write from stdin goes a different path and would succeed where a real
     # archive fails (aws-cli checksums, see lib.sh). The multipart threshold

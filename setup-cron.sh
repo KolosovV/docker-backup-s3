@@ -55,6 +55,7 @@ EOF
 done
 
 # Load the library for logging and colors
+# shellcheck disable=SC1090
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" 2>/dev/null || true
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
@@ -309,7 +310,8 @@ install_cron() {
     [[ -n "$nice_prefix" ]] && log_info "It will run at lowered priority: ${nice_prefix}"
 
     # Build the new crontab
-    local new_cron="$current_cron
+    local new_cron
+    new_cron="$current_cron
 
 # === Docker backup ===
 # Installed by setup-cron.sh ($(date '+%Y-%m-%d %H:%M:%S'))
@@ -402,8 +404,8 @@ $schedule ${nice_prefix}$BACKUP_SCRIPT >> $cron_log 2>&1
     log "${C_BOLD}Next run:${C_RESET}"
     if command -v systemd-analyze >/dev/null 2>&1; then
         # Convert the cron schedule to OnCalendar for nicer output
-        local minute hour dom month dow
-        read -r minute hour dom month dow <<< "$schedule"
+        local minute hour
+        read -r minute hour _ <<< "$schedule"
         # The simple case — a specific hour and minute
         if [[ "$minute" =~ ^[0-9]+$ && "$hour" =~ ^[0-9]+$ ]]; then
             local cal="*-*-* ${hour}:${minute}:00"

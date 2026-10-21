@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck (warnings and errors)
+        run: |
+          shellcheck --version
+          shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh
+
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          command -v jq || sudo apt-get install -y jq
+          python3 --version
+      - name: Tests
+        run: tests/run.sh

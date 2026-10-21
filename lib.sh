@@ -34,6 +34,7 @@ _init_colors() {
             ;;
     esac
 
+    # shellcheck disable=SC2034 # the colors are used by the scripts that source lib.sh
     if $enable; then
         C_RESET=$'\033[0m'
         C_BOLD=$'\033[1m'
@@ -302,7 +303,7 @@ s3_refresh
 
 # _aws_setup [role] [write|read] — point aws at the role's storage (primary and write by default).
 #   read — the read-only key (<ROLE>_S3_RESTORE_*), if set.
-# Sets S3_OPTS and S3_CUR_ROLE / S3_CUR_BUCKET / S3_CUR_ENDPOINT.
+# Sets S3_OPTS and S3_CUR_BUCKET / S3_CUR_ENDPOINT.
 _AWS_BANDWIDTH_SET=""
 _aws_setup() {
     local role="${1:-primary}" access="${2:-write}" key secret region addr extra
@@ -328,7 +329,6 @@ _aws_setup() {
         _AWS_BANDWIDTH_SET=1
     fi
 
-    S3_CUR_ROLE="$role"
     S3_CUR_BUCKET="$(s3_var "$role" BUCKET)"
     S3_CUR_ENDPOINT="$(s3_var "$role" ENDPOINT)"
     S3_OPTS=(--endpoint-url "$S3_CUR_ENDPOINT")
@@ -505,7 +505,8 @@ notify_send() {
         warn)  icon="🟠" ;;
     esac
     local name="${NOTIFY_NAME:-$(hostname)}"
-    local full="${icon} <b>Server $(html_esc "$name"): $(html_esc "$title")</b>"
+    local full
+    full="${icon} <b>Server $(html_esc "$name"): $(html_esc "$title")</b>"
     [[ -n "$body" ]] && full+=$'\n'"$body"
     local plain_body=""; [[ -n "$body" ]] && plain_body="$(html_plain "$body")"
     local subject="${icon} Server ${name}: ${title}"
@@ -809,7 +810,7 @@ container_env() {
 prune_old_dumps() {
     local dir="$1" pattern="$2" keep="$3"
     [[ -d "$dir" ]] || return 0
-    # shellcheck disable=SC2012
+    # shellcheck disable=SC2012,SC2086 # $pattern is a glob on purpose; dump names have no spaces
     ls -t "$dir"/$pattern 2>/dev/null | tail -n +$((keep + 1)) | xargs -r rm -f
 }
 
@@ -1178,7 +1179,7 @@ plan_rotation() {
     local -A group_keys=()    # "project|timestamp" -> keys separated by \n
     local -A proj_groups=()   # "project"           -> groups separated by \n
 
-    local key lm rest proj ts group epoch
+    local key lm rest proj ts group
     while IFS=$'\t' read -r key lm; do
         [[ -z "$key" ]] && continue
         # Expect a key of the form "<prefix>/<project>/<timestamp>/<file>"

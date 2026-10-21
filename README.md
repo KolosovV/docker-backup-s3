@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1.0-2496ED" alt="version 1.1.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
@@ -97,6 +98,7 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 - [Uninstalling](#uninstalling)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
+- [Tests](#tests)
 - [Versioning](#versioning)
 - [License](#license)
 
@@ -1587,6 +1589,22 @@ sudo /opt/docker-backup-s3/update.sh --rollback
 1. Your S3 provider's panel → access keys → change the key
 2. Put the new one into `backup.conf`
 3. `sudo /opt/docker-backup-s3/validate-config.sh`
+
+---
+
+## Tests
+
+```bash
+tests/run.sh            # all tests
+tests/run.sh -v notify  # one file, every check printed
+```
+
+They need only bash, jq, python3 and the usual coreutils: no Docker, no S3 and no network, because curl is
+replaced by a stub that records what it was given. `test_repo` checks that every script parses, has LF line endings and
+the executable bit, and that `VERSION`, the changelog and the badge agree. `test_core` covers paths, archiving and
+restore name matching, and `test_notify` covers every notification channel and format.
+
+On every push GitHub Actions runs ShellCheck (warnings and errors) and the tests: see `.github/workflows/ci.yml`.
 
 ---
 

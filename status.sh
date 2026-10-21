@@ -12,11 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/backup.conf"
 
 # --- Arguments ---
-DETAILED="false"
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -d|--detailed) DETAILED="true"; shift ;;
         -c|--config) CONFIG_FILE="$2"; shift 2 ;;
         -h|--help)
             cat <<EOF
@@ -24,7 +21,6 @@ Usage: $0 [options]
 
 A quick status overview of the docker-backup system.
 
-  -d, --detailed    show extra details (S3 objects per project, sizes)
   -c, --config FILE config file (default: backup.conf next to the script)
   -h, --help        this help
 EOF
@@ -233,8 +229,8 @@ show_store() {
     elif (( last_age < 86400 * 2 )); then last_status=$(status_dot warn)
     else last_status=$(status_dot err); fi
 
-    echo "  $last_status Latest backup:      $(date -d "@$newest" '+%Y-%m-%d %H:%M:%S')  ($(age_human $newest))"
-    echo "    Oldest:              $(date -d "@$oldest" '+%Y-%m-%d %H:%M:%S')  ($(age_human $oldest))"
+    echo "  $last_status Latest backup:      $(date -d "@$newest" '+%Y-%m-%d %H:%M:%S')  ($(age_human "$newest"))"
+    echo "    Oldest:              $(date -d "@$oldest" '+%Y-%m-%d %H:%M:%S')  ($(age_human "$oldest"))"
     echo "    Objects:             $objects"
     echo "    Total size:          $(human_size $bytes)"
     echo "    Bucket:              s3://$S3_CUR_BUCKET/$BACKUP_PREFIX/"
@@ -259,8 +255,8 @@ show_store() {
 
         printf "    %s %-43s %-10d %-12s %s%s\n" \
             "$dot" "$proj" "${count[$proj]}" \
-            "$(human_size ${total[$proj]})" \
-            "$(age_human ${latest[$proj]})" \
+            "$(human_size "${total[$proj]}")" \
+            "$(age_human "${latest[$proj]}")" \
             "$here_marker"
     done
     echo
@@ -341,8 +337,6 @@ CRON_LINE=$(crontab -l 2>/dev/null | grep -E "${SCRIPT_DIR}/docker-backup\.sh|/d
 if [[ -n "$CRON_LINE" ]]; then
     cron_schedule=$(echo "$CRON_LINE" | awk '{print $1, $2, $3, $4, $5}')
     echo "  $(status_dot ok) Cron:    $cron_schedule"
-else
-    cron_status=""
 fi
 
 # Systemd
@@ -458,7 +452,7 @@ for log_path in /var/log/docker-backup.log /var/log/docker-backup-cron.log; do
         last_modified=$(stat -c %Y "$log_path" 2>/dev/null || echo 0)
         last_line=$(tail -1 "$log_path" 2>/dev/null || echo "")
 
-        echo "  ${C_BOLD}$log_path${C_RESET}  ($(human_size $size), modified $(age_human $last_modified))"
+        echo "  ${C_BOLD}$log_path${C_RESET}  ($(human_size "$size"), modified $(age_human "$last_modified"))"
         if [[ -n "$last_line" ]]; then
             # Trim a long line
             if (( ${#last_line} > 90 )); then

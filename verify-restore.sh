@@ -81,7 +81,7 @@ SRC_BUCKET="$S3_CUR_BUCKET"
 # --- Working folder ---
 VERIFY_DIR="/tmp/verify-restore-$$"
 mkdir -p "$VERIFY_DIR"
-trap "rm -rf '$VERIFY_DIR'" EXIT
+trap 'rm -rf "$VERIFY_DIR"' EXIT
 
 # --- Global statistics ---
 TOTAL_PROJECTS=0
@@ -337,7 +337,7 @@ verify_project() {
         dumps_dir=$(find "$pd_dir" -maxdepth 3 -type d -name "db-dumps" 2>/dev/null | head -1)
 
         if [[ -n "$dumps_dir" && -d "$dumps_dir" ]]; then
-            log "  🗄  Checking DB dumps in $(basename $(dirname "$dumps_dir"))/db-dumps/..."
+            log "  🗄  Checking DB dumps in $(basename "$(dirname "$dumps_dir")")/db-dumps/..."
             local dump_failed=0
 
             # PostgreSQL dumps
