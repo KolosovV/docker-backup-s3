@@ -34,8 +34,8 @@ for img in "${IMAGES[@]}"; do
     echo "################ systemd: ${img} ################"
     tag="dbsd-$(tr '/:.' '___' <<< "$img")"
     setup="$(systemd_setup "$img")" || { RESULTS+=("SKIP  $img (no recipe)"); continue; }
-    # The container shares the host's network: its own resolved/networkd would fight the host's — no DNS, and then
-    # even crond's PAM (pam_access) refuses root's jobs
+    # The container shares the host's network: its own resolved/networkd would fight the host's (no DNS).
+    # crond in RHEL-family containers on GitHub still refuses root's jobs now and then (PAM): check.sh skips that.
     printf 'FROM %s\nRUN %s\nRUN systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket >/dev/null 2>&1; true\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/sbin/init"]\n' "$img" "$setup" \
         | docker build -q -t "$tag" - >/dev/null || { RESULTS+=("FAIL  $img (image build)"); failed=$((failed + 1)); continue; }
     cid="$(docker run -d --label docker-backup.skip=true --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
