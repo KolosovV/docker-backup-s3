@@ -226,7 +226,12 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         local -a want=() failed=()
         local c p
         for c in jq tar gzip dos2unix curl gpg gpg-agent crontab whiptail flock unzip find pgrep logrotate; do
-            command -v "$c" >/dev/null 2>&1 || want+=("$(pkg_for "$c")")
+            command -v "$c" >/dev/null 2>&1 && continue
+            p="$(pkg_for "$c")"
+            # gpg and gpg-agent are one package on most systems — once in the list
+            local w dup=false
+            for w in ${want[@]+"${want[@]}"}; do [[ "$w" == "$p" ]] && dup=true; done
+            $dup || want+=("$p")
         done
         [[ -e /etc/ssl/certs/ca-certificates.crt || -e /etc/pki/tls/certs/ca-bundle.crt ]] || want+=(ca-certificates)
         # Alpine: busybox has date/stat/sed/grep/find, but not the GNU options the scripts use (date -d, stat -c…)

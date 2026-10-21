@@ -39,7 +39,11 @@ cron_unit() { local u; for u in cron crond cronie; do systemctl cat "$u.service"
 
 step "install.sh -y (with scheduling, as a user would run it)"
 if bash "$SRC/install.sh" -y > "$IT/install.log" 2>&1; then ok "install.sh exit 0"
-else bad "install.sh failed"; sed -n '/Installing dependencies/,/Copying files/p' "$IT/install.log" | head -n 40; tail -n 15 "$IT/install.log"; fi
+else
+    bad "install.sh failed"
+    grep -iE 'error|fail|conflict|problem|cannot|scriptlet|trying again|could not' "$IT/install.log" | head -n 40
+    tail -n 15 "$IT/install.log"
+fi
 hash -r
 CU="$(cron_unit)"
 check "a cron service exists (${CU:-none})" test -n "$CU"
