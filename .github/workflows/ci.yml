@@ -11,6 +11,12 @@ on:
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Heavy suites to run'
+        type: choice
+        default: all
+        options: [all, distros, systemd, arm64, none]
 
 permissions:
   contents: read
@@ -64,7 +70,7 @@ jobs:
 
   distros:
     # install.sh -y on a fresh system, then the tests and the integration test there
-    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'distros')
     name: distro ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -90,7 +96,7 @@ jobs:
 
   systemd:
     # systemd as PID 1 in a container of each distribution: the timer, the service, cron firing
-    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'systemd')
     name: systemd ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -112,7 +118,7 @@ jobs:
 
   arm64:
     # aarch64 under QEMU: the official AWS CLI for aarch64, the tools, the tests and the integration test
-    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'arm64')
     name: arm64 ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90

@@ -38,7 +38,8 @@ backups() { s3 s3 ls "s3://sdbucket/sd/$PROJ/" 2>/dev/null | grep -c 'PRE ' || t
 cron_unit() { local u; for u in cron crond cronie; do systemctl cat "$u.service" >/dev/null 2>&1 && { echo "$u"; return; }; done; }
 
 step "install.sh -y (with scheduling, as a user would run it)"
-if bash "$SRC/install.sh" -y > "$IT/install.log" 2>&1; then ok "install.sh exit 0"; else bad "install.sh failed"; tail -n 30 "$IT/install.log"; fi
+if bash "$SRC/install.sh" -y > "$IT/install.log" 2>&1; then ok "install.sh exit 0"
+else bad "install.sh failed"; sed -n '/Installing dependencies/,/Copying files/p' "$IT/install.log" | head -n 40; tail -n 15 "$IT/install.log"; fi
 hash -r
 CU="$(cron_unit)"
 check "a cron service exists (${CU:-none})" test -n "$CU"
@@ -113,7 +114,13 @@ before="$(backups)"
 # A backup timestamp has seconds, so two runs in a row never collide; give cron up to 3 minutes
 for _ in $(seq 1 36); do (( $(backups) > before )) && break; sleep 5; done
 if (( $(backups) > before )); then ok "cron started a backup by itself ($before → $(backups))"
-else bad "cron did not run the backup in 3 minutes"; tail -n 20 /var/log/docker-backup-cron.log 2>/dev/null; journalctl -u "$CU" --no-pager -n 20 2>/dev/null; fi
+else
+    bad "cron did not run the backup in 3 minutes"
+    tail -n 20 /var/log/docker-backup-cron.log 2>/dev/null; journalctl -u "$CU" --no-pager -n 20 2>/dev/null
+    echo "--- PAM and the account cron runs as:"
+    getent passwd root; ls -l /etc/shadow; command -v authselect >/dev/null && authselect current
+    cat /etc/pam.d/crond 2>/dev/null; journalctl --no-pager -n 30 -g 'pam|PAM' 2>/dev/null | tail -n 15
+fi
 
 step "removal"
 "$T/setup-cron.sh" --remove -y > "$IT/remove.log" 2>&1
