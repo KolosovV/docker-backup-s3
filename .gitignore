@@ -1,0 +1,41 @@
+# ==============================================================================
+# Secrets — NEVER commit
+# ==============================================================================
+# The real config with the S3 keys and the Telegram token.
+# Only backup.conf.example lives in the repository.
+backup.conf
+backup.conf.bak.*
+*.conf.local
+
+# The GPG passphrase file, in case it ends up next to the scripts
+.docker-backup-passphrase
+*passphrase*
+*.key
+*.pem
+
+# ==============================================================================
+# Run and installation artifacts
+# ==============================================================================
+*.log
+*.tar.gz
+*.tar.gz.gpg
+*.rdb.gz
+*.sql.gz
+db-dumps/
+work/
+tmp/
+
+# Backup copies made by install.sh / update.sh
+*.bak
+*.bak.*
+*.reverted.*
+
+# ==============================================================================
+# OS and editor clutter
+# ==============================================================================
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

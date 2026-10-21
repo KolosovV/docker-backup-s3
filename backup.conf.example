@@ -1,0 +1,324 @@
+# ==============================================================================
+# Configuration for the Docker Backup/Restore scripts
+# Version 2.0
+#
+# THIS IS A TEMPLATE. It lives in the repository and contains NO secrets.
+# Before the first run:
+#     cp backup.conf.example backup.conf
+#     chmod 600 backup.conf
+#     nano backup.conf            # fill in keys/buckets/tokens
+#
+# backup.conf is NOT committed to git (see .gitignore) — it holds the real keys.
+# Put backup.conf next to the scripts or pass its path with -c <file>.
+# ==============================================================================
+
+# ==============================================================================
+# S3 STORAGES
+# Storages by role: PRIMARY — the main one, SECONDARY and TERTIARY — copies. The settings
+# are the same for all: <ROLE>_S3_ACCESS_KEY, _SECRET_KEY, _ENDPOINT, _REGION, _BUCKET,
+# _ADDRESSING_STYLE, _OPTS_EXTRA, _RESTORE_*; copies also have _ENABLED and _REQUIRED.
+# Older versions named the primary plain S3_* (S3_BUCKET…): such configs still work,
+# and update.sh renames them itself (keeping a copy alongside).
+# ==============================================================================
+
+# ==============================================================================
+# PRIMARY — THE PRIMARY S3
+# The archive is created once and uploaded HERE FIRST. This is the "source of truth" —
+# rotation, integrity checks, restore and sync-s3 work with this bucket by default.
+# ==============================================================================
+
+# --- The primary key (full permissions) ---
+# Access/Secret are issued by your S3 provider in its storage control panel.
+PRIMARY_S3_ACCESS_KEY="YOUR_ACCESS_KEY"
+PRIMARY_S3_SECRET_KEY="YOUR_SECRET_KEY"
+# Your S3 endpoint (e.g. https://s3.example.com) — fill it in manually.
+PRIMARY_S3_ENDPOINT="https://s3.example.com"
+# Region. Many S3-compatible storages accept any; if the provider
+# requires a specific one — set it. us-east-1 is a safe default for signing.
+PRIMARY_S3_REGION="us-east-1"
+# Bucket name — create it beforehand in the provider's panel.
+PRIMARY_S3_BUCKET="your-bucket-name"
+
+# --- Optional: a read-only key for restore ---
+# Used ONLY by docker-restore.sh, status.sh and verify-restore.sh when set.
+# If empty — they use the primary keys above.
+# Useful on dev/staging servers where restore is needed, but deleting/overwriting
+# production backups with this key must not be possible.
+PRIMARY_S3_RESTORE_ACCESS_KEY=""
+PRIMARY_S3_RESTORE_SECRET_KEY=""
+
+# Addressing style for the primary S3: path | virtual.
+# If the bucket is unreachable with one style — try the other.
+PRIMARY_S3_ADDRESSING_STYLE="path"
+# Global default for direct aws calls (completion and the like).
+# The scripts override it for each storage via _aws_setup.
+export AWS_S3_ADDRESSING_STYLE="${PRIMARY_S3_ADDRESSING_STYLE}"
+
+# --- Extra aws CLI options ---
+# CERTIFICATE_VERIFY_FAILED with a valid certificate (curl to the endpoint works) — aws has its own
+# outdated CA bundle (snap). Give it the system one: "--ca-bundle /etc/ssl/certs/ca-certificates.crt".
+# That happens with storages whose certificate chains to the GlobalSign Root R46 root. Do not set "--no-verify-ssl":
+# without verification the storage can be spoofed, and "file accepted" would be a lie.
+# install.sh checks this itself (head-bucket without options, on error — with --ca-bundle) and writes the option
+# only if it is needed; validate-config.sh suggests a ready line on this error.
+PRIMARY_S3_OPTS_EXTRA=""
+export PYTHONWARNINGS="ignore::urllib3.exceptions.InsecureRequestWarning"
+
+# ==============================================================================
+# GENERAL aws SETTINGS FOR ALL STORAGES
+# ==============================================================================
+
+# --- Bandwidth limit for S3 uploads ---
+# So the backup doesn't eat the whole channel while uploading.
+# Applied via aws configure (s3.max_bandwidth).
+# Format: "100MB/s", "10MB/s", "" (empty = no limit)
+S3_BANDWIDTH_LIMIT=""
+
+# Files smaller than this are uploaded in one request rather than in parts. Empty —
+# aws's default: everything over 8 MB goes in parts. A broken multipart upload leaves parts behind,
+# which some storages keep in a hidden service container and bill for; with a single request —
+# nothing is left. S3 accepts up to 5 GB in one request: set it no higher than 4GB.
+# THE PRICE: one request is one stream, while multipart aws uploads in 10 — on a loaded storage a single
+# stream can be very slow. Empty by default; the nightly cleanup (abort_stale_uploads) protects against leftovers.
+S3_MULTIPART_THRESHOLD=""
+
+# How many attempts aws gets per S3 request (retries with growing backoff). aws's default is 3,
+# and a brief storage failure (InternalError, SlowDown) turned into a backup error. Empty — 8.
+S3_MAX_ATTEMPTS=""
+
+# ==============================================================================
+# SECONDARY — THE SECONDARY S3 — a second copy of every archive (optional)
+# ==============================================================================
+# After a successful upload to the primary S3 the same archive is uploaded HERE too. The object key
+# (BACKUP_PREFIX/<project>/<timestamp>/file) is the same in every storage, so
+# restoring from here works transparently: docker-restore.sh --from secondary
+# (or the interactive choice of source).
+#
+# The order for each project:
+#   create the archive -> upload to the primary -> check -> upload to the secondary -> check
+#   -> upload to the tertiary (if enabled) -> check
+
+# Enable uploads here ("true"/"false")
+SECONDARY_S3_ENABLED="false"
+
+# Is this copy required for the backup to succeed?
+#   false — the primary upload worked, this one didn't -> a WARNING, backup = success
+#   true  — a failure here makes the project fail (this copy is needed too)
+SECONDARY_S3_REQUIRED="false"
+
+# --- Key (full permissions) ---
+SECONDARY_S3_ACCESS_KEY=""
+SECONDARY_S3_SECRET_KEY=""
+
+# --- Optional: a read-only key for restore ---
+# Like PRIMARY_S3_RESTORE_*: it can read the copy, but not delete/overwrite with this key.
+# If empty — restoring from here uses SECONDARY_S3_ACCESS_KEY above.
+SECONDARY_S3_RESTORE_ACCESS_KEY=""
+SECONDARY_S3_RESTORE_SECRET_KEY=""
+
+# Endpoint (e.g. https://s3.other-provider.com), region (empty — same as the primary), bucket —
+# create it beforehand in the provider's panel.
+SECONDARY_S3_ENDPOINT=""
+SECONDARY_S3_REGION=""
+SECONDARY_S3_BUCKET=""
+
+# Addressing style: path | virtual. If the bucket is unreachable with one style — try the other.
+SECONDARY_S3_ADDRESSING_STYLE="path"
+
+# Extra aws CLI options (like PRIMARY_S3_OPTS_EXTRA). A certificate verification error with a valid one —
+# "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
+SECONDARY_S3_OPTS_EXTRA=""
+
+# ==============================================================================
+# TERTIARY — THE TERTIARY S3 — a third copy of every archive (optional)
+# ==============================================================================
+# After a successful upload to the primary S3 the same archive is uploaded HERE too. The object key
+# (BACKUP_PREFIX/<project>/<timestamp>/file) is the same in every storage, so
+# restoring from here works transparently: docker-restore.sh --from tertiary
+# (or the interactive choice of source).
+
+# Enable uploads here ("true"/"false")
+TERTIARY_S3_ENABLED="false"
+
+# Is this copy required for the backup to succeed?
+#   false — the primary upload worked, this one didn't -> a WARNING, backup = success
+#   true  — a failure here makes the project fail (this copy is needed too)
+TERTIARY_S3_REQUIRED="false"
+
+# --- Key (full permissions) ---
+TERTIARY_S3_ACCESS_KEY=""
+TERTIARY_S3_SECRET_KEY=""
+
+# --- Optional: a read-only key for restore ---
+# Like PRIMARY_S3_RESTORE_*: it can read the copy, but not delete/overwrite with this key.
+# If empty — restoring from here uses TERTIARY_S3_ACCESS_KEY above.
+TERTIARY_S3_RESTORE_ACCESS_KEY=""
+TERTIARY_S3_RESTORE_SECRET_KEY=""
+
+# Endpoint (e.g. https://s3.other-provider.com), region (empty — same as the primary), bucket —
+# create it beforehand in the provider's panel.
+TERTIARY_S3_ENDPOINT=""
+TERTIARY_S3_REGION=""
+TERTIARY_S3_BUCKET=""
+
+# Addressing style: path | virtual. If the bucket is unreachable with one style — try the other.
+TERTIARY_S3_ADDRESSING_STYLE="path"
+
+# Extra aws CLI options (like PRIMARY_S3_OPTS_EXTRA). A certificate verification error with a valid one —
+# "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
+TERTIARY_S3_OPTS_EXTRA=""
+
+# ==============================================================================
+# BACKUP SETTINGS
+# ==============================================================================
+
+BACKUP_PREFIX="backups"
+RETENTION_DAYS=30
+WORK_DIR="/var/tmp/docker-backup" # temporary folder for archives
+LOG_FILE="/var/log/docker-backup.log"
+LOCK_FILE="/var/run/docker-backup.lock"
+
+# --- Rotation floor ---
+# How many latest backups of a project to keep ALWAYS, regardless of age.
+# Protects against "the project was renamed or backups failed for a month": without it
+# age-based rotation would one day delete the last surviving copy, and it would
+# look like normal operation.
+KEEP_MIN_BACKUPS=3
+
+# --- GFS retention scheme (grandfather-father-son) ---
+# false — flat retention: everything younger than RETENTION_DAYS.
+# true  — keep one backup per day/week/month in the given amounts,
+#         RETENTION_DAYS is not used then. Lets you have a copy
+#         half a year old without keeping 180 daily archives.
+GFS_ENABLED="false"
+GFS_DAILY=7      # daily copies
+GFS_WEEKLY=4     # weekly
+GFS_MONTHLY=6    # monthly
+
+# --- Checksum manifest ---
+# A .sha256 file is placed next to every archive. With it restore, verify-restore
+# and sync-s3 tell "same size" from "same content" — i.e. they catch
+# data corruption that appeared in the storage itself.
+CHECKSUM_MANIFEST="true"
+
+# --- Finding compose projects ---
+# Directories to scan for compose files (space-separated)
+SCAN_DIRS="/opt /home /root /srv"
+
+# --- Backup behavior ---
+# stop  = docker compose stop -> backup -> docker compose start (database consistency, with downtime)
+# pause = docker pause -> backup -> docker unpause (fast, but does NOT guarantee database consistency)
+# hot   = backup without stopping. Database consistency comes from the database auto-dump
+#         (and pre-backup-hook.sh for non-standard databases). This is the default mode.
+BACKUP_MODE="hot"
+
+# --- What to back up ---
+BACKUP_VOLUMES="true"     # named volumes
+BACKUP_BIND_MOUNTS="true" # bind mounts (host paths)
+BACKUP_PROJECT_DIR="true" # the whole folder with docker-compose.yml
+BACKUP_IMAGES="false"     # docker save of the images (A LOT of space)
+
+# --- Compression ---
+COMPRESS_LEVEL="6"  # 1-9, 6 — a balance of speed/size
+
+# --- Parallelism ---
+# How many volumes/bind mounts to back up at the same time.
+# More = faster, but more load on disk and CPU.
+# 1 = sequential (the old behavior), 2-4 — typical values for a VPS.
+PARALLEL_JOBS=2
+
+# --- Bind mounts NOT to back up (system paths for monitoring) ---
+# A regex for grep -E. If the bind source matches — it is skipped.
+# Protects against accidentally backing up the whole root '/' in Prometheus, node-exporter and the like.
+#
+# /lib/modules — the host's kernel modules: containers like mailcow (netfilter, clamd) mount it
+# read-only. It's part of the system, not project data: there's no need to restore it, and without
+# the exclusion the backup packs it in full every time.
+#
+# Append your own heavy rebuildable data at the end with "|", e.g.: ...|\.sock$|^/srv/map-tiles
+BIND_BLACKLIST_REGEX='^/$|^/proc|^/sys|^/dev|^/var/run|^/run|^/var/lib/docker|^/lib/modules|^/etc/localtime|^/etc/timezone|\.sock$'
+
+# --- Subfolders INSIDE a bind mount not to back up (space-separated, absolute paths) ---
+# The blacklist above only looks at the bind root. This is for when the bind is needed but part of it is not.
+# Example: BIND_EXCLUDE_PATHS='/srv/files/nobackup' — bind /srv/files is backed up, but this subfolder
+# (gigabytes of rebuildable packages) is not.
+BIND_EXCLUDE_PATHS=''
+
+# ==============================================================================
+# AUTOMATIC DATABASE DUMP (for consistency with BACKUP_MODE=hot)
+# ==============================================================================
+# The script finds PostgreSQL/MySQL/MariaDB/Redis/MongoDB containers
+# in the project and dumps them right before the backup.
+# The dumps go to the db-dumps/ subfolder inside the project folder and into the archive.
+# IMPORTANT: dumps reach the archive only with BACKUP_PROJECT_DIR="true".
+#
+# Enabled separately for each database type.
+AUTO_DUMP_DATABASES="true"        # master switch
+AUTO_DUMP_POSTGRES="true"
+AUTO_DUMP_MYSQL="true"
+AUTO_DUMP_REDIS="true"
+AUTO_DUMP_MONGO="true"
+
+# Where inside the project folder to put the dumps (relative path)
+DB_DUMPS_DIR="db-dumps"
+
+# How many dumps to keep (old ones are deleted before new ones are created)
+DB_DUMPS_RETENTION_COUNT=3
+
+# Dump timeout for each database (seconds). Needed so the script doesn't hang
+# if a database is large or stuck.
+DB_DUMP_TIMEOUT=1800   # 30 minutes
+
+# --- Minimum free space before starting (MB) ---
+# Protects against "containers paused, disk ran out, script failed".
+# The threshold is compared with the space available in WORK_DIR before the start.
+MIN_FREE_SPACE_MB=1024
+
+# ==============================================================================
+# ENCRYPTION
+# ==============================================================================
+
+# If "true" — archives are encrypted with GPG (AES-256) before upload.
+# The passphrase is read from the GPG_PASSPHRASE_FILE file.
+# Backup archives get the .tar.gz.gpg extension
+# Restore decrypts automatically if the file is .gpg
+#
+# Before enabling, create the passphrase file:
+#   openssl rand -base64 48 | tr -d '\n' > /root/.docker-backup-passphrase
+#   chmod 600 /root/.docker-backup-passphrase
+# and SAVE the passphrase separately — without it a restore is impossible.
+ENCRYPT_BACKUPS="false"
+
+# The passphrase file for encryption (one line, no trailing newline).
+# chmod 600 is required. Back up the passphrase somewhere safe
+# (bitwarden, 1password, paper in a safe) — without it a restore is impossible.
+GPG_PASSPHRASE_FILE="/root/.docker-backup-passphrase"
+
+# ==============================================================================
+# NOTIFICATIONS
+# ==============================================================================
+
+# Event level for notifications:
+#   none     — never notify
+#   error    — errors only
+#   always   — every run (success + errors)
+NOTIFY_ON="error"
+
+# How to name the server in messages: "🔴 Server <name>: …". Empty — the hostname.
+NOTIFY_NAME=""
+
+# --- Telegram ---
+# Get the token via @BotFather, the chat_id via @userinfobot or @getmyid_bot
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+
+# --- Webhook (Slack, Discord, custom) ---
+# URL that receives a POST with JSON {"text": "..."}
+NOTIFY_WEBHOOK_URL=""
+
+# ==============================================================================
+# COLORED OUTPUT
+# ==============================================================================
+
+# auto = color if the terminal supports it; off = disabled; on = forced on
+COLOR_OUTPUT="auto"

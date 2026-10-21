@@ -1,0 +1,7 @@
+# The scripts run on Linux: keep LF line endings in every checkout, Windows included
+# (a CRLF script fails with "$'\r': command not found").
+* text=auto eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.example text eol=lf
+*.md text eol=lf
