@@ -15,9 +15,10 @@ UI_TTY="${UI_TTY:-/dev/tty}"
 UI_BACKTITLE="${UI_BACKTITLE:-Docker Backup System}"
 UI_TITLE=""      # title of the following dialogs (ui_title sets it)
 # Text shown at the top of the next dialog (ui_note adds to it). A file, not a variable: dialogs run
-# inside $(…), and a variable cleared there would stay set in the script. $$ is the script's PID
-# in subshells too.
-UI_NOTE_FILE="${TMPDIR:-/tmp}/docker-backup-ui-notes.$$"
+# inside $(…), and a variable cleared there would stay set in the script. Created by ui_init with
+# mktemp (a random name, owned by us — the scripts run as root, and a guessable /tmp path could be
+# a symlink planted by someone else), emptied rather than deleted, removed on exit.
+UI_NOTE_FILE=""
 UI_MODE=""       # whiptail | plain | none — set by ui_init
 
 ui_init() {
@@ -28,6 +29,14 @@ ui_init() {
         UI_MODE="whiptail"
     else
         UI_MODE="plain"
+    fi
+    if [[ "$UI_MODE" == "whiptail" ]]; then
+        if UI_NOTE_FILE="$(mktemp "${TMPDIR:-/tmp}/docker-backup-ui.XXXXXX" 2>/dev/null)"; then
+            # Our own EXIT trap only if the script has none (it would replace the script's one)
+            [[ -z "$(trap -p EXIT)" ]] && trap 'rm -f "$UI_NOTE_FILE"' EXIT
+        else
+            UI_MODE="plain"   # no temp file — no notes in dialogs; plain prompts print them right away
+        fi
     fi
     # Plain prompts read from one descriptor, opened once: answers typed ahead (or a file in tests)
     # are read line by line instead of the first line every time
@@ -61,8 +70,10 @@ _ui_size() {
 # Text of the next dialog: pending notes, then the prompt itself
 _ui_text() {
     local t; t="$(_ui_clean "$1")"
-    if [[ -s "$UI_NOTE_FILE" ]]; then t="$(cat "$UI_NOTE_FILE")"$'\n\n'"${t}"; fi
-    rm -f "$UI_NOTE_FILE"
+    if [[ -n "$UI_NOTE_FILE" && -s "$UI_NOTE_FILE" ]]; then
+        t="$(cat "$UI_NOTE_FILE")"$'\n\n'"${t}"
+        : > "$UI_NOTE_FILE"
+    fi
     printf '%s' "$t"
 }
 

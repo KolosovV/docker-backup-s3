@@ -218,7 +218,9 @@ BACKUP_PROJECT_DIR="true" # the whole folder with docker-compose.yml
 BACKUP_IMAGES="false"     # docker save of the images (A LOT of space)
 
 # --- Compression ---
-COMPRESS_LEVEL="6"  # 1-9, 6 — a balance of speed/size
+# gzip level for every archive (volumes, bind mounts, the project folder, images, the final one):
+# 1 — fastest, 9 — smallest, 6 — a balance of speed/size
+COMPRESS_LEVEL="6"
 
 # --- Parallelism ---
 # How many volumes/bind mounts to back up at the same time.

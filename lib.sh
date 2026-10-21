@@ -557,6 +557,13 @@ html_esc() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
+# path_within <path> <dir> — the path is the directory itself or lies inside it.
+# Not a plain prefix test: /opt/app-data is NOT inside /opt/app.
+path_within() {
+    local path="${1%/}" dir="${2%/}"
+    [[ -n "$dir" && ( "$path" == "$dir" || "$path" == "$dir/"* ) ]]
+}
+
 # s3_host — short storage name from its endpoint: https://s3.example.com/path → s3.example.com.
 s3_host() {
     local u="${1#*://}"

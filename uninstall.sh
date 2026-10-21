@@ -406,11 +406,15 @@ if [[ "$FOUND_CRON" == "true" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
         log_dry "crontab without the docker-backup lines"
     else
-        # Remove the lines + our markers (if it was installed via setup-cron.sh)
-        crontab -l 2>/dev/null | \
-            grep -vE 'docker-backup\.sh|/docker-backup' | \
-            sed '/^# === Docker backup ===/,/^# === \/Docker backup ===/d' | \
-            crontab - 2>/dev/null && log_ok "Cron job removed" || log_err "Could not update the crontab"
+        # Remove the lines + our markers (if it was installed via setup-cron.sh). Through a variable
+        # with "|| true": when nothing else is left, grep -v exits 1 and the pipe would report a failure.
+        cron_rest="$(crontab -l 2>/dev/null | grep -vE 'docker-backup\.sh|/docker-backup' \
+            | sed '/^# === Docker backup ===/,/^# === \/Docker backup ===/d' || true)"
+        if printf '%s\n' "$cron_rest" | crontab - 2>/dev/null; then
+            log_ok "Cron job removed"
+        else
+            log_err "Could not update the crontab"
+        fi
     fi
 fi
 

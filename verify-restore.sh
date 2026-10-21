@@ -240,7 +240,7 @@ verify_project() {
     local work_archive="$local_archive"
     if [[ "$archive_name" == *.gpg ]]; then
         log "  🔐 Decrypting..."
-        if work_archive=$(decrypt_file "$local_archive" 2>&1); then
+        if work_archive=$(decrypt_file "$local_archive"); then
             log_ok "Decryption succeeded"
         else
             log_err "Decryption failed"

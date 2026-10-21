@@ -618,7 +618,8 @@ restore_one_project() {
     local backup_archive="${TMP_DIR}/${ARCHIVE_NAME}"
     if [[ "$ARCHIVE_NAME" == *.gpg ]]; then
         log "  🔐 Decrypting..."
-        backup_archive="$(decrypt_file "$backup_archive")"
+        backup_archive="$(decrypt_file "$backup_archive")" \
+            || { log_err "Decryption failed — check GPG_PASSPHRASE_FILE"; return 1; }
     fi
 
     log "  📂 Unpacking..."
@@ -746,10 +747,13 @@ restore_one_project() {
                     sh -c 'find /to -mindepth 1 -delete && cp -a /from/. /to/'; then
                 log_ok "      $vol_name restored"
                 restored_vols=$((restored_vols + 1))
+                docker volume rm "$tmp_vol" >/dev/null 2>&1 || true
             else
-                log_err "      Error moving data into $vol_name"
+                # The working volume may be half-empty now — the verified data stays in the temporary
+                # one: deleting it would leave no good copy on the host
+                log_err "      Error moving data into $vol_name — the unpacked backup is kept in volume ${tmp_vol}"
+                log_err "      Copy it over by hand: docker run --rm -v ${tmp_vol}:/from:ro -v ${vol_name}:/to alpine cp -a /from/. /to/"
             fi
-            docker volume rm "$tmp_vol" >/dev/null 2>&1 || true
         done
 
         # Single-volume mode — that's all, leave the rest alone
@@ -778,8 +782,9 @@ restore_one_project() {
                 if echo "$src" | grep -Eq "$BIND_BLACKLIST_REGEX"; then
                     continue
                 fi
-                [[ -n "${TARGET_DIR:-}" && "$src" == "$TARGET_DIR"* ]] && continue
-                [[ -n "${ORIGINAL_DIR:-}" && "$src" == "$ORIGINAL_DIR"* ]] && continue
+                # Inside the project folder — restored with project_dir.tar.gz above
+                path_within "$src" "${TARGET_DIR:-}" && continue
+                path_within "$src" "${ORIGINAL_DIR:-}" && continue
 
                 local safe_name; safe_name="$(echo "$src" | sed 's|/|_|g; s|^_||')"
                 [[ -z "$safe_name" ]] && continue
@@ -790,8 +795,15 @@ restore_one_project() {
         for bind_archive in "${PROJ_BACKUP_DIR}/binds/"bind_*.tar.gz; do
             [[ -f "$bind_archive" ]] || continue
             local archive_basename; archive_basename="$(basename "$bind_archive" .tar.gz)"
-            local safe_name; safe_name="$(echo "$archive_basename" | sed 's/^bind_[0-9]*_//')"
-            local target_path="${BIND_MAP[$safe_name]:-}"
+            # Projects name the archives bind_<n>_<path>, standalone containers
+            # bind_<container>_<n>_<path>: match by the path part, the longest match wins
+            local target_path="" key best=""
+            for key in "${!BIND_MAP[@]}"; do
+                if [[ "$archive_basename" == bind_*"_${key}" && ${#key} -gt ${#best} ]]; then
+                    best="$key"
+                fi
+            done
+            [[ -n "$best" ]] && target_path="${BIND_MAP[$best]}"
             if [[ -z "$target_path" ]]; then
                 log_warn "Cannot determine the path for $archive_basename — skipping"
                 continue
@@ -828,7 +840,7 @@ restore_one_project() {
         done
         if [[ -n "$compose_file" ]]; then
             log "  🚀 Starting: cd $TARGET_DIR && docker compose up -d"
-            (cd "$TARGET_DIR" && docker compose up -d) \
+            (cd "$TARGET_DIR" && docker_compose up -d) \
                 || log_warn "docker compose up finished with an error"
             echo >&2
             log "  📊 Status of the project's containers:"

@@ -20,7 +20,8 @@ IFS=$'\n\t'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/backup.conf"
-DRY_RUN="false"
+# DRY_RUN=true in the environment works like --dry-run (as --help says)
+DRY_RUN="${DRY_RUN:-false}"
 PROJECT_FILTER=""
 LIST_ONLY="false"
 
@@ -62,9 +63,6 @@ source "$CONFIG_FILE"
 # Load the library
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
-
-# DRY_RUN from env as an alternative
-[[ "${DRY_RUN_ENV:-${DRY_RUN_OVERRIDE:-}}" == "true" ]] && DRY_RUN="true"
 
 # --- Logging to a file ---
 # --list only prints project names (for the menu) — it does not belong in the backup log,
@@ -137,6 +135,21 @@ _aws_setup primary
 : "${BIND_BLACKLIST_REGEX:=^/$|^/proc|^/sys|^/dev|^/var/run|^/run|^/var/lib/docker|^/lib/modules|^/etc/localtime|^/etc/timezone|\.sock$}"
 # --- Subfolders inside a bind mount NOT to back up (the bind itself is backed up) ---
 : "${BIND_EXCLUDE_PATHS:=}"
+
+# --- Compression level (1-9) for every archive this script creates ---
+[[ "${COMPRESS_LEVEL:-6}" =~ ^[1-9]$ ]] || COMPRESS_LEVEL=6
+
+# tar_gz <archive> <tar arguments…> — tar | gzip at COMPRESS_LEVEL. A pipe rather than
+# --use-compress-program="gzip -N": tar before 1.27 (RHEL 7) can't pass options to the program.
+# Returns tar's code (0 ok, 1 files changed while being read, ≥2 error); a gzip failure counts as 2.
+tar_gz() {
+    local out="$1"; shift
+    local -a st
+    tar -cf - "$@" | gzip -"$COMPRESS_LEVEL" > "$out"
+    st=("${PIPESTATUS[@]}")
+    (( st[1] == 0 )) || return 2
+    return "${st[0]}"
+}
 
 # --- Timestamp for all files of this session ---
 TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
@@ -326,7 +339,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
         if [[ -n "$local_binds" ]]; then
             log "   Bind-mounts:"
             while IFS= read -r b; do
-                if is_bind_blacklisted "$b" || [[ "$b" == "${PROJECTS[$proj]}"* ]]; then
+                if is_bind_blacklisted "$b" || path_within "$b" "${PROJECTS[$proj]}"; then
                     log "     ${C_DIM}- $b (skipped)${C_RESET}"
                 else
                     log "     - $b"
@@ -483,11 +496,18 @@ backup_volume() {
     local volume_name="$1" dest_dir="$2" fail_marker="${3:-}"
     log "    💾 Volume: $volume_name"
     local rc=0
+    # tar | gzip, and the exit code is tar's (kept in a file — not relying on pipefail in busybox sh),
+    # so a tar error is not hidden behind gzip's; a gzip failure counts as 2. The level falls back to
+    # gzip's default if this busybox gzip has no -1..-9.
     docker run --rm \
         -v "${volume_name}:/source:ro" \
         -v "${dest_dir}:/backup" \
+        -e "LVL=${COMPRESS_LEVEL:-6}" -e "OUT=/backup/volume_${volume_name}.tar.gz" \
         alpine:latest \
-        sh -c "cd /source && tar czf /backup/volume_${volume_name}.tar.gz -C /source ." \
+        sh -c 'gzip -"$LVL" </dev/null >/dev/null 2>&1 || LVL=""
+               cd /source || exit 2
+               { tar -cf - .; echo $? > /tmp/tar_rc; } | gzip ${LVL:+-$LVL} > "$OUT" || exit 2
+               exit "$(cat /tmp/tar_rc)"' \
         || rc=$?
 
     case "$rc" in
@@ -522,9 +542,11 @@ backup_bind_mount() {
     log "    📁 Bind-mount: $src"
     # Subfolders from BIND_EXCLUDE_PATHS that lie inside this bind: the blacklist only looks at
     # the bind root, and one disk can hold both documents and gigabytes of rebuildable packages.
-    local -a excl=()
+    local -a excl=() excl_paths=()
     local p base; base="$(basename "$src")"
-    for p in ${BIND_EXCLUDE_PATHS:-}; do
+    # split_words, not "for p in $BIND_EXCLUDE_PATHS": IFS=$'\n\t' has no space (as with SCAN_DIRS)
+    mapfile -t excl_paths < <(split_words "${BIND_EXCLUDE_PATHS:-}")
+    for p in ${excl_paths[@]+"${excl_paths[@]}"}; do
         p="${p%/}"
         if [[ "$p" == "$src/"* ]]; then
             excl+=(--exclude="${base}/${p#"$src"/}")
@@ -532,7 +554,7 @@ backup_bind_mount() {
         fi
     done
     local rc=0
-    tar czf "$archive" --anchored "${excl[@]}" -C "$(dirname "$src")" "$base" || rc=$?
+    tar_gz "$archive" --anchored ${excl[@]+"${excl[@]}"} -C "$(dirname "$src")" "$base" || rc=$?
     case "$rc" in
         0) return 0 ;;
         1)
@@ -674,7 +696,8 @@ backup_project() {
             | sort -u | grep -v '^$' || true)"
         if [[ -n "$binds" ]]; then
             while IFS= read -r bind_src; do
-                [[ "$bind_src" == "$dir"* ]] && continue
+                # Inside the project folder — it goes into project_dir.tar.gz (see 6.9)
+                path_within "$bind_src" "$dir" && continue
                 if is_bind_blacklisted "$bind_src"; then
                     log "    ${C_DIM}⊘ Skipped (blacklist): $bind_src${C_RESET}"
                     continue
@@ -717,7 +740,7 @@ backup_project() {
         done
 
         local pd_rc=0
-        tar czf "${proj_dir}/project_dir.tar.gz" \
+        tar_gz "${proj_dir}/project_dir.tar.gz" \
             ${tar_excludes[@]+"${tar_excludes[@]}"} \
             -C "$(dirname "$dir")" "$base_name" || pd_rc=$?
         case "$pd_rc" in
@@ -747,7 +770,7 @@ backup_project() {
     # 6.11 — Final assembly into one archive
     log "  📦 Packing the project into a single archive..."
     local final_archive="${BACKUP_ROOT}/${proj}__${TIMESTAMP}.tar.gz"
-    tar czf "$final_archive" -C "$BACKUP_ROOT" "$proj" \
+    tar_gz "$final_archive" -C "$BACKUP_ROOT" "$proj" \
         || { log_err "Could not pack project $proj"; return 1; }
     rm -rf "${proj_dir}"
 
@@ -755,7 +778,8 @@ backup_project() {
     local archive_to_upload="$final_archive"
     if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
         log "  🔐 Encrypting the archive..."
-        archive_to_upload="$(encrypt_file "$final_archive")"
+        archive_to_upload="$(encrypt_file "$final_archive")" \
+            || { log_err "Encryption failed for $proj"; return 1; }
     fi
 
     # 6.12b — sha256 manifest. An object's size in S3 only proves the upload
@@ -914,19 +938,33 @@ backup_standalone() {
     done
 
     local final_archive="${BACKUP_ROOT}/${proj}__${TIMESTAMP}.tar.gz"
-    tar czf "$final_archive" -C "$BACKUP_ROOT" "$proj"
+    tar_gz "$final_archive" -C "$BACKUP_ROOT" "$proj" \
+        || { log_err "Standalone: could not pack the archive"; return 1; }
     rm -rf "$proj_dir"
 
     local archive_to_upload="$final_archive"
     if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
-        archive_to_upload="$(encrypt_file "$final_archive")"
+        archive_to_upload="$(encrypt_file "$final_archive")" \
+            || { log_err "Standalone: encryption failed"; return 1; }
+    fi
+    # The same sha256 manifest as for projects
+    local checksum_file="" checksum_key=""
+    if [[ "${CHECKSUM_MANIFEST:-true}" == "true" ]]; then
+        checksum_file="$(write_checksum_file "$archive_to_upload")" || checksum_file=""
     fi
     local archive_basename; archive_basename="$(basename "$archive_to_upload")"
     local s3_key="${BACKUP_PREFIX}/${proj}/${TIMESTAMP}/${archive_basename}"
     local local_size; local_size="$(stat -c %s "$archive_to_upload")"
 
     aws_upload "$archive_to_upload" "s3://${PRIMARY_S3_BUCKET}/${s3_key}" \
-        || { log_err "Could not upload standalone to S3"; rm -f "$archive_to_upload"; return 1; }
+        || { log_err "Could not upload standalone to S3"; rm -f "$archive_to_upload" "$checksum_file"; return 1; }
+    if [[ -n "$checksum_file" ]]; then
+        checksum_key="${s3_key}.sha256"
+        if ! aws_upload "$checksum_file" "s3://${PRIMARY_S3_BUCKET}/${checksum_key}"; then
+            log_warn "  Standalone: the sha256 manifest did not upload"
+            checksum_key=""
+        fi
+    fi
 
     local s3_size
     s3_size="$(aws_q s3api head-object --bucket "$PRIMARY_S3_BUCKET" --key "$s3_key" --query ContentLength --output text 2>/dev/null || echo 0)"
@@ -936,12 +974,12 @@ backup_standalone() {
     fi
 
     # Upload to the copies (secondary, tertiary), if enabled
-    if ! upload_copies "containers outside compose" "$archive_to_upload" "$s3_key" "$local_size"; then
-        rm -f "$archive_to_upload"
+    if ! upload_copies "containers outside compose" "$archive_to_upload" "$s3_key" "$local_size" "$checksum_file" "$checksum_key"; then
+        rm -f "$archive_to_upload" "$checksum_file"
         return 1
     fi
 
-    rm -f "$archive_to_upload"
+    rm -f "$archive_to_upload" "$checksum_file"
     TOTAL_UPLOADED_BYTES=$((TOTAL_UPLOADED_BYTES + local_size))
 
     if [[ -f "$fail_marker" ]] && grep -q '^fail:' "$fail_marker"; then

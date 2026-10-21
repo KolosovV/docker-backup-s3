@@ -171,6 +171,16 @@ fi
 # ==============================================================================
 # Removal
 # ==============================================================================
+# The current crontab without our job and our "# === Docker backup ===" block (SHELL, PATH, MAILTO).
+# Through a variable with "|| true": when nothing else is left, grep -v exits 1, and under
+# pipefail + set -e that used to stop the script halfway.
+crontab_without_ours() {
+    local rest
+    rest="$(crontab -l 2>/dev/null | grep -vE "$BACKUP_SCRIPT|docker-backup\.sh" \
+        | sed '/^# === Docker backup ===/,/^# === \/Docker backup ===/d' || true)"
+    printf '%s\n' "$rest"
+}
+
 remove_cron() {
     local cron_line
     cron_line="$(get_cron_line)"
@@ -183,8 +193,8 @@ remove_cron() {
     log "  $cron_line"
 
     if ask_yn "Remove it?" "y"; then
-        # Remove the docker-backup line, keeping the rest
-        crontab -l 2>/dev/null | grep -vE "$BACKUP_SCRIPT|docker-backup\.sh" | crontab -
+        # Remove our job and its block, keeping the rest
+        crontab_without_ours | crontab -
         log_ok "Cron job removed"
     fi
 }
@@ -287,12 +297,9 @@ install_cron() {
         fail "Invalid cron format: '$schedule' (5 fields expected)"
     fi
 
-    # The current crontab without our old lines
+    # The current crontab without our old job and block
     local current_cron
-    current_cron=$(crontab -l 2>/dev/null | grep -vE "$BACKUP_SCRIPT|docker-backup\.sh" || true)
-
-    # Remove our old header lines from it, if any
-    current_cron=$(echo "$current_cron" | sed '/^# === Docker backup ===/,/^# === \/Docker backup ===/d')
+    current_cron="$(crontab_without_ours)"
 
     # The backup must not get in the way of production containers: tar and gzip saturate CPU and disk,
     # and S3_BANDWIDTH_LIMIT only limits the upload to S3, not this stage.
@@ -536,8 +543,9 @@ fi
 
 # Remove the old scheduled runs — right before installing the new ones
 remove_existing_setup() {
-    [[ -n "$local_existing_cron" ]] && \
-        crontab -l 2>/dev/null | grep -vE "$BACKUP_SCRIPT|docker-backup\.sh" | sed '/^# === Docker backup ===/,/^# === \/Docker backup ===/d' | crontab -
+    if [[ -n "$local_existing_cron" ]]; then
+        crontab_without_ours | crontab -
+    fi
     if [[ -n "$local_existing_systemd" ]]; then
         systemctl disable --now docker-backup.timer 2>/dev/null || true
         rm -f /etc/systemd/system/docker-backup.service /etc/systemd/system/docker-backup.timer

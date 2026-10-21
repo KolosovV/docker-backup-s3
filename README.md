@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.0-2496ED" alt="version 1.0.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.1-2496ED" alt="version 1.0.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -440,6 +440,7 @@ Everything else has sensible defaults.
 | `BACKUP_PROJECT_DIR` | `true` | back up the whole project folder |
 | `BACKUP_IMAGES` | `false` | save docker images |
 | `PARALLEL_JOBS` | `2` | volume backup parallelism |
+| `COMPRESS_LEVEL` | `6` | gzip level for every archive: 1 — fastest, 9 — smallest |
 | `MIN_FREE_SPACE_MB` | `1024` | minimum free space |
 | `BIND_BLACKLIST_REGEX` | `^/$\|^/proc\|...` | path blacklist |
 | `BIND_EXCLUDE_PATHS` | empty | subfolders inside a bind not to back up (space-separated), e.g. `/srv/files/nobackup` |
