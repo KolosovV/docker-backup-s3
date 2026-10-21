@@ -99,7 +99,7 @@ _docker_backup_cmd() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     COMPREPLY=()
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=( $(compgen -W "backup restore status sync verify validate diagnose logs schedule drop update uninstall menu help -c" -- "$cur") )
+        COMPREPLY=( $(compgen -W "backup restore status sync verify validate diagnose logs schedule drop update uninstall menu version help -c" -- "$cur") )
         return 0
     fi
     case "${COMP_WORDS[1]}" in

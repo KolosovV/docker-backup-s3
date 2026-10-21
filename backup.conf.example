@@ -1,6 +1,5 @@
 # ==============================================================================
-# Configuration for the Docker Backup/Restore scripts
-# Version 2.0
+# Configuration for docker-backup-s3 (https://github.com/KolosovV/docker-backup-s3)
 #
 # THIS IS A TEMPLATE. It lives in the repository and contains NO secrets.
 # Before the first run:

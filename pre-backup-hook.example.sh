@@ -2,7 +2,7 @@
 # ==============================================================================
 # pre-backup-hook.sh — an example of a CUSTOM hook
 #
-# ⚠️ IMPORTANT: since v3 the auto-dump of PostgreSQL / MySQL / MariaDB / Redis / MongoDB
+# ⚠️ IMPORTANT: the auto-dump of PostgreSQL / MySQL / MariaDB / Redis / MongoDB
 # runs AUTOMATICALLY in docker-backup.sh.
 # This hook is needed ONLY for:
 #   - non-standard databases (ClickHouse, InfluxDB, Elasticsearch, Cassandra, ...)

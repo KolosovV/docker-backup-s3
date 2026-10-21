@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# docker-restore.sh — v2
+# docker-restore.sh
 # Interactive restore of Docker projects from S3-compatible storage
 #
 # Features:

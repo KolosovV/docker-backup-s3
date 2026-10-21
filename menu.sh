@@ -35,6 +35,7 @@ Commands (arguments go to the script as is; see "<command> --help"):
   update      update the installation      (update.sh)
   uninstall   remove the system            (uninstall.sh)
   menu        the interactive menu
+  version     the installed version
   help        this help
 
   -c FILE     config file for the menu (default: backup.conf next to the scripts)
@@ -61,6 +62,8 @@ case "$cmd" in
     update)    script=update.sh ;;
     uninstall) script=uninstall.sh ;;
     menu)      script="" ;;
+    version|-V|--version)
+        echo "docker-backup-s3 $(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo unknown)"; exit 0 ;;
     help|-h|--help) usage; exit 0 ;;
     *) echo "Unknown command: $cmd" >&2; usage >&2; exit 1 ;;
 esac
@@ -504,7 +507,7 @@ fi
 
 choice="status"
 while true; do
-    UI_TITLE="Docker Backup System — $(hostname)"
+    UI_TITLE="docker-backup-s3 $(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null) — $(hostname)"
     UI_DEFAULT="$choice"
     choice="$(ui_menu "Storages: $(storages_summary)" \
         status   "Status overview" \

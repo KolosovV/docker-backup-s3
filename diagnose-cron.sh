@@ -59,5 +59,5 @@ crontab -l 2>&1 | head -3 || echo "  (crontab is empty or unavailable)"
 echo
 echo "─── SUMMARY ───"
 echo "If you see a cron process in step 3 or systemctl is-active=active in step 4,"
-echo "then the new setup-cron.sh will NOT show the warning about installing cron."
+echo "then setup-cron.sh will NOT show the warning about installing cron."
 echo "If the warning shows up anyway — that's a bug, send this output."

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# docker-backup.sh — v2
+# docker-backup.sh
 # Backs up all Docker containers, their volumes and compose projects to S3-compatible storage.
 #
 # Features:

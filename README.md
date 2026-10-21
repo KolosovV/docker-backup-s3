@@ -1,8 +1,47 @@
-# docker-backup-s3
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="docker-backup-s3" width="460">
+  </picture>
+</p>
 
-**Docker Backup System for S3** — back up Docker Compose projects (volumes, bind mounts, database dumps) to up to three S3-compatible storages, with rotation, integrity checks, restore and a whiptail menu. MIT license.
+<p align="center">
+  <b>Back up Docker Compose projects — volumes, bind mounts and database dumps — to up to three S3-compatible storages.</b><br>
+  Rotation, integrity checks, restore from any copy, and a menu for all of it. Plain Bash, no agents, no daemons.
+</p>
 
-A production-ready set of scripts for automatically backing up Docker compose projects to S3-compatible storage. Supports **up to three storages**: every archive is uploaded to the primary first, then (optionally) duplicated to the secondary and the tertiary — for example, at other providers. All connection parameters (endpoint, region, keys, bucket) are set manually and work with any S3-compatible storage.
+<p align="center">
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.0-2496ED" alt="version 1.0.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
+  <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
+  <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/Docker%20Compose-v1%20%7C%20v2-2496ED?logo=docker&logoColor=white" alt="Docker Compose v1 | v2">
+  <img src="https://img.shields.io/badge/storage-S3--compatible-0EA5A4?logo=amazons3&logoColor=white" alt="S3-compatible">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#the-docker-backup-command-menu">The menu</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#multiple-storages-primary--secondary--tertiary">Multiple storages</a> ·
+  <a href="#restoring-from-a-backup">Restore</a> ·
+  <a href="#troubleshooting">Troubleshooting</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+---
+
+Every night each compose project on the server becomes one archive: its named volumes, bind mounts,
+project folder and fresh database dumps (PostgreSQL, MySQL/MariaDB, Redis, MongoDB — found automatically).
+The archive goes to the **primary** storage first, then to an optional **secondary** and **tertiary** one —
+for example, at other providers — and each upload is checked by size and `sha256`. Endpoints, regions, keys
+and buckets are set by you, so any S3-compatible storage works.
+
+```bash
+sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-backup
+sudo /opt/docker-backup/install.sh      # dependencies, storages, Telegram, schedule — in dialogs
+sudo docker-backup                      # the menu: status, backup, restore, checks, storages
+```
 
 ## Features
 
@@ -10,7 +49,7 @@ A production-ready set of scripts for automatically backing up Docker compose pr
 - 📦 **Compose project auto-discovery** — via docker labels and directory scanning
 - 🗄️ **Automatic database dump** — PostgreSQL, MySQL/MariaDB, Redis, MongoDB; custom hooks for non-standard databases
 - 💾 **Full coverage** — named volumes, bind mounts, project folders with compose files
-- ☁☁ **Multiple storages** — primary + up to two copies (secondary, tertiary); one archive goes to all of them, rotation cleans all of them
+- ☁️ **Multiple storages** — primary + up to two copies (secondary, tertiary); one archive goes to all of them, rotation cleans all of them
 - 🔄 **Storage synchronization** — `sync-s3.sh` aligns the copies with the primary if they drift apart
 - ⚡ **Parallel volume backup**
 - 🎯 **Single-project backup** with `-p NAME` for urgent jobs
@@ -22,7 +61,6 @@ A production-ready set of scripts for automatically backing up Docker compose pr
 - 🔒 **Lock** against a double start (via an atomic mkdir)
 - 📡 **Notifications** to Telegram and a webhook (Slack/Discord)
 - 🧪 **Dry-run** for safe testing
-- 🔄 **Automatic rotation** of old backups
 - 🔑 **Read-only S3 key** for restore (protection against deletion from dev/staging)
 - 🛟 **Restore from any storage** — `--from secondary|tertiary` (or the interactive choice) pulls from a copy if the primary is unavailable
 - 🔬 **Partial restore** — `--contents`, `--extract-to`, `--only-volume`: get a single dump or volume without touching the running project
@@ -60,6 +98,8 @@ A production-ready set of scripts for automatically backing up Docker compose pr
 - [Uninstalling](#uninstalling)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
+- [Versioning](#versioning)
+- [License](#license)
 
 ---
 
@@ -147,6 +187,9 @@ backup.conf.example              # settings template without secrets
 pre-backup-hook.example.sh       # hook template for non-standard databases
 docker-backup-completion.bash    # bash completion (Tab completion)
 README.md                        # this documentation
+CHANGELOG.md                     # release notes
+VERSION                          # the installed version (docker-backup version)
+LICENSE                          # MIT
 ```
 
 Only `backup.conf.example` is in the repository; the working `backup.conf` is created from it during installation and is in `.gitignore`, because it holds the S3 keys and the Telegram token. If you deploy from git:
@@ -1431,7 +1474,7 @@ If `setup-cron.sh` or `install.sh` says cron is not installed — while it actua
 sudo /opt/docker-backup/diagnose-cron.sh
 ```
 
-The script shows exactly what auto-detection sees. Most likely the `cron` binary is in `/usr/sbin/cron`, the process is running (`pgrep -x cron` finds it) — and in v11+ there should be no warning. If it shows up anyway — send the output of `diagnose-cron.sh`.
+The script shows exactly what auto-detection sees. Most likely the `cron` binary is in `/usr/sbin/cron` and the process is running (`pgrep -x cron` finds it) — then there should be no warning. If it shows up anyway — please open an issue with the output of `diagnose-cron.sh`.
 
 ### `install.sh` in-place doesn't offer to fill in the conf
 
@@ -1450,10 +1493,6 @@ If you want to force a fresh fill-in — remove the conf and run install:
 sudo mv /opt/docker-backup/backup.conf /opt/docker-backup/backup.conf.old
 sudo /opt/docker-backup/install.sh
 ```
-
-### `PROJECTS: unbound variable`
-
-This is in an old version (v7 and earlier) when there are no compose projects. Fixed in v8+.
 
 ### The backup hangs on a huge `tar`
 
@@ -1530,3 +1569,15 @@ sudo /opt/docker-backup/update.sh --rollback
 1. Your S3 provider's panel → access keys → change the key
 2. Put the new one into `backup.conf`
 3. `sudo /opt/docker-backup/validate-config.sh`
+
+---
+
+## Versioning
+
+The project follows [Semantic Versioning](https://semver.org/); every release is a git tag `vX.Y.Z`
+with notes in [CHANGELOG.md](CHANGELOG.md). The installed version: `docker-backup version`.
+`update.sh` shows which version it updates from and to.
+
+## License
+
+[MIT](LICENSE). Use it, change it, ship it — just keep the copyright notice.

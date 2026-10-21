@@ -231,6 +231,9 @@ done
 # COMPARISON — what will actually change
 # ==============================================================================
 log_step "Comparing versions"
+OLD_VERSION="$(cat "$TARGET_DIR/VERSION" 2>/dev/null || echo "before 1.0.0")"
+NEW_VERSION="$(cat "$SOURCE_DIR/VERSION" 2>/dev/null || echo "unknown")"
+log "Version: ${C_BOLD}${OLD_VERSION}${C_RESET} → ${C_BOLD}${NEW_VERSION}${C_RESET}  (changes: CHANGELOG.md)"
 
 declare -a CHANGED_FILES=()
 declare -a UNCHANGED_FILES=()
@@ -258,6 +261,9 @@ ALL_FILES=(
     docker-backup-completion.bash
     backup.conf.example
     README.md
+    CHANGELOG.md
+    LICENSE
+    VERSION
 )
 
 for f in "${ALL_FILES[@]}"; do

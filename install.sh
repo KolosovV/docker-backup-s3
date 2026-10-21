@@ -436,7 +436,7 @@ else
     done
 
     # Optional files — copy if present
-    for f in pre-backup-hook.example.sh docker-backup-completion.bash README.md status.sh logs.sh uninstall.sh update.sh verify-restore.sh sync-s3.sh drop-project.sh diagnose-s3.sh diagnose-cron.sh; do
+    for f in pre-backup-hook.example.sh docker-backup-completion.bash README.md CHANGELOG.md LICENSE VERSION status.sh logs.sh uninstall.sh update.sh verify-restore.sh sync-s3.sh drop-project.sh diagnose-s3.sh diagnose-cron.sh; do
         if [[ -f "$SOURCE_DIR/$f" ]]; then
             cp -f "$SOURCE_DIR/$f" "$TARGET_DIR/$f"
             log_ok "$f (optional)"
