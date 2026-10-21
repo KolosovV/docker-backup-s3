@@ -6,15 +6,15 @@
 # What it does:
 #   1. Installs dependencies (the distro's package manager); aws-cli v2 — with the official
 #      AWS installer, and if that fails — via snap (fallback)
-#   2. Copies the files to /opt/docker-backup/ (or the given path)
+#   2. Copies the files to /opt/docker-backup-s3/ (or the given path)
 #   3. Sets permissions (chmod 600 on the conf, +x on scripts, dos2unix)
 #   4. Fills in backup.conf interactively (S3 keys, bucket, schedule)
-#   5. Optionally: installs logrotate, bash completion, cron
+#   5. Optionally: installs logrotate, cron
 #   6. Runs validate-config.sh as a check
 #
 # Usage:
 #   sudo ./install.sh                 # interactive mode
-#   sudo ./install.sh --non-interactive --target /opt/docker-backup --no-cron
+#   sudo ./install.sh --non-interactive --target /opt/docker-backup-s3 --no-cron
 # ==============================================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -22,12 +22,11 @@ IFS=$'\n\t'
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Arguments ---
-TARGET_DIR="/opt/docker-backup"
+TARGET_DIR="/opt/docker-backup-s3"
 NON_INTERACTIVE="false"
 SKIP_DEPS="false"
 SKIP_CRON="false"
 SKIP_LOGROTATE="false"
-SKIP_COMPLETION="false"
 SKIP_VALIDATE="false"
 
 while [[ $# -gt 0 ]]; do
@@ -37,18 +36,16 @@ while [[ $# -gt 0 ]]; do
         --skip-deps) SKIP_DEPS="true"; shift ;;
         --no-cron|--skip-cron) SKIP_CRON="true"; shift ;;
         --skip-logrotate) SKIP_LOGROTATE="true"; shift ;;
-        --skip-completion) SKIP_COMPLETION="true"; shift ;;
         --skip-validate) SKIP_VALIDATE="true"; shift ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [options]
 
-  -t, --target DIR        where to install (default: /opt/docker-backup)
+  -t, --target DIR        where to install (default: /opt/docker-backup-s3)
   -y, --yes               no interactive questions (everything on defaults)
       --skip-deps         skip installing system packages and aws-cli
       --no-cron           do not set up scheduled runs
       --skip-logrotate    skip installing logrotate
-      --skip-completion   do not install bash completion
       --skip-validate     skip the final validation
 
   -h, --help              this help
@@ -93,6 +90,14 @@ CONF_FILE="$TARGET_DIR/backup.conf"
 ask_yn()     { ui_yesno "$@"; }
 ask_value()  { ui_input "$@"    || { echo "Cancelled." >&2; exit 130; }; }
 ask_secret() { ui_password "$@" || { echo "Cancelled." >&2; exit 130; }; }
+
+# notify_try <channel> VAR=value… — a test message with these settings, via the installed lib.sh in a
+# separate bash (so it doesn't replace the functions here). The error goes to stdout.
+notify_try() {
+    local ch="$1"; shift
+    env "$@" bash -c 'source "$1" >/dev/null 2>&1 || { echo "cannot load lib.sh"; exit 1; }; notify_test "$2" 2>&1 >/dev/null' \
+        _ "$TARGET_DIR/lib.sh" "$ch"
+}
 
 # Checks whether the minimum required fields in backup.conf hold real values
 # usage: is_conf_filled <path-to-conf>
@@ -436,7 +441,7 @@ else
     done
 
     # Optional files — copy if present
-    for f in pre-backup-hook.example.sh docker-backup-completion.bash README.md CHANGELOG.md LICENSE VERSION status.sh logs.sh uninstall.sh update.sh verify-restore.sh sync-s3.sh drop-project.sh diagnose-s3.sh diagnose-cron.sh; do
+    for f in pre-backup-hook.example.sh README.md CHANGELOG.md LICENSE VERSION status.sh logs.sh uninstall.sh update.sh verify-restore.sh sync-s3.sh drop-project.sh diagnose-s3.sh diagnose-cron.sh; do
         if [[ -f "$SOURCE_DIR/$f" ]]; then
             cp -f "$SOURCE_DIR/$f" "$TARGET_DIR/$f"
             log_ok "$f (optional)"
@@ -463,10 +468,10 @@ fi
 log_step "CRLF conversion and setting permissions"
 
 if command -v dos2unix >/dev/null 2>&1; then
-    dos2unix -q "$TARGET_DIR"/*.sh "$TARGET_DIR"/*.bash "$TARGET_DIR"/*.conf "$TARGET_DIR"/*.example 2>/dev/null || true
-    log_ok "dos2unix applied to all .sh/.bash/.conf/.example"
+    dos2unix -q "$TARGET_DIR"/*.sh "$TARGET_DIR"/*.conf "$TARGET_DIR"/*.example 2>/dev/null || true
+    log_ok "dos2unix applied to all .sh/.conf/.example"
 else
-    sed -i 's/\r$//' "$TARGET_DIR"/*.sh "$TARGET_DIR"/*.bash "$TARGET_DIR"/*.conf "$TARGET_DIR"/*.example 2>/dev/null || true
+    sed -i 's/\r$//' "$TARGET_DIR"/*.sh "$TARGET_DIR"/*.conf "$TARGET_DIR"/*.example 2>/dev/null || true
     log_ok "CRLF removed via sed"
 fi
 
@@ -704,15 +709,60 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
 
     # Optional: webhook
     ui_title "Notifications (optional)"
-    if ask_yn "  Set up a webhook (Slack/Discord/custom)?" "n"; then
-        NOTIFY_URL=$(ask_value "    Webhook URL" ""); NOTIFY_URL="$(trim "$NOTIFY_URL")"
-        if [[ -n "$NOTIFY_URL" ]]; then
-            # A simple check that it's a URL
+    if ask_yn "  Set up a webhook (Discord/Slack/Mattermost/custom)?" "n"; then
+        ui_title "Webhook"
+        ui_note "Discord: channel settings → Integrations → Webhooks → Copy Webhook URL."
+        ui_note "Slack: an app with Incoming Webhooks. Any other URL gets JSON with level, server, title, details."
+        while true; do
+            NOTIFY_URL=$(ask_value "    Webhook URL" ""); NOTIFY_URL="$(trim "$NOTIFY_URL")"
+            [[ -z "$NOTIFY_URL" ]] && break
             if ! [[ "$NOTIFY_URL" =~ ^https?:// ]]; then
-                log_warn "    The URL must start with http:// or https://"
+                ui_note "✗ The URL must start with http:// or https://"
                 NOTIFY_URL=""
+                [[ "$NON_INTERACTIVE" == "true" ]] && break
+                continue
             fi
-        fi
+            if _t_err="$(notify_try webhook NOTIFY_WEBHOOK_URL="$NOTIFY_URL")"; then
+                ui_note "✓ The test message was accepted — check the channel"
+                break
+            fi
+            ui_note "✗ $_t_err"
+            ask_yn "    Enter the URL again?" "y" || { ask_yn "    Keep this URL anyway?" "n" || NOTIFY_URL=""; break; }
+        done
+    fi
+
+    # Optional: email
+    ui_title "Notifications (optional)"
+    if ask_yn "  Set up email notifications (your SMTP server)?" "n"; then
+        ui_title "Email"
+        ui_note "Any SMTP account works: your mail server, Gmail/Outlook (with an app password), a mail service."
+        while true; do
+            MAIL_TO=$(ask_value "    Send to (addresses, space-separated)" "${MAIL_TO:-}"); MAIL_TO="$(trim "$MAIL_TO")"
+            [[ -z "$MAIL_TO" ]] && break
+            SMTP_HOST_VAL=$(ask_value "    SMTP server" "${SMTP_HOST_VAL:-}"); SMTP_HOST_VAL="$(trim "$SMTP_HOST_VAL")"
+            [[ -z "$SMTP_HOST_VAL" ]] && { MAIL_TO=""; break; }
+            UI_DEFAULT="${SMTP_SEC_VAL:-starttls}"
+            SMTP_SEC_VAL=$(ui_menu "    Connection security" \
+                starttls "STARTTLS, port 587 (most servers)" \
+                tls      "TLS, port 465" \
+                none     "none, port 25 (unencrypted)") || SMTP_SEC_VAL="starttls"
+            UI_DEFAULT=""
+            case "$SMTP_SEC_VAL" in tls) _p=465 ;; none) _p=25 ;; *) _p=587 ;; esac
+            SMTP_PORT_VAL=$(ask_value "    Port" "$_p"); SMTP_PORT_VAL="$(trim "$SMTP_PORT_VAL")"
+            [[ "$SMTP_PORT_VAL" == "$_p" ]] && SMTP_PORT_VAL=""
+            SMTP_USER_VAL=$(ask_value "    Login (empty — without login)" "${SMTP_USER_VAL:-}"); SMTP_USER_VAL="$(trim "$SMTP_USER_VAL")"
+            SMTP_PASS_VAL=""
+            [[ -n "$SMTP_USER_VAL" ]] && SMTP_PASS_VAL=$(ask_secret "    Password")
+            SMTP_FROM_VAL=$(ask_value "    Sender address" "${SMTP_FROM_VAL:-$SMTP_USER_VAL}"); SMTP_FROM_VAL="$(trim "$SMTP_FROM_VAL")"
+            [[ "$NON_INTERACTIVE" == "true" ]] && break
+            if _t_err="$(notify_try email EMAIL_TO="$MAIL_TO" SMTP_HOST="$SMTP_HOST_VAL" SMTP_SECURITY="$SMTP_SEC_VAL" \
+                    SMTP_PORT="$SMTP_PORT_VAL" SMTP_USER="$SMTP_USER_VAL" SMTP_PASSWORD="$SMTP_PASS_VAL" SMTP_FROM="$SMTP_FROM_VAL")"; then
+                ui_note "✓ The test email was sent — check the inbox (and spam)"
+                break
+            fi
+            ui_note "✗ $_t_err"
+            ask_yn "    Enter the settings again?" "y" || { ask_yn "    Keep these settings anyway?" "n" || MAIL_TO=""; break; }
+        done
     fi
     UI_TITLE=""
 
@@ -728,6 +778,15 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     conf_set TELEGRAM_BOT_TOKEN "${TG_TOKEN:-}"
     conf_set TELEGRAM_CHAT_ID   "${TG_CHAT:-}"
     conf_set NOTIFY_WEBHOOK_URL "${NOTIFY_URL:-}"
+    conf_set EMAIL_TO      "${MAIL_TO:-}"
+    if [[ -n "${MAIL_TO:-}" ]]; then
+        conf_set SMTP_HOST     "${SMTP_HOST_VAL:-}"
+        conf_set SMTP_SECURITY "${SMTP_SEC_VAL:-starttls}"
+        conf_set SMTP_PORT     "${SMTP_PORT_VAL:-}"
+        conf_set SMTP_USER     "${SMTP_USER_VAL:-}"
+        conf_set SMTP_PASSWORD "${SMTP_PASS_VAL:-}"
+        conf_set SMTP_FROM     "${SMTP_FROM_VAL:-}"
+    fi
 
     log_ok "backup.conf configured"
 fi
@@ -777,23 +836,7 @@ else
 fi
 
 # ==============================================================================
-# 7. BASH COMPLETION
-# ==============================================================================
-if [[ "$SKIP_COMPLETION" != "true" && -f "$TARGET_DIR/docker-backup-completion.bash" ]]; then
-    log_step "Bash completion"
-    if ask_yn "Install bash completion (Tab completion for the scripts)?" "y"; then
-        if [[ -d /etc/bash_completion.d ]]; then
-            cp "$TARGET_DIR/docker-backup-completion.bash" /etc/bash_completion.d/docker-backup
-            log_ok "Installed to /etc/bash_completion.d/docker-backup"
-            log "    Log in again or run: source /etc/bash_completion.d/docker-backup"
-        else
-            log_warn "/etc/bash_completion.d does not exist — skipping"
-        fi
-    fi
-fi
-
-# ==============================================================================
-# 8. VALIDATION
+# 7. VALIDATION
 # ==============================================================================
 if [[ "$SKIP_VALIDATE" != "true" ]]; then
     log_step "Validating the configuration"
@@ -806,7 +849,7 @@ if [[ "$SKIP_VALIDATE" != "true" ]]; then
 fi
 
 # ==============================================================================
-# 9. CRON / SYSTEMD
+# 8. CRON / SYSTEMD
 # ==============================================================================
 # Without questions (-y) existing scheduled runs are left alone: setup-cron.sh -y would replace them with
 # the default daily one, while the server may have its own schedule. To change it — run setup-cron.sh explicitly.
@@ -828,7 +871,7 @@ elif [[ "$SKIP_CRON" != "true" ]]; then
 fi
 
 # ==============================================================================
-# 10. SUMMARY
+# 9. SUMMARY
 # ==============================================================================
 echo
 echo "${C_BOLD}${C_GREEN}╔═══════════════════════════════════════════════════════════════╗"

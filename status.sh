@@ -393,8 +393,9 @@ printf "  %-22s %s\n" "Notifications:" "${NOTIFY_ON:-error}"
 
 # A short notification checklist
 notif_setup=""
-[[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && notif_setup+=" Telegram"
-[[ -n "${NOTIFY_WEBHOOK_URL:-}" ]] && notif_setup+=" Webhook"
+notify_configured telegram && notif_setup+=" Telegram"
+notify_configured webhook  && notif_setup+=" Webhook($(webhook_format))"
+notify_configured email    && notif_setup+=" Email"
 [[ -n "$notif_setup" ]] && printf "  %-22s %s\n" "  Channels:" "$notif_setup"
 
 echo

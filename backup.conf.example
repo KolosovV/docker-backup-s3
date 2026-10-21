@@ -49,9 +49,6 @@ PRIMARY_S3_RESTORE_SECRET_KEY=""
 # Addressing style for the primary S3: path | virtual.
 # If the bucket is unreachable with one style — try the other.
 PRIMARY_S3_ADDRESSING_STYLE="path"
-# Global default for direct aws calls (completion and the like).
-# The scripts override it for each storage via _aws_setup.
-export AWS_S3_ADDRESSING_STYLE="${PRIMARY_S3_ADDRESSING_STYLE}"
 
 # --- Extra aws CLI options ---
 # CERTIFICATE_VERIFY_FAILED with a valid certificate (curl to the endpoint works) — aws has its own
@@ -313,9 +310,25 @@ NOTIFY_NAME=""
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
 
-# --- Webhook (Slack, Discord, custom) ---
-# URL that receives a POST with JSON {"text": "..."}
+# --- Webhook (Discord, Slack, Mattermost, your own receiver) ---
+# The URL receives a POST with JSON. Its shape (NOTIFY_WEBHOOK_FORMAT):
+#   auto    — discord.com/api/webhooks/… → discord, hooks.slack.com/… → slack, anything else → json
+#   discord — {"content": "..."}
+#   slack   — {"text": "..."} (also Mattermost, Rocket.Chat)
+#   json    — {"text", "level": "error|warn|success", "server", "title", "details", "time"}
 NOTIFY_WEBHOOK_URL=""
+NOTIFY_WEBHOOK_FORMAT="auto"
+
+# --- Email (SMTP) ---
+# Sent by curl straight to your SMTP server — no mail server is needed on this host.
+# EMAIL_TO — one or more addresses, separated by spaces or commas.
+EMAIL_TO=""
+SMTP_HOST=""                # e.g. smtp.example.com
+SMTP_SECURITY="starttls"    # starttls (port 587), tls (port 465) or none (port 25, unencrypted)
+SMTP_PORT=""                # empty — the port of SMTP_SECURITY
+SMTP_USER=""                # empty — send without logging in
+SMTP_PASSWORD=""
+SMTP_FROM=""                # the sender address; empty — SMTP_USER
 
 # ==============================================================================
 # COLORED OUTPUT

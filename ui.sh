@@ -281,27 +281,29 @@ conf_set() {
     [[ -z "$val" && "$mode" != "--allow-empty" ]] && return 0
     [[ -f "$conf" ]] || return 0
 
+    # The config is sourced by bash: a value with " $ ` or \ (a password, say) goes in single quotes,
+    # otherwise bash would expand or cut it. The rest stays in double quotes, like the template.
+    local line
+    if [[ "$mode" == "--raw" ]]; then
+        line="${var}=${val}"
+    elif [[ "$val" == *[\"\$\`\\]* ]]; then
+        line="${var}='${val//\'/\'\\\'\'}'"
+    else
+        line="${var}=\"${val}\""
+    fi
+
     # The line is missing (config older than the template) — sed would silently do nothing and the value would be lost
     if ! grep -q "^${var}=" "$conf"; then
-        if [[ "$mode" == "--raw" ]]; then
-            printf '%s=%s\n' "$var" "$val" >> "$conf"
-        else
-            printf '%s="%s"\n' "$var" "$val" >> "$conf"
-        fi
+        printf '%s\n' "$line" >> "$conf"
         return 0
     fi
 
     # Escape what sed treats specially in the right-hand side of s|…|…|
-    local esc="$val"
+    local esc="$line"
     esc="${esc//\\/\\\\}"     # backslash
     esc="${esc//|/\\|}"       # delimiter
     esc="${esc//&/\\&}"       # "the whole matched text"
-
-    if [[ "$mode" == "--raw" ]]; then
-        sed -i "s|^${var}=.*|${var}=${esc}|" "$conf"
-    else
-        sed -i "s|^${var}=.*|${var}=\"${esc}\"|" "$conf"
-    fi
+    sed -i "s|^${var}=.*|${esc}|" "$conf"
 }
 
 # System CA bundle: Debian/Ubuntu, then the RHEL family. Prints the path.

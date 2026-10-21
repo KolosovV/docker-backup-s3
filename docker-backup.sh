@@ -78,7 +78,7 @@ fi
 # --- Dependency check ---
 require_cmd docker tar gzip aws jq
 [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && require_cmd gpg
-[[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" ]] && require_cmd curl
+{ notify_configured telegram || notify_configured webhook || notify_configured email; } && require_cmd curl
 
 # --- Emergency exit ---
 # Which project is currently stopped/paused. Needed to bring its containers back

@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.1-2496ED" alt="version 1.0.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1.0-2496ED" alt="version 1.1.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -38,8 +38,8 @@ for example, at other providers — and each upload is checked by size and `sha2
 and buckets are set by you, so any S3-compatible storage works.
 
 ```bash
-sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-backup
-sudo /opt/docker-backup/install.sh      # dependencies, storages, Telegram, schedule — in dialogs
+sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-backup-s3
+sudo /opt/docker-backup-s3/install.sh      # dependencies, storages, notifications, schedule — in dialogs
 sudo docker-backup                      # the menu: status, backup, restore, checks, storages
 ```
 
@@ -59,7 +59,7 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 - ✅ **Completeness control** — if a volume or bind mount didn't make it into the archive, the project is marked as failed, not as a "success"
 - 🗂 **GFS rotation** (day/week/month) and the `KEEP_MIN_BACKUPS` floor — the latest copies are never deleted
 - 🔒 **Lock** against a double start (via an atomic mkdir)
-- 📡 **Notifications** to Telegram and a webhook (Slack/Discord)
+- 📡 **Notifications** to Telegram, email (your SMTP) and a webhook (Discord, Slack, Mattermost or your own JSON receiver)
 - 🧪 **Dry-run** for safe testing
 - 🔑 **Read-only S3 key** for restore (protection against deletion from dev/staging)
 - 🛟 **Restore from any storage** — `--from secondary|tertiary` (or the interactive choice) pulls from a copy if the primary is unavailable
@@ -94,7 +94,6 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 - [System status](#system-status)
 - [Logs](#logs)
 - [Backup rotation](#backup-rotation)
-- [Bash completion](#bash-completion)
 - [Uninstalling](#uninstalling)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
@@ -107,20 +106,20 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 
 ```bash
 # 1. Get the files onto the server
-sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-backup
-#    (or copy them: sudo mkdir -p /opt/docker-backup && sudo cp -r . /opt/docker-backup/)
+sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-backup-s3
+#    (or copy them: sudo mkdir -p /opt/docker-backup-s3 && sudo cp -r . /opt/docker-backup-s3/)
 
 # 2. Run the installer right from there (in-place is supported)
-sudo /opt/docker-backup/install.sh
+sudo /opt/docker-backup-s3/install.sh
 
 # 3. Everything else — from the menu (status, backup, restore, checks, schedule, storages)
 sudo docker-backup
 
 # …or the same with the scripts directly
-sudo /opt/docker-backup/validate-config.sh        # settings check
-sudo /opt/docker-backup/docker-backup.sh --dry-run # dry run
-sudo /opt/docker-backup/docker-backup.sh           # real backup
-sudo /opt/docker-backup/status.sh                 # system overview
+sudo /opt/docker-backup-s3/validate-config.sh        # settings check
+sudo /opt/docker-backup-s3/docker-backup.sh --dry-run # dry run
+sudo /opt/docker-backup-s3/docker-backup.sh           # real backup
+sudo /opt/docker-backup-s3/status.sh                 # system overview
 ```
 
 If the installer set up cron — from here on everything runs by itself.
@@ -163,7 +162,7 @@ sudo docker-backup help                     # all subcommands
 
 ## File structure
 
-After installation in `/opt/docker-backup/`:
+After installation in `/opt/docker-backup-s3/`:
 
 ```
 install.sh                       # installer from scratch
@@ -185,14 +184,13 @@ logs.sh                          # log viewing with filters
 backup.conf                      # settings (chmod 600, not committed to git)
 backup.conf.example              # settings template without secrets
 pre-backup-hook.example.sh       # hook template for non-standard databases
-docker-backup-completion.bash    # bash completion (Tab completion)
 README.md                        # this documentation
 CHANGELOG.md                     # release notes
 VERSION                          # the installed version (docker-backup version)
 LICENSE                          # MIT
 ```
 
-Only `backup.conf.example` is in the repository; the working `backup.conf` is created from it during installation and is in `.gitignore`, because it holds the S3 keys and the Telegram token. If you deploy from git:
+Only `backup.conf.example` is in the repository; the working `backup.conf` is created from it during installation and is in `.gitignore`, because it holds the S3 keys, the Telegram token and the SMTP password. If you deploy from git:
 
 ```bash
 cp backup.conf.example backup.conf && chmod 600 backup.conf
@@ -238,8 +236,9 @@ The installer does everything itself:
    - **Retention** (`RETENTION_DAYS`)
    - Directories to scan (`SCAN_DIRS`)
    - Telegram token and chat_id, with a real check via a test message
-   - Webhook URL (optional)
-7. Optionally sets up logrotate and bash completion; links the `docker-backup` command
+   - Webhook URL (optional), with a test message
+   - Email: recipients, SMTP server, security, login, sender (optional), with a test email
+7. Optionally sets up logrotate; links the `docker-backup` command
 8. Runs `validate-config.sh`
 9. Optionally runs `setup-cron.sh` for scheduled runs
 
@@ -264,14 +263,14 @@ the check is skipped quietly. The option goes into `<ROLE>_S3_OPTS_EXTRA` of the
 ```bash
 # The files are in /tmp/install/
 sudo /tmp/install/install.sh
-# → copies the files to /opt/docker-backup/
+# → copies the files to /opt/docker-backup-s3/
 ```
 
 #### Scenario 2: in-place installation (source = target)
 
 ```bash
-# The files are already in /opt/docker-backup/
-sudo /opt/docker-backup/install.sh
+# The files are already in /opt/docker-backup-s3/
+sudo /opt/docker-backup-s3/install.sh
 # → does NOT copy, only sets up permissions, the config, cron
 ```
 
@@ -296,17 +295,16 @@ What counts as a "placeholder":
 
 (in an old config — the same fields named `S3_*`; the installer renames them itself).
 
-This lets you work with a single command: put the files into `/opt/docker-backup`, run `install.sh` from there — and it either finishes the installation or asks for whatever is missing.
+This lets you work with a single command: put the files into `/opt/docker-backup-s3`, run `install.sh` from there — and it either finishes the installation or asks for whatever is missing.
 
 #### Options
 
 ```
--t, --target DIR       where to install (default: /opt/docker-backup)
+-t, --target DIR       where to install (default: /opt/docker-backup-s3)
 -y, --yes              no interactive questions
     --skip-deps        don't install system packages and AWS CLI
     --no-cron          don't set up scheduled runs
     --skip-logrotate   don't install logrotate
-    --skip-completion  don't install bash completion
     --skip-validate    skip the final validation
 -h, --help             help
 ```
@@ -346,14 +344,14 @@ sudo git clone https://github.com/KolosovV/docker-backup-s3.git /tmp/new-version
 sudo /tmp/new-version/update.sh
 ```
 
-If `/opt/docker-backup` itself is a git clone, `git pull` there updates the scripts (your `backup.conf` is in
-`.gitignore` and stays untouched); then run `sudo /opt/docker-backup/update.sh --migrate-conf` once, so an old
+If `/opt/docker-backup-s3` itself is a git clone, `git pull` there updates the scripts (your `backup.conf` is in
+`.gitignore` and stays untouched); then run `sudo /opt/docker-backup-s3/update.sh --migrate-conf` once, so an old
 config gets the new storage names.
 
 What it does:
 - Compares file versions and shows what will actually change
 - Checks the syntax of the new files **before** replacing them (won't break the system with a broken script)
-- Backs up the current installation to `/opt/docker-backup.bak.<timestamp>/`
+- Backs up the current installation to `/opt/docker-backup-s3.bak.<timestamp>/`
 - Does not overwrite your `backup.conf`: shows which new options appeared in the template, and renames the old primary storage names `S3_*` → `PRIMARY_S3_*` (see below)
 - Refuses to update while a backup is running (checks the lock)
 - Runs `validate-config.sh` after the update
@@ -361,15 +359,15 @@ What it does:
 ### Rolling back to the previous version
 
 ```bash
-sudo /opt/docker-backup/update.sh --rollback
+sudo /opt/docker-backup-s3/update.sh --rollback
 ```
 
-Rolls back to the latest backup copy. The current state (before the rollback) is also saved to `/opt/docker-backup.reverted.<timestamp>/`.
+Rolls back to the latest backup copy. The current state (before the rollback) is also saved to `/opt/docker-backup-s3.reverted.<timestamp>/`.
 
 ### update.sh options
 
 ```
--t, --target DIR     where (default: /opt/docker-backup)
+-t, --target DIR     where (default: /opt/docker-backup-s3)
 -s, --source DIR     from where (default: next to the script)
 -y, --yes            no questions
     --rollback       roll back to the latest backup copy
@@ -396,16 +394,16 @@ the secondary — `SECONDARY_S3_*`. Now all storages share one scheme: `PRIMARY_
 
 After several updates `*.bak.*` folders pile up on disk:
 ```bash
-ls -d /opt/docker-backup.bak.* /opt/docker-backup.reverted.* 2>/dev/null
+ls -d /opt/docker-backup-s3.bak.* /opt/docker-backup-s3.reverted.* 2>/dev/null
 # Delete the old ones:
-sudo rm -rf /opt/docker-backup.bak.* /opt/docker-backup.reverted.*
+sudo rm -rf /opt/docker-backup-s3.bak.* /opt/docker-backup-s3.reverted.*
 ```
 
 ---
 
 ## Configuration
 
-The file is `/opt/docker-backup/backup.conf`. The minimum needed:
+The file is `/opt/docker-backup-s3/backup.conf`. The minimum needed:
 
 ```bash
 PRIMARY_S3_ACCESS_KEY="your_key"
@@ -458,6 +456,13 @@ Everything else has sensible defaults.
 | `TELEGRAM_BOT_TOKEN` | empty | bot token |
 | `TELEGRAM_CHAT_ID` | empty | recipient ID |
 | `NOTIFY_WEBHOOK_URL` | empty | webhook URL |
+| `NOTIFY_WEBHOOK_FORMAT` | `auto` | auto/discord/slack/json — the payload shape |
+| `EMAIL_TO` | empty | email recipients, space- or comma-separated |
+| `SMTP_HOST` | empty | SMTP server |
+| `SMTP_SECURITY` | `starttls` | starttls (587) / tls (465) / none (25) |
+| `SMTP_PORT` | empty | port; empty — the one of `SMTP_SECURITY` |
+| `SMTP_USER` / `SMTP_PASSWORD` | empty | SMTP login; empty — without login |
+| `SMTP_FROM` | empty | sender address; empty — `SMTP_USER` |
 | `COLOR_OUTPUT` | `auto` | auto/on/off |
 | `LOCK_FILE` | `/var/run/docker-backup.lock` | base path for the lock; the lock itself is a `<LOCK_FILE>.d` directory with the PID inside (atomic `mkdir`) |
 | `WORK_DIR` | `/var/tmp/docker-backup` | temporary folder |
@@ -474,7 +479,7 @@ Everything else has sensible defaults.
 ### Checking the settings
 
 ```bash
-sudo /opt/docker-backup/validate-config.sh
+sudo /opt/docker-backup-s3/validate-config.sh
 ```
 
 The script checks:
@@ -486,7 +491,7 @@ The script checks:
 - Old `S3_*` names in the config (suggests `update.sh --migrate-conf`)
 - Free space
 - **Telegram bot** — by actually sending a test message, with error diagnostics
-- Webhook URL
+- **Webhook** and **email** — by sending a test message, with hints for the common errors
 - The cron job and which `aws` it will find with its `PATH` (warns if it's from snap)
 
 ---
@@ -586,19 +591,19 @@ these are different providers and a server-side copy between them is impossible.
 
 ```bash
 # See what drifted apart (changes nothing)
-sudo /opt/docker-backup/sync-s3.sh --dry-run
+sudo /opt/docker-backup-s3/sync-s3.sh --dry-run
 
 # Copy what's missing + re-upload objects with a wrong size — into all copies
-sudo /opt/docker-backup/sync-s3.sh
+sudo /opt/docker-backup-s3/sync-s3.sh
 
 # Into the tertiary S3 only
-sudo /opt/docker-backup/sync-s3.sh --to tertiary
+sudo /opt/docker-backup-s3/sync-s3.sh --to tertiary
 
 # Same + delete objects in the copies that are no longer in the primary (IRREVERSIBLE)
-sudo /opt/docker-backup/sync-s3.sh --prune
+sudo /opt/docker-backup-s3/sync-s3.sh --prune
 
 # No confirmations (for cron)
-sudo /opt/docker-backup/sync-s3.sh --prune -y
+sudo /opt/docker-backup-s3/sync-s3.sh --prune -y
 ```
 
 | Option | What it does |
@@ -621,9 +626,9 @@ weekly with `--prune -y`.
 
 ```bash
 # If the PRIMARY lost data, and an intact copy remains in the secondary:
-sudo /opt/docker-backup/sync-s3.sh --reverse --dry-run                 # see the plan
-sudo /opt/docker-backup/sync-s3.sh --reverse                           # bring the data back to the primary
-sudo /opt/docker-backup/sync-s3.sh --reverse --from tertiary           # the same from the tertiary
+sudo /opt/docker-backup-s3/sync-s3.sh --reverse --dry-run                 # see the plan
+sudo /opt/docker-backup-s3/sync-s3.sh --reverse                           # bring the data back to the primary
+sudo /opt/docker-backup-s3/sync-s3.sh --reverse --from tertiary           # the same from the tertiary
 ```
 
 `--reverse` inverts the direction: a copy becomes the source (the secondary S3
@@ -715,7 +720,7 @@ For non-standard databases (ClickHouse, Elasticsearch, InfluxDB and the like) cr
 
 ```bash
 cd /opt/myapp
-sudo cp /opt/docker-backup/pre-backup-hook.example.sh pre-backup-hook.sh
+sudo cp /opt/docker-backup-s3/pre-backup-hook.example.sh pre-backup-hook.sh
 sudo chmod +x pre-backup-hook.sh
 sudo nano pre-backup-hook.sh
 ```
@@ -732,7 +737,7 @@ The hook runs **after** the auto-dump of the standard databases. Available varia
 ### Dry-run first (recommended)
 
 ```bash
-sudo /opt/docker-backup/docker-backup.sh --dry-run
+sudo /opt/docker-backup-s3/docker-backup.sh --dry-run
 ```
 
 Shows the plan without real actions — which projects were found, which volumes will be backed up, which bind mounts are blacklisted, whether there are databases to auto-dump.
@@ -740,7 +745,7 @@ Shows the plan without real actions — which projects were found, which volumes
 ### Real run
 
 ```bash
-sudo /opt/docker-backup/docker-backup.sh
+sudo /opt/docker-backup-s3/docker-backup.sh
 ```
 
 You should see:
@@ -772,16 +777,16 @@ For urgent jobs (before a migration, after a critical change and the like) you c
 
 ```bash
 # Only one project
-sudo /opt/docker-backup/docker-backup.sh -p myapp
+sudo /opt/docker-backup-s3/docker-backup.sh -p myapp
 
 # Several projects, comma-separated
-sudo /opt/docker-backup/docker-backup.sh -p myapp,otherapp
+sudo /opt/docker-backup-s3/docker-backup.sh -p myapp,otherapp
 
 # Dry-run for one project
-sudo /opt/docker-backup/docker-backup.sh -p myapp --dry-run
+sudo /opt/docker-backup-s3/docker-backup.sh -p myapp --dry-run
 
 # Just the names of the projects found on this host (the menu builds its list from this)
-sudo /opt/docker-backup/docker-backup.sh --list
+sudo /opt/docker-backup-s3/docker-backup.sh --list
 ```
 
 ### Behavior with `-p`
@@ -795,13 +800,13 @@ sudo /opt/docker-backup/docker-backup.sh --list
 
 ```bash
 # Before an application update — an urgent backup
-sudo /opt/docker-backup/docker-backup.sh -p my-critical-app
+sudo /opt/docker-backup-s3/docker-backup.sh -p my-critical-app
 
 # After a big migration — a backup of two related projects
-sudo /opt/docker-backup/docker-backup.sh -p users-service,payments-service
+sudo /opt/docker-backup-s3/docker-backup.sh -p users-service,payments-service
 
 # Check that a new project shows up in the plan
-sudo /opt/docker-backup/docker-backup.sh -p new-project --dry-run
+sudo /opt/docker-backup-s3/docker-backup.sh -p new-project --dry-run
 ```
 
 ---
@@ -812,19 +817,19 @@ A backup that was never checked is a hope, not insurance. Use `verify-restore.sh
 
 ```bash
 # Quick check (head-object: the object is there and non-empty, no download)
-sudo /opt/docker-backup/verify-restore.sh --quick
+sudo /opt/docker-backup-s3/verify-restore.sh --quick
 
 # Standard — downloads, unpacks, checks the SQL dumps (default)
-sudo /opt/docker-backup/verify-restore.sh
+sudo /opt/docker-backup-s3/verify-restore.sh
 
 # One project in detail
-sudo /opt/docker-backup/verify-restore.sh -p myapp
+sudo /opt/docker-backup-s3/verify-restore.sh -p myapp
 
 # No notifications (for interactive use)
-sudo /opt/docker-backup/verify-restore.sh --no-notify
+sudo /opt/docker-backup-s3/verify-restore.sh --no-notify
 
 # Check the copy in the tertiary S3 rather than the primary
-sudo /opt/docker-backup/verify-restore.sh --from tertiary
+sudo /opt/docker-backup-s3/verify-restore.sh --from tertiary
 ```
 
 ### What the standard mode checks
@@ -847,15 +852,15 @@ sudo /opt/docker-backup/verify-restore.sh --from tertiary
 Once a week via cron:
 
 ```cron
-0 4 * * 0  /opt/docker-backup/verify-restore.sh --quick >> /var/log/docker-backup-verify.log 2>&1
+0 4 * * 0  /opt/docker-backup-s3/verify-restore.sh --quick >> /var/log/docker-backup-verify.log 2>&1
 ```
 
 Or once a month with a detailed check:
 ```cron
-0 5 1 * *  /opt/docker-backup/verify-restore.sh >> /var/log/docker-backup-verify.log 2>&1
+0 5 1 * *  /opt/docker-backup-s3/verify-restore.sh >> /var/log/docker-backup-verify.log 2>&1
 ```
 
-On an error it sends a Telegram notification (if configured).
+On an error it sends a notification to the configured channels.
 
 ---
 
@@ -941,7 +946,7 @@ NOTIFY_ON="error"   # or "always"
 
 **5.** Check:
 ```bash
-sudo /opt/docker-backup/validate-config.sh
+sudo /opt/docker-backup-s3/validate-config.sh
 ```
 
 The script sends a test message and shows the result, with diagnostics if something is wrong.
@@ -956,13 +961,42 @@ The script sends a test message and shows the result, with diagnostics if someth
 | `bot is not a member` | A group without the bot | Add it as an admin |
 | `Unauthorized` | Invalid token | Get a new one via `@BotFather` |
 
-### Webhook (Slack, Discord, custom)
+### Webhook (Discord, Slack, Mattermost, custom)
 
 ```bash
-NOTIFY_WEBHOOK_URL="https://hooks.slack.com/services/T00.../B00.../XXX"
+NOTIFY_WEBHOOK_URL="https://discord.com/api/webhooks/123/abc"
+NOTIFY_WEBHOOK_FORMAT="auto"
 ```
 
-For Discord: `https://discord.com/api/webhooks/.../...?wait=true`
+The payload depends on `NOTIFY_WEBHOOK_FORMAT`. With `auto`, Discord and Slack URLs are recognized and everything else
+gets `json`:
+
+| Format | Payload | For |
+|---|---|---|
+| `discord` | `{"content": "..."}` with **bold** and `code` | Discord |
+| `slack` | `{"text": "..."}` with Slack markup | Slack, Mattermost, Rocket.Chat |
+| `json` | `{"text", "level", "server", "title", "details", "time"}` | your own receiver |
+
+`level` is `error`, `warn` or `success`, and `time` is UTC. A reply other than 2xx counts as a failure and goes to the log;
+the other channels are still sent.
+
+### Email (SMTP)
+
+curl sends the message straight to your SMTP server, so no mail server is needed on the host. Any account works: your
+own mail server, a mail service, Gmail or Outlook with an app password.
+
+```bash
+EMAIL_TO="admin@example.com ops@example.com"
+SMTP_HOST="smtp.example.com"
+SMTP_SECURITY="starttls"     # starttls (587), tls (465) or none (25)
+SMTP_USER="backup@example.com"
+SMTP_PASSWORD="..."
+SMTP_FROM="backup@example.com"
+```
+
+The subject is the notification line (`🔴 Server web-1: nightly backup with errors`), and the body has a plain-text and an
+HTML part. The password goes to curl in a temporary file, not on the command line. `validate-config.sh` sends a test
+email. Many hosting providers block outgoing port 25, so use 587 or 465.
 
 ### Notification levels
 
@@ -975,7 +1009,7 @@ For Discord: `https://discord.com/api/webhooks/.../...?wait=true`
 ## Scheduled runs (cron/systemd)
 
 ```bash
-sudo /opt/docker-backup/setup-cron.sh
+sudo /opt/docker-backup-s3/setup-cron.sh
 ```
 
 An interactive wizard: you pick the method (cron / systemd timer) and a schedule preset.
@@ -993,10 +1027,10 @@ An interactive wizard: you pick the method (cron / systemd timer) and a schedule
 ### Without interaction
 
 ```bash
-sudo /opt/docker-backup/setup-cron.sh -m cron -s daily -y
-sudo /opt/docker-backup/setup-cron.sh -m systemd -s '*-*-* 04:30:00' -y
-sudo /opt/docker-backup/setup-cron.sh --status    # current status
-sudo /opt/docker-backup/setup-cron.sh --remove    # remove
+sudo /opt/docker-backup-s3/setup-cron.sh -m cron -s daily -y
+sudo /opt/docker-backup-s3/setup-cron.sh -m systemd -s '*-*-* 04:30:00' -y
+sudo /opt/docker-backup-s3/setup-cron.sh --status    # current status
+sudo /opt/docker-backup-s3/setup-cron.sh --remove    # remove
 ```
 
 If scheduled runs are already set up (cron or a systemd timer — either one):
@@ -1018,7 +1052,7 @@ daily one) — the schedule changes only with an explicit `setup-cron.sh` call.
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 MAILTO=""
-0 3 * * * /opt/docker-backup/docker-backup.sh >> /var/log/docker-backup-cron.log 2>&1
+0 3 * * * /opt/docker-backup-s3/docker-backup.sh >> /var/log/docker-backup-cron.log 2>&1
 # === /Docker backup ===
 ```
 
@@ -1029,7 +1063,7 @@ sudo env -i \
     SHELL=/bin/bash \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin \
     HOME=/root \
-    /opt/docker-backup/docker-backup.sh
+    /opt/docker-backup-s3/docker-backup.sh
 ```
 
 ### Diagnosing cron problems
@@ -1037,7 +1071,7 @@ sudo env -i \
 If `setup-cron.sh` or `install.sh` warns "Cron is not installed" although it works (e.g. on Ubuntu 24.04), run:
 
 ```bash
-sudo /opt/docker-backup/diagnose-cron.sh
+sudo /opt/docker-backup-s3/diagnose-cron.sh
 ```
 
 It shows:
@@ -1056,14 +1090,14 @@ Useful for debugging if cron auto-detection works incorrectly.
 ### See what is in S3
 
 ```bash
-sudo /opt/docker-backup/docker-restore.sh --list
-sudo /opt/docker-backup/docker-restore.sh --list --project myapp
+sudo /opt/docker-backup-s3/docker-restore.sh --list
+sudo /opt/docker-backup-s3/docker-restore.sh --list --project myapp
 ```
 
 ### Interactive mode
 
 ```bash
-sudo /opt/docker-backup/docker-restore.sh
+sudo /opt/docker-backup-s3/docker-restore.sh
 ```
 
 1. Shows the list of projects with details (backups / latest / age)
@@ -1077,13 +1111,13 @@ sudo /opt/docker-backup/docker-restore.sh
 
 ```bash
 # One project
-sudo /opt/docker-backup/docker-restore.sh \
+sudo /opt/docker-backup-s3/docker-restore.sh \
     -p myapp \
     -t 2026-05-12_03-00-00 \
     -y
 
 # Several projects with the same date
-sudo /opt/docker-backup/docker-restore.sh \
+sudo /opt/docker-backup-s3/docker-restore.sh \
     -p myapp,otherapp \
     -t 2026-05-12_03-00-00 \
     -y
@@ -1092,7 +1126,7 @@ sudo /opt/docker-backup/docker-restore.sh \
 ### A test in /tmp without starting
 
 ```bash
-sudo /opt/docker-backup/docker-restore.sh \
+sudo /opt/docker-backup-s3/docker-restore.sh \
     --dir /tmp/test-restore \
     --no-start
 ```
@@ -1106,7 +1140,7 @@ The most common scenario is not "the server burned down" but "the wrong table wa
 **See what is inside a backup:**
 
 ```bash
-sudo /opt/docker-backup/docker-restore.sh -p myapp --contents
+sudo /opt/docker-backup-s3/docker-restore.sh -p myapp --contents
 ```
 
 Shows the metadata, the list of named volumes with sizes, bind mounts and the database dumps inside `project_dir.tar.gz`. Downloads nothing to the host beyond a temporary folder and changes nothing.
@@ -1114,7 +1148,7 @@ Shows the metadata, the list of named volumes with sizes, bind mounts and the da
 **Get a single database dump (restoring nothing):**
 
 ```bash
-sudo /opt/docker-backup/docker-restore.sh -p myapp --extract-to /tmp/restore -y
+sudo /opt/docker-backup-s3/docker-restore.sh -p myapp --extract-to /tmp/restore -y
 tar xzf /tmp/restore/project_dir.tar.gz -C /tmp/restore
 ls /tmp/restore/myapp/db-dumps/
 ```
@@ -1124,7 +1158,7 @@ Then load the dump manually — e.g. `gunzip -c dump.sql.gz | docker exec -i mya
 **Restore a single volume only:**
 
 ```bash
-sudo /opt/docker-backup/docker-restore.sh -p myapp --only-volume myapp_pgdata -y
+sudo /opt/docker-backup-s3/docker-restore.sh -p myapp --only-volume myapp_pgdata -y
 ```
 
 The project folder, bind mounts and the other volumes are not touched, `docker compose up` is not run. If the volume is used by running containers — the script warns; better stop them.
@@ -1157,10 +1191,10 @@ If the primary S3 is unavailable, read the same copy from the secondary or terti
 
 ```bash
 # List the backups in the tertiary S3
-sudo /opt/docker-backup/docker-restore.sh --from tertiary --list
+sudo /opt/docker-backup-s3/docker-restore.sh --from tertiary --list
 
 # Restore a project from the secondary S3
-sudo /opt/docker-backup/docker-restore.sh --from secondary -p myapp -t 2026-05-12_03-00-00 -y
+sudo /opt/docker-backup-s3/docker-restore.sh --from secondary -p myapp -t 2026-05-12_03-00-00 -y
 ```
 
 Source priority: the `--from` flag → the interactive choice → the primary S3 by default. The copy must be enabled (`<ROLE>_S3_ENABLED="true"`) and filled in. Reading uses the storage's read-only key (`<ROLE>_S3_RESTORE_*`) if set, otherwise that storage's main key. Since the object key is the same in every storage, the restore is fully transparent.
@@ -1172,7 +1206,7 @@ Source priority: the `--from` flag → the interactive choice → the primary S3
 ## System status
 
 ```bash
-sudo /opt/docker-backup/status.sh
+sudo /opt/docker-backup-s3/status.sh
 ```
 
 Shows on one screen:
@@ -1201,34 +1235,34 @@ Two files:
 
 ```bash
 # The last 50 lines, highlighted
-sudo /opt/docker-backup/logs.sh
+sudo /opt/docker-backup-s3/logs.sh
 
 # Follow in real time
-sudo /opt/docker-backup/logs.sh -f
+sudo /opt/docker-backup-s3/logs.sh -f
 
 # Errors only
-sudo /opt/docker-backup/logs.sh -e
+sudo /opt/docker-backup-s3/logs.sh -e
 
 # The whole last run (from 🚀 to ✅)
-sudo /opt/docker-backup/logs.sh -l
+sudo /opt/docker-backup-s3/logs.sh -l
 
 # Entries about a specific project
-sudo /opt/docker-backup/logs.sh -p myapp
+sudo /opt/docker-backup-s3/logs.sh -p myapp
 
 # For the last 2 hours
-sudo /opt/docker-backup/logs.sh -s '2 hours ago'
+sudo /opt/docker-backup-s3/logs.sh -s '2 hours ago'
 
 # All errors for today
-sudo /opt/docker-backup/logs.sh -e -s today
+sudo /opt/docker-backup-s3/logs.sh -e -s today
 
 # The main log only
-sudo /opt/docker-backup/logs.sh -b
+sudo /opt/docker-backup-s3/logs.sh -b
 
 # The cron log only
-sudo /opt/docker-backup/logs.sh -C
+sudo /opt/docker-backup-s3/logs.sh -C
 
 # No limit
-sudo /opt/docker-backup/logs.sh -n 0
+sudo /opt/docker-backup-s3/logs.sh -n 0
 ```
 
 ### Viewing directly
@@ -1301,14 +1335,14 @@ A slot is taken by the newest backup of the day/week/month; weeks are ISO weeks 
 ### Changing the retention
 
 ```bash
-sudo nano /opt/docker-backup/backup.conf
+sudo nano /opt/docker-backup-s3/backup.conf
 # RETENTION_DAYS=90  # three months
 ```
 
 To see what will be deleted on the next run, without deleting anything:
 
 ```bash
-sudo /opt/docker-backup/status.sh
+sudo /opt/docker-backup-s3/status.sh
 ```
 
 ### Checksums
@@ -1324,7 +1358,7 @@ Backups made before manifests existed are checked as before, by size.
 ### What is in S3
 
 ```bash
-source /opt/docker-backup/backup.conf
+source /opt/docker-backup-s3/backup.conf
 export AWS_ACCESS_KEY_ID="$PRIMARY_S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$PRIMARY_S3_SECRET_KEY"
 
 aws --endpoint-url "$PRIMARY_S3_ENDPOINT" $PRIMARY_S3_OPTS_EXTRA \
@@ -1334,52 +1368,35 @@ aws --endpoint-url "$PRIMARY_S3_ENDPOINT" $PRIMARY_S3_OPTS_EXTRA \
 
 ---
 
-## Bash completion
-
-If you installed via `install.sh`, it asks. Otherwise manually:
-
-```bash
-sudo cp /opt/docker-backup/docker-backup-completion.bash /etc/bash_completion.d/docker-backup
-```
-
-After logging in again:
-```bash
-docker-restore.sh --pro<TAB>          # → --project
-docker-restore.sh -p <TAB>            # → project list from S3
-```
-
----
-
 ## Uninstalling
 
 ```bash
 # Safely (S3 is KEPT)
-sudo /opt/docker-backup/uninstall.sh
+sudo /opt/docker-backup-s3/uninstall.sh
 
 # No questions
-sudo /opt/docker-backup/uninstall.sh -y
+sudo /opt/docker-backup-s3/uninstall.sh -y
 
 # See what would happen
-sudo /opt/docker-backup/uninstall.sh --dry-run
+sudo /opt/docker-backup-s3/uninstall.sh --dry-run
 
 # Keep backup.conf for a reinstall
-sudo /opt/docker-backup/uninstall.sh --keep-conf
+sudo /opt/docker-backup-s3/uninstall.sh --keep-conf
 
 # Remove + logs
-sudo /opt/docker-backup/uninstall.sh -y --purge-logs
+sudo /opt/docker-backup-s3/uninstall.sh -y --purge-logs
 
 # ⚠ FULL cleanup (including S3 — every storage whose keys and bucket are filled in; irreversible)
-sudo /opt/docker-backup/uninstall.sh --purge-s3 --purge-logs
+sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 # Asks you to type 'DELETE ALL BACKUPS'
 ```
 
 ### What is removed
 
-- ✅ Files in `/opt/docker-backup/`
+- ✅ Files in `/opt/docker-backup-s3/`
 - ✅ The cron job
 - ✅ Systemd timer + service
 - ✅ `/etc/logrotate.d/docker-backup`
-- ✅ `/etc/bash_completion.d/docker-backup`
 - ✅ `/usr/local/bin/docker-backup` (only if it is the link to this installation)
 - ✅ The lock file
 - ✅ The temporary folder
@@ -1430,7 +1447,7 @@ sudo /opt/docker-backup/uninstall.sh --purge-s3 --purge-logs
 
 CRLF from Windows:
 ```bash
-sudo dos2unix /opt/docker-backup/*.sh /opt/docker-backup/*.conf
+sudo dos2unix /opt/docker-backup-s3/*.sh /opt/docker-backup-s3/*.conf
 ```
 
 ### `SSL: CERTIFICATE_VERIFY_FAILED`
@@ -1472,7 +1489,7 @@ The crontab has no `PATH=` line (by default cron only looks in `/usr/bin:/bin`).
 If `setup-cron.sh` or `install.sh` says cron is not installed — while it actually works (typical on Ubuntu 24.04):
 
 ```bash
-sudo /opt/docker-backup/diagnose-cron.sh
+sudo /opt/docker-backup-s3/diagnose-cron.sh
 ```
 
 The script shows exactly what auto-detection sees. Most likely the `cron` binary is in `/usr/sbin/cron` and the process is running (`pgrep -x cron` finds it) — then there should be no warning. If it shows up anyway — please open an issue with the output of `diagnose-cron.sh`.
@@ -1486,20 +1503,20 @@ This depends on the state of `backup.conf`:
 
 Check manually:
 ```bash
-sudo grep -E "^(PRIMARY_)?S3_(ACCESS_KEY|SECRET_KEY|BUCKET)=" /opt/docker-backup/backup.conf
+sudo grep -E "^(PRIMARY_)?S3_(ACCESS_KEY|SECRET_KEY|BUCKET)=" /opt/docker-backup-s3/backup.conf
 ```
 
 If you want to force a fresh fill-in — remove the conf and run install:
 ```bash
-sudo mv /opt/docker-backup/backup.conf /opt/docker-backup/backup.conf.old
-sudo /opt/docker-backup/install.sh
+sudo mv /opt/docker-backup-s3/backup.conf /opt/docker-backup-s3/backup.conf.old
+sudo /opt/docker-backup-s3/install.sh
 ```
 
 ### The backup hangs on a huge `tar`
 
 Some container has mounted a big path:
 ```bash
-sudo /opt/docker-backup/logs.sh -e | tail -10
+sudo /opt/docker-backup-s3/logs.sh -e | tail -10
 ```
 
 Add it to `BIND_BLACKLIST_REGEX`. The edit is idempotent — running it again breaks nothing,
@@ -1508,8 +1525,8 @@ nothing). The check looks at the variable's line specifically, not the whole fil
 may appear in a neighboring comment, and then the edit would silently not apply.
 
 ```bash
-grep -q "^BIND_BLACKLIST_REGEX=.*your/path" /opt/docker-backup/backup.conf || \
-  sed -i "s#^\(BIND_BLACKLIST_REGEX='.*\)'#\1|^/your/path'#" /opt/docker-backup/backup.conf
+grep -q "^BIND_BLACKLIST_REGEX=.*your/path" /opt/docker-backup-s3/backup.conf || \
+  sed -i "s#^\(BIND_BLACKLIST_REGEX='.*\)'#\1|^/your/path'#" /opt/docker-backup-s3/backup.conf
 ```
 
 `update.sh` doesn't change the values in the working `backup.conf`, so such an edit won't spread via an update:
@@ -1538,7 +1555,7 @@ sudo rm -rf /var/run/docker-backup.lock.d
 ### Telegram messages don't arrive
 
 ```bash
-sudo /opt/docker-backup/validate-config.sh
+sudo /opt/docker-backup-s3/validate-config.sh
 ```
 
 Sends a test message with diagnostics. The most common cause — you didn't send the bot `/start`.
@@ -1562,14 +1579,14 @@ cd /opt/myapp && sudo docker compose up -d
 ### Rolling back to the previous version after an update
 
 ```bash
-sudo /opt/docker-backup/update.sh --rollback
+sudo /opt/docker-backup-s3/update.sh --rollback
 ```
 
 ### S3 keys were accidentally published
 
 1. Your S3 provider's panel → access keys → change the key
 2. Put the new one into `backup.conf`
-3. `sudo /opt/docker-backup/validate-config.sh`
+3. `sudo /opt/docker-backup-s3/validate-config.sh`
 
 ---
 

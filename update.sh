@@ -4,7 +4,7 @@
 # Updates Docker Backup System in place, keeping backup.conf and pre/post hooks.
 #
 # What it does:
-#   1. Backs up all current files to /opt/docker-backup.bak.<timestamp>/
+#   1. Backs up all current files to /opt/docker-backup-s3.bak.<timestamp>/
 #   2. Copies the new script versions over the old ones
 #   3. Does not overwrite backup.conf: shows new options and renames
 #      the old primary storage names S3_* → PRIMARY_S3_* (with a copy alongside)
@@ -19,7 +19,7 @@
 #
 # Usage:
 #   sudo ./update.sh                          # from the unpacked archive
-#   sudo ./update.sh --target /opt/docker-backup
+#   sudo ./update.sh --target /opt/docker-backup-s3
 #   sudo ./update.sh --rollback               # roll back to the previous version
 #   sudo ./update.sh --migrate-conf           # only rename S3_* → PRIMARY_S3_* in backup.conf
 # ==============================================================================
@@ -29,7 +29,7 @@ IFS=$'\n\t'
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Arguments ---
-TARGET_DIR="/opt/docker-backup"
+TARGET_DIR="/opt/docker-backup-s3"
 NON_INTERACTIVE="false"
 ROLLBACK="false"
 SKIP_VALIDATE="false"
@@ -51,7 +51,7 @@ Usage: $0 [options]
 
 Updates an installed Docker Backup System (in place).
 
-  -t, --target DIR     where to install (default: /opt/docker-backup)
+  -t, --target DIR     where to install (default: /opt/docker-backup-s3)
   -s, --source DIR     where to take the new files from (default: next to the script)
   -y, --yes            no interactive questions
       --rollback       roll back to the latest backup copy
@@ -258,7 +258,6 @@ ALL_FILES=(
     sync-s3.sh
     drop-project.sh
     pre-backup-hook.example.sh
-    docker-backup-completion.bash
     backup.conf.example
     README.md
     CHANGELOG.md
@@ -389,9 +388,9 @@ done
 
 # CRLF + permissions
 if command -v dos2unix >/dev/null 2>&1; then
-    dos2unix -q "$TARGET_DIR"/*.sh "$TARGET_DIR"/*.bash 2>/dev/null || true
+    dos2unix -q "$TARGET_DIR"/*.sh 2>/dev/null || true
 else
-    sed -i 's/\r$//' "$TARGET_DIR"/*.sh "$TARGET_DIR"/*.bash 2>/dev/null || true
+    sed -i 's/\r$//' "$TARGET_DIR"/*.sh 2>/dev/null || true
 fi
 chmod +x "$TARGET_DIR"/*.sh 2>/dev/null || true
 log_ok "dos2unix + chmod +x applied"

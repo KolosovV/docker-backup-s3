@@ -361,7 +361,7 @@ done
 # ==============================================================================
 # 7. NOTIFICATIONS
 # ==============================================================================
-if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" ]]; then
+if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" || -n "${EMAIL_TO:-}" || -n "${SMTP_HOST:-}" ]]; then
     section "Notifications"
 
     if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
@@ -416,10 +416,42 @@ if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" ]]; then
     fi
 
     if [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]]; then
-        if [[ "$NOTIFY_WEBHOOK_URL" =~ ^https?:// ]]; then
-            ok "Webhook URL: ${NOTIFY_WEBHOOK_URL:0:40}..."
-        else
+        if ! [[ "$NOTIFY_WEBHOOK_URL" =~ ^https?:// ]]; then
             err "NOTIFY_WEBHOOK_URL must start with http:// or https://"
+        elif ! command -v curl >/dev/null 2>&1; then
+            err "curl is not installed — the webhook can't be sent"
+        elif wh_err="$(notify_test webhook 2>&1)"; then
+            ok "Test message delivered to the webhook (format: $(webhook_format))"
+        else
+            err "Webhook (format: $(webhook_format)): $wh_err"
+            case "$wh_err" in
+                *"HTTP 400"*) echo "      💡 The receiver rejected the payload — check NOTIFY_WEBHOOK_FORMAT (discord / slack / json)" ;;
+                *"HTTP 401"*|*"HTTP 403"*|*"HTTP 404"*) echo "      💡 The URL or its token is wrong, or the webhook was deleted" ;;
+            esac
+        fi
+    fi
+
+    if [[ -n "${EMAIL_TO:-}" || -n "${SMTP_HOST:-}" ]]; then
+        if [[ -z "${EMAIL_TO:-}" ]]; then
+            err "SMTP_HOST is set, but EMAIL_TO is empty"
+        elif [[ -z "${SMTP_HOST:-}" ]]; then
+            err "EMAIL_TO is set, but SMTP_HOST is empty"
+        elif ! curl -V 2>/dev/null | grep -qw smtp; then
+            err "This curl can't send mail (no smtp in 'curl -V')"
+        else
+            [[ "${SMTP_SECURITY:-starttls}" == "none" && -n "${SMTP_USER:-}" ]] \
+                && warn "SMTP_SECURITY=none: the SMTP password goes over the network unencrypted"
+            if mail_err="$(notify_test email 2>&1)"; then
+                ok "Test email sent to ${EMAIL_TO} via ${SMTP_HOST} — check the inbox (and spam)"
+            else
+                err "Email via ${SMTP_HOST}: $mail_err"
+                case "$mail_err" in
+                    *"Login denied"*|*"535"*) echo "      💡 SMTP_USER / SMTP_PASSWORD are wrong (some providers need an app password)" ;;
+                    *"Could not connect"*|*"Connection timed out"*|*"Failed to connect"*)
+                        echo "      💡 The port is closed: check SMTP_SECURITY/SMTP_PORT; many hosting providers block outgoing 25" ;;
+                    *"SSL"*|*"certificate"*) echo "      💡 TLS failed: tls is for port 465, starttls for 587" ;;
+                esac
+            fi
         fi
     fi
 fi

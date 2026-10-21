@@ -481,6 +481,8 @@ release_lock() {
 #   level: error 🔴 — no backup or an incomplete one; warn 🟠 — the primary copy is there, but something is off;
 #          success 🟢 — everything went fine (only with NOTIFY_ON=always).
 #   Details are already HTML: escape substituted names with html_esc.
+#   Goes to every configured channel: Telegram, the webhook, email. A channel that fails is logged
+#   and does not stop the others.
 notify() {
     local level="$1" title="$2" body="${3:-}"
 
@@ -489,7 +491,14 @@ notify() {
         error)  [[ "$level" == "success" ]] && return 0 ;;
         always) ;;
     esac
+    notify_send "$level" "$title" "$body"
+}
 
+# notify_send <level> <title> <details, HTML> [channel] — build the message and send it, without the
+# NOTIFY_ON filter. With a channel (telegram|webhook|email) — only there; exit code 1 if it failed,
+# the reason is in NOTIFY_ERR. Without one — to every configured channel, failures go to the log.
+notify_send() {
+    local level="$1" title="$2" body="${3:-}" only="${4:-}"
     local icon="🟢"
     case "$level" in
         error) icon="🔴" ;;
@@ -498,32 +507,181 @@ notify() {
     local name="${NOTIFY_NAME:-$(hostname)}"
     local full="${icon} <b>Server $(html_esc "$name"): $(html_esc "$title")</b>"
     [[ -n "$body" ]] && full+=$'\n'"$body"
-    # Without markup — for the webhook and in case Telegram rejects the HTML.
-    local plain; plain="$(printf '%s' "$full" | sed -e 's/<[^>]*>//g' -e 's/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g')"
+    local plain_body=""; [[ -n "$body" ]] && plain_body="$(html_plain "$body")"
+    local subject="${icon} Server ${name}: ${title}"
+    local ch rc=0
+    for ch in telegram webhook email; do
+        [[ -n "$only" && "$ch" != "$only" ]] && continue
+        notify_configured "$ch" || { [[ -n "$only" ]] && { NOTIFY_ERR="not configured"; return 1; }; continue; }
+        NOTIFY_ERR=""
+        case "$ch" in
+            telegram) _notify_telegram "$full" ;;
+            webhook)  _notify_webhook "$level" "$name" "$title" "$full" "$plain_body" ;;
+            email)    _notify_email "$subject" "$full" ;;
+        esac && continue
+        rc=1
+        [[ -z "$only" ]] && log_warn "Could not send the notification to ${ch}: ${NOTIFY_ERR:-unknown error}"
+    done
+    return "$rc"
+}
 
-    # Telegram
-    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
-        local api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" resp
+# notify_configured <telegram|webhook|email> — the channel's settings are filled in.
+notify_configured() {
+    case "$1" in
+        telegram) [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]] ;;
+        webhook)  [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]] ;;
+        email)    [[ -n "${EMAIL_TO:-}" && -n "${SMTP_HOST:-}" ]] ;;
+        *)        return 1 ;;
+    esac
+}
+
+# notify_test <channel> — a test message to one channel (validate-config, install). Prints the result.
+notify_test() {
+    if notify_send success "test message" "Sent by $(html_esc "${0##*/}") at $(date -u '+%Y-%m-%d %H:%M UTC'). If you see it, $(html_esc "$1") notifications work." "$1"; then
+        return 0
+    fi
+    printf '%s\n' "${NOTIFY_ERR:-unknown error}" >&2
+    return 1
+}
+
+# html_plain — message HTML to plain text: tags dropped, entities back to characters.
+html_plain() {
+    printf '%s' "$1" | sed -e 's/<[^>]*>//g' -e 's/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g'
+}
+
+# _cut_lines <text> <max bytes> — whole lines while they fit (never splits a UTF-8 character).
+_cut_lines() {
+    local text="$1" max="$2" out="" line
+    (( ${#text} <= max )) && { printf '%s' "$text"; return 0; }
+    while IFS= read -r line; do
+        (( ${#out} + ${#line} + 2 > max - 4 )) && break
+        out+="${out:+$'\n'}${line}"
+    done <<< "$text"
+    printf '%s\n…' "$out"
+}
+
+# Telegram: HTML; if the markup is rejected — as plain text, so the alert isn't lost over a tag.
+# A message is at most 4096 characters: a longer one goes as plain text, cut on a line.
+_notify_telegram() {
+    local full="$1" api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" resp
+    if (( ${#full} <= 4000 )); then
         resp="$(curl -s -m 10 -X POST "$api" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text=${full}" \
             --data-urlencode "parse_mode=HTML" \
             --data-urlencode "disable_web_page_preview=true" 2>/dev/null || true)"
-        if [[ "$resp" != *'"ok":true'* ]]; then
-            # Markup rejected (or a network issue) — send as plain text, so the alert isn't lost over a tag.
-            curl -s -m 10 -X POST "$api" \
-                --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-                --data-urlencode "text=${plain}" 2>/dev/null | grep -q '"ok":true' \
-                || log_warn "Could not send to Telegram"
-        fi
+        [[ "$resp" == *'"ok":true'* ]] && return 0
     fi
+    resp="$(curl -s -m 10 -X POST "$api" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=$(_cut_lines "$(html_plain "$full")" 4000)" 2>/dev/null || true)"
+    [[ "$resp" == *'"ok":true'* ]] && return 0
+    NOTIFY_ERR="$(printf '%s' "$resp" | jq -r '.description // empty' 2>/dev/null || true)"
+    NOTIFY_ERR="${NOTIFY_ERR:-no response from api.telegram.org}"
+    return 1
+}
 
-    # Webhook (Slack/Discord/custom)
-    if [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]]; then
-        jq -n --arg t "$plain" '{text: $t}' \
-            | curl -s -m 10 -X POST -H 'Content-Type: application/json' -d @- "$NOTIFY_WEBHOOK_URL" \
-            >/dev/null 2>&1 || log_warn "Could not send the webhook"
+# webhook_format — the payload shape: NOTIFY_WEBHOOK_FORMAT, or guessed from the URL.
+#   discord — {"content"} with Discord markdown (Discord rejects {"text"});
+#   slack   — {"text"} with Slack markup (Slack, Mattermost, Rocket.Chat);
+#   json    — {"text", "level", "server", "title", "details", "time"} for your own receiver.
+webhook_format() {
+    local f="${NOTIFY_WEBHOOK_FORMAT:-auto}"
+    if [[ "$f" == "auto" ]]; then
+        case "$NOTIFY_WEBHOOK_URL" in
+            https://discord.com/api/webhooks/*|https://*.discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*) f=discord ;;
+            https://hooks.slack.com/*) f=slack ;;
+            *) f=json ;;
+        esac
     fi
+    printf '%s' "$f"
+}
+
+_notify_webhook() {
+    local level="$1" server="$2" title="$3" full="$4" details="$5" payload code
+    case "$(webhook_format)" in
+        discord)
+            # **bold**, `code`; a message is at most 2000 characters.
+            payload="$(printf '%s' "$full" | sed -e 's#</\{0,1\}b>#**#g' -e 's#</\{0,1\}code>#`#g')"
+            payload="$(_cut_lines "$(html_plain "$payload")" 1990)"
+            payload="$(jq -n --arg t "$payload" '{content: $t, allowed_mentions: {parse: []}}')" ;;
+        slack)
+            # *bold*, `code`; & < > stay escaped, as Slack wants them.
+            payload="$(printf '%s' "$full" | sed -e 's#</\{0,1\}b>#*#g' -e 's#</\{0,1\}code>#`#g' -e 's/<[^>]*>//g')"
+            payload="$(jq -n --arg t "$payload" '{text: $t}')" ;;
+        json)
+            payload="$(jq -n --arg t "$(html_plain "$full")" --arg l "$level" --arg s "$server" --arg ti "$title" \
+                --arg d "$details" --arg tm "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '{text: $t, level: $l, server: $s, title: $ti, details: $d, time: $tm}')" ;;
+        *)
+            NOTIFY_ERR="NOTIFY_WEBHOOK_FORMAT must be auto, discord, slack or json"; return 1 ;;
+    esac
+    code="$(printf '%s' "$payload" | curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' --data-binary @- "$NOTIFY_WEBHOOK_URL" 2>/dev/null)" || true
+    [[ "$code" == 2?? ]] && return 0
+    if [[ -z "$code" || "$code" == "000" ]]; then NOTIFY_ERR="no response from the webhook URL"
+    else NOTIFY_ERR="the webhook replied HTTP ${code}"; fi
+    return 1
+}
+
+# Email over SMTP with curl (no mail server on this host needed). The message has a plain-text and
+# an HTML part. The password goes to curl in a temporary config file, not on the command line.
+_notify_email() {
+    local subject="$1" full="$2"
+    local sec="${SMTP_SECURITY:-starttls}" scheme="smtp" port from="${SMTP_FROM:-${SMTP_USER:-}}"
+    case "$sec" in
+        starttls) port=587 ;;
+        tls)      port=465; scheme="smtps" ;;
+        none)     port=25 ;;
+        *) NOTIFY_ERR="SMTP_SECURITY must be starttls, tls or none"; return 1 ;;
+    esac
+    port="${SMTP_PORT:-$port}"
+    [[ -n "$from" ]] || { NOTIFY_ERR="SMTP_FROM is empty"; return 1; }
+    local -a rcpt=()
+    mapfile -t rcpt < <(split_words "${EMAIL_TO//,/ }")
+    (( ${#rcpt[@]} )) || { NOTIFY_ERR="EMAIL_TO is empty"; return 1; }
+
+    local msg cfg boundary out rc=0 to_hdr
+    msg="$(mktemp)" || { NOTIFY_ERR="mktemp failed"; return 1; }
+    cfg="$(mktemp)" || { rm -f "$msg"; NOTIFY_ERR="mktemp failed"; return 1; }
+    chmod 600 "$cfg"
+    boundary="=_docker-backup_$(date +%s)_$$"
+    to_hdr="$(printf '%s, ' "${rcpt[@]}")"; to_hdr="${to_hdr%, }"
+    local html_body
+    html_body="$(printf '%s' "$full" | sed -e 's#<code>#<code style="background:\#f2f2f2;padding:0 3px;border-radius:3px">#g' -e 's/$/<br>/')"
+    {
+        printf 'From: docker-backup <%s>\n' "$from"
+        printf 'To: %s\n' "$to_hdr"
+        printf 'Subject: =?UTF-8?B?%s?=\n' "$(printf '%s' "$subject" | base64 | tr -d '\n')"
+        printf 'Date: %s\n' "$(LC_ALL=C date -R)"
+        printf 'Message-ID: <%s.%s.%s@%s>\n' "$(date +%s)" "$$" "$RANDOM" "$(hostname)"
+        printf 'Auto-Submitted: auto-generated\n'
+        printf 'MIME-Version: 1.0\n'
+        printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$boundary"
+        printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: base64\n\n' "$boundary"
+        html_plain "$full" | base64
+        printf -- '--%s\nContent-Type: text/html; charset=UTF-8\nContent-Transfer-Encoding: base64\n\n' "$boundary"
+        printf '<html><body style="font-family:sans-serif;font-size:14px;line-height:1.5">%s</body></html>' "$html_body" | base64
+        printf -- '--%s--\n' "$boundary"
+    } | sed 's/$/\r/' > "$msg"
+
+    local -a args=(-sS -m 30 --url "${scheme}://${SMTP_HOST}:${port}" --mail-from "$from" --upload-file "$msg")
+    local r
+    for r in "${rcpt[@]}"; do args+=(--mail-rcpt "$r"); done
+    [[ "$sec" == "starttls" ]] && args+=(--ssl-reqd)
+    if [[ -n "${SMTP_USER:-}" ]]; then
+        local cred="${SMTP_USER}:${SMTP_PASSWORD:-}"
+        cred="${cred//\\/\\\\}"; cred="${cred//\"/\\\"}"
+        printf 'user = "%s"\n' "$cred" > "$cfg"
+        args+=(-K "$cfg")
+    fi
+    out="$(curl "${args[@]}" 2>&1)" || rc=$?
+    rm -f "$msg" "$cfg"
+    (( rc == 0 )) && return 0
+    NOTIFY_ERR="$(printf '%s' "$out" | tail -n 1)"
+    NOTIFY_ERR="${NOTIFY_ERR#curl: }"
+    NOTIFY_ERR="${NOTIFY_ERR:-curl exit code $rc}"
+    return 1
 }
 
 # abort_stale_uploads <bucket> — abort unfinished multipart uploads under BACKUP_PREFIX older than

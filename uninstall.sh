@@ -4,11 +4,11 @@
 # Clean removal of Docker Backup System.
 #
 # What is removed:
-#   ✓ Files in /opt/docker-backup/ (or the given --target)
+#   ✓ Files in /opt/docker-backup-s3/ (or the given --target)
 #   ✓ the cron job (if any)
 #   ✓ the systemd timer and service (if any)
 #   ✓ logrotate config
-#   ✓ bash completion
+#   ✓ the docker-backup command link
 #   ✓ the lock directory (/var/run/docker-backup.lock.d)
 #   ✓ the temporary folder (/var/tmp/docker-backup)
 #
@@ -24,14 +24,14 @@
 #   sudo ./uninstall.sh                    # interactive
 #   sudo ./uninstall.sh -y                 # no questions, remove everything except logs and S3
 #   sudo ./uninstall.sh -y --purge-logs    # + remove the logs
-#   sudo ./uninstall.sh --target /opt/docker-backup
+#   sudo ./uninstall.sh --target /opt/docker-backup-s3
 #   sudo ./uninstall.sh --dry-run          # show what would be removed, do nothing
 # ==============================================================================
 set -euo pipefail
 IFS=$'\n\t'
 
 # --- Arguments ---
-TARGET_DIR="/opt/docker-backup"
+TARGET_DIR="/opt/docker-backup-s3"
 NON_INTERACTIVE="false"
 PURGE_LOGS="false"
 PURGE_S3="false"
@@ -52,7 +52,7 @@ Usage: $0 [options]
 
 Removes Docker Backup System.
 
-  -t, --target DIR     what to remove (default: /opt/docker-backup)
+  -t, --target DIR     what to remove (default: /opt/docker-backup-s3)
   -y, --yes            no confirmations (remove everything except logs and S3)
   -n, --dry-run        show what would be removed, do nothing
       --purge-logs     also remove /var/log/docker-backup*.log
@@ -166,7 +166,6 @@ FOUND_TARGET="false"
 FOUND_CRON="false"
 FOUND_SYSTEMD="false"
 FOUND_LOGROTATE="false"
-FOUND_COMPLETION="false"
 FOUND_CMD="false"
 FOUND_LOGS="false"
 FOUND_LOCK="false"
@@ -213,14 +212,6 @@ if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backu
     log_ok "Command: /usr/local/bin/docker-backup → $TARGET_DIR/menu.sh"
 else
     log_skip "No docker-backup command link found"
-fi
-
-# Bash completion
-if [[ -f /etc/bash_completion.d/docker-backup ]]; then
-    FOUND_COMPLETION="true"
-    log_ok "Bash completion: /etc/bash_completion.d/docker-backup"
-else
-    log_skip "Bash completion is not installed"
 fi
 
 # Logs
@@ -270,7 +261,7 @@ fi
 # Nothing found — exit
 if [[ "$FOUND_TARGET" == "false" && "$FOUND_CRON" == "false" && \
       "$FOUND_SYSTEMD" == "false" && "$FOUND_LOGROTATE" == "false" && \
-      "$FOUND_COMPLETION" == "false" && "$FOUND_CMD" == "false" && "$FOUND_LOGS" == "false" && \
+      "$FOUND_CMD" == "false" && "$FOUND_LOGS" == "false" && \
       "$FOUND_LOCK" == "false" && "$FOUND_WORK_DIR" == "false" ]]; then
     echo
     log "${C_GREEN}Docker Backup System does not seem to be installed. Nothing to remove.${C_RESET}"
@@ -339,11 +330,10 @@ fi
 echo
 log_step "Removal plan"
 
-[[ "$FOUND_TARGET" == "true" ]]    && echo "  • Files: $TARGET_DIR/$([[ "$KEEP_CONF" == "true" ]] && echo "*.sh, *.bash (backup.conf is kept)" || echo "*")"
+[[ "$FOUND_TARGET" == "true" ]]    && echo "  • Files: $TARGET_DIR/$([[ "$KEEP_CONF" == "true" ]] && echo "*.sh (backup.conf is kept)" || echo "*")"
 [[ "$FOUND_CRON" == "true" ]]      && echo "  • Cron job"
 [[ "$FOUND_SYSTEMD" == "true" ]]   && echo "  • Systemd timer + service"
 [[ "$FOUND_LOGROTATE" == "true" ]] && echo "  • /etc/logrotate.d/docker-backup"
-[[ "$FOUND_COMPLETION" == "true" ]] && echo "  • /etc/bash_completion.d/docker-backup"
 [[ "$FOUND_CMD" == "true" ]]       && echo "  • /usr/local/bin/docker-backup (the command link)"
 [[ "$FOUND_LOCK" == "true" ]]      && echo "  • $LOCK_DIR"
 [[ "$FOUND_WORK_DIR" == "true" ]]  && echo "  • /var/tmp/docker-backup"
@@ -446,12 +436,8 @@ if [[ "$FOUND_LOGROTATE" == "true" ]]; then
 fi
 
 # ==============================================================================
-# 8. REMOVAL — BASH COMPLETION
+# 8. REMOVAL — THE docker-backup COMMAND
 # ==============================================================================
-if [[ "$FOUND_COMPLETION" == "true" ]]; then
-    log_step "Removing bash completion"
-    do_action "rm /etc/bash_completion.d/docker-backup" rm -f /etc/bash_completion.d/docker-backup
-fi
 if [[ "$FOUND_CMD" == "true" ]]; then
     log_step "Removing the docker-backup command"
     do_action "rm /usr/local/bin/docker-backup" rm -f /usr/local/bin/docker-backup

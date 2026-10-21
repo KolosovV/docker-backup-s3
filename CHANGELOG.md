@@ -8,6 +8,33 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.1.0] — 2026-10-21
+
+### Added
+- **Email notifications** over your own SMTP server (`EMAIL_TO`, `SMTP_HOST`, `SMTP_SECURITY`
+  starttls/tls/none, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`). curl sends them, so the host needs
+  no mail server. The subject is the notification line, and the body has a plain-text and an HTML part. The
+  password goes to curl in a temporary file, not on the command line.
+- `NOTIFY_WEBHOOK_FORMAT`: `discord`, `slack` (also Mattermost, Rocket.Chat) or `json` (`text`, `level`, `server`,
+  `title`, `details`, `time`). `auto` (the default) picks it from the URL.
+- `install.sh` asks for the webhook and email settings and sends a test message right away.
+  `validate-config.sh` also sends a test message to the webhook and by email.
+
+### Changed
+- The default installation folder is `/opt/docker-backup-s3` (it was `/opt/docker-backup`), the same as the
+  repository name.
+- Bash completion is removed: the `docker-backup` menu and `docker-backup help` list every command.
+
+### Fixed
+- **Discord webhooks received nothing.** They were sent `{"text"}`, which Discord rejects.
+- A webhook that answered with an HTTP error counted as sent. Now any reply other than 2xx is logged as a
+  failure.
+- A Telegram message over 4096 characters (a long list of failed projects) was lost. Now it is sent as plain
+  text, cut at a whole line.
+- A value with `"`, `$`, `` ` `` or `\` (a password, say) written by the installer or the menu broke `backup.conf`,
+  which bash reads. Such values are now written in single quotes.
+- The unused `export AWS_S3_ADDRESSING_STYLE` line is removed from the template.
+
 ## [1.0.1] — 2026-10-21
 
 A code review pass: two data-safety bugs and a few smaller ones.
@@ -63,5 +90,6 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.1.0
 [1.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.0.0

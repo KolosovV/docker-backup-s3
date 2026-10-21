@@ -9,7 +9,7 @@
 # gives a clear verdict: whether the key is valid, which addressing style works
 # (path / virtual-hosted) and what to put into backup.conf.
 #
-# Usage:  sudo bash /opt/docker-backup/diagnose-s3.sh
+# Usage:  sudo bash /opt/docker-backup-s3/diagnose-s3.sh
 # ==============================================================================
 set -uo pipefail
 
