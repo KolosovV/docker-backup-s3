@@ -30,6 +30,9 @@ The installed version: `docker-backup version` (or the `VERSION` file).
   `setup-cron.sh -m systemd -y` once to rewrite the unit.
 - `setup-cron.sh` could not start the cron service on systemd 239: `systemctl list-unit-files` answers "found" there
   even for a unit that does not exist, so a wrong name was picked.
+- `install.sh` failed on a freshly booted machine when the package manager was busy (unattended-upgrades on Ubuntu,
+  dnf-makecache on Fedora/RHEL). apt now waits for its lock, and the others are retried for up to 2 minutes.
+  `setup-cron.sh` says plainly that `crontab` is missing instead of failing with "command not found".
 - `uninstall.sh -y` during a running backup removed nothing (correctly) but exited 0, so a script calling it took
   it for done. It now exits 1.
 - The logo was unreadable on GitHub's light theme when the system theme was dark. There is now one logo, readable

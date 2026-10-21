@@ -291,6 +291,7 @@ install_cron() {
     local cron_log="/var/log/docker-backup-cron.log"
 
     log_step "Setting up the cron job..."
+    command -v crontab >/dev/null 2>&1 || fail "crontab is not installed: install cron (Debian/Ubuntu, openSUSE), cronie (RHEL, Fedora, Arch) or dcron (Alpine), or use -m systemd"
 
     # Validate the cron expression (5 fields)
     local field_count

@@ -213,7 +213,8 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
     }
     pm_install() {   # pm_install <package…> — exit code of the package manager
         case "$PKG_MGR" in
-            apt-get) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" ;;
+            # Wait for the lock: right after boot unattended-upgrades often holds it
+            apt-get) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq "$@" ;;
             dnf|yum) "$PKG_MGR" install -y -q "$@" ;;
             zypper)  zypper --non-interactive -q install -y "$@" ;;
             pacman)  pacman -S --noconfirm --needed "$@" ;;
@@ -233,10 +234,16 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         (( ${#want[@]} )) || { log_ok "Base packages are already there"; return 0; }
         log "  Installing: ${want[*]}"
         case "$PKG_MGR" in
-            apt-get) apt-get update -qq || true ;;
+            apt-get) apt-get -o DPkg::Lock::Timeout=300 update -qq || true ;;
             pacman)  pacman -Sy --noconfirm >/dev/null || true ;;
         esac
-        pm_install "${want[@]}" && { log_ok "Base packages installed"; return 0; }
+        # A package manager busy right after boot (dnf-makecache, unattended-upgrades, packagekit) fails
+        # the first try: wait and try again before going package by package
+        local try
+        for try in 1 2 3 4 5 6; do
+            pm_install "${want[@]}" && { log_ok "Base packages installed"; return 0; }
+            (( try < 6 )) && { log "  The package manager failed or is busy — trying again in 20 s ($try/6)..."; sleep 20; }
+        done
         # One bad name (or a conflict, like curl with curl-minimal) fails the whole list — one by one
         for p in "${want[@]}"; do
             pm_install "$p" >/dev/null 2>&1 && continue

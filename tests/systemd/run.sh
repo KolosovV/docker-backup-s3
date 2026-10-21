@@ -18,7 +18,9 @@ mkdir -p "$SHARE"; chmod 1777 "$SHARE"
 systemd_setup() {
     case "$1" in
         debian:*|ubuntu:*) echo 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd systemd-sysv procps >/dev/null' ;;
-        rockylinux:*|almalinux:*|fedora:*|amazonlinux:*) echo 'dnf install -y -q systemd procps-ng >/dev/null' ;;
+        rockylinux:*|almalinux:*|fedora:*|amazonlinux:*)
+            # authselect: a real RHEL-family server has a PAM profile, the container image does not (crond needs one)
+            echo 'dnf install -y -q systemd procps-ng authselect >/dev/null && (authselect select local --force >/dev/null 2>&1 || authselect select minimal --force >/dev/null)' ;;
         opensuse/*) echo 'zypper --non-interactive -q install -y systemd systemd-sysvinit procps >/dev/null' ;;
         archlinux:*) echo 'pacman -Syu --noconfirm --needed systemd procps-ng >/dev/null' ;;
         *) return 1 ;;
