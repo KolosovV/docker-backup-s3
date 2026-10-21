@@ -18,7 +18,8 @@ export LC_ALL=C.UTF-8
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KEEP=false; [[ "${1:-}" == "-k" ]] && KEEP=true
-IT="$(mktemp -d /tmp/dbit.XXXXXX)"
+# DBT_WORK: a folder whose path is the same for this script and the Docker daemon (the distro tests share one)
+IT="$(mktemp -d "${DBT_WORK:-/tmp}/dbit.XXXXXX")"
 chmod 755 "$IT"
 PROJ="itproj"
 PDIR="$IT/srv/$PROJ"
@@ -77,7 +78,7 @@ show_tail() { echo "---- last lines of $1:"; tail -n 25 "$IT/$1.out"; echo "----
 
 # ------------------------------------------------------------------------------
 step "S3 (Versity Gateway) and the webhook receiver"
-docker run -d --name "$S3C" -p "127.0.0.1:${S3PORT}:7070" \
+docker run -d --name "$S3C" --label docker-backup.skip=true -p "127.0.0.1:${S3PORT}:7070" \
     -e ROOT_ACCESS_KEY=itkey -e ROOT_SECRET_KEY=itsecret \
     versity/versitygw:v1.8.0 --port=:7070 posix /tmp >/dev/null || die "cannot start versitygw"
 for _ in $(seq 1 30); do s3 s3 ls >/dev/null 2>&1 && break; sleep 1; done

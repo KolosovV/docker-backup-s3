@@ -278,8 +278,9 @@ if [[ -d "$LOCK_DIR" ]]; then
         log_err "A backup is running right now (PID: $lock_pid)"
         log "  Wait for it to finish or: sudo kill $lock_pid"
         if ! ask_yn "Continue the removal anyway (RISKY)?" "n"; then
-            log "Cancelled."
-            exit 0
+            # Not 0: nothing was removed, and a caller (a script, -y) must not take it for done
+            log "Cancelled — nothing was removed."
+            exit 1
         fi
     fi
 fi

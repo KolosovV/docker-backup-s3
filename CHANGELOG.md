@@ -8,6 +8,45 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.4.0] — 2026-10-21
+
+### Fixed
+- **A restore reported success when volumes did not come back.** If a volume (or a bind mount, or an image) failed
+  to unpack, the restore logged the error, started the project anyway and ended with "restored successfully",
+  exit code 0. Postgres then came up on an empty volume with a new empty database. Now any part that does not come
+  back fails the project's restore, and the project is not started. The same applies when `docker compose up`
+  fails after the data is back. Volume archives are now unpacked with an explicit `gzip -dc | tar -x`, because
+  busybox `tar -z` failed under emulation (an aarch64 helper image on an x86 host).
+- **Restoring volumes failed with Docker from snap** (and rootless or remote Docker). The restore downloaded and
+  unpacked the archive in `/tmp` and mounted volume archives from there into a helper container, but snap's Docker
+  has its own `/tmp`, so the container saw an empty folder. The restore now works in `WORK_DIR`
+  (`/var/tmp/docker-backup`), as the backup always has.
+- **Under systemd the end of the log was lost.** Log lines go through a filter (`grep`), which held them in a
+  buffer. When the service ended, systemd killed what was left of it, and the run's last lines (the summary) never
+  reached `/var/log/docker-backup.log` or the service log. Lines are now passed on one at a time, and the script
+  waits for the log to be written before it exits.
+- **The systemd service wrote no log on RHEL/AlmaLinux/Rocky 8** (systemd 239 has no `StandardOutput=append:`).
+  The service now writes its log through the shell. If you already use the systemd timer, run
+  `setup-cron.sh -m systemd -y` once to rewrite the unit.
+- `setup-cron.sh` could not start the cron service on systemd 239: `systemctl list-unit-files` answers "found" there
+  even for a unit that does not exist, so a wrong name was picked.
+- `uninstall.sh -y` during a running backup removed nothing (correctly) but exited 0, so a script calling it took
+  it for done. It now exits 1.
+- The logo was unreadable on GitHub's light theme when the system theme was dark. There is now one logo, readable
+  on both.
+
+### Added
+- `BACKUP_STANDALONE=false` leaves containers started without compose out of the backup, and the label
+  `docker-backup.skip=true` leaves out a single one (`docker run --label docker-backup.skip=true …`).
+- Scheduling is tested on a real init. On the CI VM and in containers where systemd is PID 1 (Debian, Ubuntu,
+  Rocky 9, AlmaLinux 8, Fedora, openSUSE, Arch), the test runs `install.sh`, then checks that the cron service is
+  active and enabled and that the timer is enabled with a next run. The service itself makes a real backup, cron
+  starts one on its own, and everything is removed at the end (`tests/systemd/`).
+- aarch64 is tested under QEMU: Debian 12, Ubuntu 24.04, Rocky 9 and Alpine get the install, the tests and the
+  integration test (`DBT_PLATFORM=linux/arm64 tests/distros/run.sh`).
+- CI: every push runs ShellCheck, the tests, the integration test and the real-VM test. Release tags, a weekly run
+  and manual runs also run the distributions, systemd and aarch64.
+
 ## [1.3.0] — 2026-10-21
 
 Tested on 11 Linux distributions. On each one CI now runs `install.sh -y` on a fresh system, then the tests and
@@ -152,6 +191,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.4.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.0
 [1.3.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.3.0
 [1.2.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.1
 [1.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.0

@@ -5,8 +5,8 @@ IFS=$'\n\t'
 . /etc/os-release
 echo "== ${DBT_IMAGE:-?}: ${PRETTY_NAME:-unknown}, bash ${BASH_VERSION}"
 FAILS=0
-# Full logs stay in /tmp/dbt-logs/<image>/ (the host's /tmp) for a look after a failure
-LOGS="/tmp/dbt-logs/$(tr '/:' '__' <<< "${DBT_IMAGE:-local}")"
+# Full logs stay in <the shared folder>/dbt-logs/<image>/ on the host for a look after a failure
+LOGS="${DBT_WORK:-/tmp}/dbt-logs/$(tr '/: ()' '_____' <<< "${DBT_IMAGE:-local}")"
 rm -rf "$LOGS"; mkdir -p "$LOGS"
 ok()  { echo "  PASS $*"; }
 bad() { echo "  FAIL $*"; FAILS=$((FAILS + 1)); }

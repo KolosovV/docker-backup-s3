@@ -71,8 +71,12 @@ if [[ "$LIST_ONLY" == "true" ]]; then
     exec 2>/dev/null
 else
     mkdir -p "$(dirname "$LOG_FILE")"
-    # Duplicate stderr (logs) to the file, filtering out SSL warnings
-    exec 2> >(tee -a >(grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >> "$LOG_FILE") | grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2)
+    # Duplicate stderr (logs) to the file, filtering out SSL warnings.
+    # --line-buffered, and _on_exit waits for this pipe: under systemd the service's leftover processes are
+    # killed the moment the script exits, and whatever grep still held in its buffer (the summary) was lost.
+    exec 2> >(tee -a >(grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >> "$LOG_FILE") \
+        | grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2)
+    LOG_PIPE_PID=$!
 fi
 
 # --- Dependency check ---
@@ -109,6 +113,11 @@ _on_exit() {
         [[ -n "${CURRENT_PROJECT:-}" ]] && body+="Interrupted on project <b>$(html_esc "$CURRENT_PROJECT")</b>, its containers were brought back."$'\n'
         body+="No summary for this run, some projects were not saved. $(notify_log_hint)"
         notify error "backup interrupted" "$body"
+    fi
+    # Let the log pipe finish writing: close our end, wait for it (see "Logging to a file")
+    if [[ -n "${LOG_PIPE_PID:-}" ]]; then
+        exec 2>&-
+        wait "$LOG_PIPE_PID" 2>/dev/null || true
     fi
 }
 
@@ -236,15 +245,20 @@ if [[ -n "${SCAN_DIRS:-}" ]]; then
     done
 fi
 
-# 1c) Standalone containers
+# 1c) Standalone containers (BACKUP_STANDALONE=false — none; the label docker-backup.skip=true — not this one)
 STANDALONE_CONTAINERS=()
-while IFS= read -r cid; do
-    [[ -z "$cid" ]] && continue
-    project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$cid" 2>/dev/null || true)"
-    if [[ -z "$project" ]]; then
+if [[ "${BACKUP_STANDALONE:-true}" == "true" ]]; then
+    while IFS= read -r cid; do
+        [[ -z "$cid" ]] && continue
+        labels="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "docker-backup.skip" }}' "$cid" 2>/dev/null || true)"
+        [[ -n "${labels%%|*}" ]] && continue
+        if [[ "${labels#*|}" == "true" ]]; then
+            log "  ⊘ Skipped (label docker-backup.skip=true): $(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
+            continue
+        fi
         STANDALONE_CONTAINERS+=("$cid")
-    fi
-done < <(docker ps -aq)
+    done < <(docker ps -aq)
+fi
 
 log "📦 Compose projects found: ${C_BOLD}${#PROJECTS[@]}${C_RESET}"
 log "📦 Standalone containers: ${C_BOLD}${#STANDALONE_CONTAINERS[@]}${C_RESET}"

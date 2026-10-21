@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo-light.svg" alt="docker-backup-s3" width="460">
-  </picture>
+  <img src="assets/logo.svg" alt="docker-backup-s3" width="460">
 </p>
 
 <p align="center">
@@ -12,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.3.0-2496ED" alt="version 1.3.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.4.0-2496ED" alt="version 1.4.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -237,7 +234,11 @@ tests and the full integration test (backup → restore → compare), see `tests
   used and `crond` is enabled through OpenRC.
 - **AWS CLI v2:** the official AWS installer into `/usr/local/bin` comes first. Where it does not run (musl), the
   distro package is used if it is v2, and snap is the last fallback.
-- x86_64 and aarch64. Other Linux distributions with bash 4+ and these tools work too; they are just not in CI.
+- **x86_64 and aarch64.** aarch64 is tested under QEMU on Debian 12, Ubuntu 24.04, Rocky 9 and Alpine.
+- **Scheduling on a real init:** the cron service, the systemd timer and service, and cron starting a backup on its
+  own are tested on a VM and with systemd as PID 1 on Debian, Ubuntu, Rocky 9, AlmaLinux 8, Fedora, openSUSE and
+  Arch (systemd 239 to 25x).
+- Other Linux distributions with bash 4+ and these tools work too; they are just not in CI.
 
 > On CentOS/RHEL `dos2unix` lives in EPEL. If it did not install, that is not critical: the scripts fix line
 > endings with `sed`.
@@ -458,6 +459,7 @@ Everything else has sensible defaults.
 | `BACKUP_BIND_MOUNTS` | `true` | back up bind mounts |
 | `BACKUP_PROJECT_DIR` | `true` | back up the whole project folder |
 | `BACKUP_IMAGES` | `false` | save docker images |
+| `BACKUP_STANDALONE` | `true` | back up containers started without compose (one extra archive); a single container is left out with the label `docker-backup.skip=true` |
 | `PARALLEL_JOBS` | `2` | volume backup parallelism |
 | `COMPRESS_LEVEL` | `6` | gzip level for every archive: 1 — fastest, 9 — smallest |
 | `MIN_FREE_SPACE_MB` | `1024` | minimum free space |
@@ -1649,8 +1651,23 @@ tests/distros/run.sh                    # all of them (a Linux host with Docker)
 tests/distros/run.sh alpine:3.20        # one
 ```
 
-On every push GitHub Actions runs ShellCheck (warnings and errors), the tests, the integration test and the distro
-test for each distribution: see `.github/workflows/ci.yml`.
+Another architecture runs under QEMU: `DBT_PLATFORM=linux/arm64 tests/distros/run.sh debian:12`.
+
+The systemd test checks scheduling on a real init. It runs `install.sh` as a user would, then checks that the
+cron service is active and enabled at boot and has our job. It switches to the systemd timer and checks that it
+is enabled and has a next run. It starts the service itself, which must make a real backup, then sets cron to
+"every minute" and waits until cron starts a backup on its own. Last, it removes the schedule and runs
+`uninstall.sh`. It changes the machine it runs on, so give it a throwaway VM, or let it start containers where
+systemd is PID 1:
+
+```bash
+sudo tests/systemd/check.sh             # on a throwaway VM
+tests/systemd/run.sh rockylinux:9       # systemd in a container (privileged)
+```
+
+On every push GitHub Actions runs ShellCheck (warnings and errors), the tests, the integration test and the
+systemd test on its own VM. Release tags, a weekly run and manual runs also run the distro test for each
+distribution, the systemd test in each distribution's container, and aarch64: see `.github/workflows/ci.yml`.
 
 ---
 

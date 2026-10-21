@@ -382,7 +382,8 @@ $schedule ${nice_prefix}$BACKUP_SCRIPT >> $cron_log 2>&1
         log_warn "Cron is installed, but the service is not active — trying to start it..."
         cron_unit=""
         for u in cron crond cronie; do
-            if systemctl list-unit-files "${u}.service" >/dev/null 2>&1; then
+            # systemctl cat fails for a unit that does not exist; list-unit-files answers 0 on systemd 239
+            if systemctl cat "${u}.service" >/dev/null 2>&1; then
                 cron_unit="$u"
                 break
             fi
@@ -443,9 +444,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
-ExecStart=$BACKUP_SCRIPT
-StandardOutput=append:/var/log/docker-backup-cron.log
-StandardError=append:/var/log/docker-backup-cron.log
+# The log through the shell, not StandardOutput=append: — systemd before 240 (RHEL 8) has no append:
+ExecStart=/bin/bash -c 'exec $BACKUP_SCRIPT >> /var/log/docker-backup-cron.log 2>&1'
 
 # The backup is a background task: tar and gzip must not take CPU and disk away from production
 # containers. S3_BANDWIDTH_LIMIT only limits the upload, not this stage.

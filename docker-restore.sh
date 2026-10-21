@@ -604,8 +604,11 @@ restore_one_project() {
     aws_q s3 ls "$S3_URL" >/dev/null 2>&1 \
         || { log_err "Archive not found: $S3_URL"; return 1; }
 
-    local TMP_DIR
-    TMP_DIR="$(mktemp -d -t docker-restore-XXXXXX)"
+    # In WORK_DIR, like the backup, not in /tmp: volume archives are mounted into a helper container from here,
+    # and Docker from snap (and rootless or remote setups) does not see the host's /tmp
+    local TMP_DIR work="${WORK_DIR:-/var/tmp/docker-backup}"
+    mkdir -p "$work" || { log_err "Cannot create WORK_DIR $work"; return 1; }
+    TMP_DIR="$(mktemp -d "${work}/restore.XXXXXX")" || { log_err "Cannot create a temporary folder in $work"; return 1; }
     # shellcheck disable=SC2064
     trap "rm -rf '$TMP_DIR'" RETURN
 
@@ -714,6 +717,9 @@ restore_one_project() {
     # the working volume's contents. The data used to be deleted in the same command as the unpack
     # ("find -delete; tar xzf"), so a broken archive meant losing both the old and the
     # new — and it came out in the middle of an incident.
+    # Every part that did not come back counts: the project is then reported as failed and not started
+    # (Postgres on an empty volume would quietly make a new empty database, and it would look fine).
+    local part_errors=0
     if [[ -d "${PROJ_BACKUP_DIR}/volumes" ]]; then
         log "  💾 Restoring named volumes..."
         local restored_vols=0
@@ -734,6 +740,7 @@ restore_one_project() {
             # 1) Is the archive readable?
             if ! tar tzf "$vol_archive" >/dev/null 2>&1; then
                 log_err "      The volume archive is corrupted — skipping, current data untouched"
+                part_errors=$((part_errors + 1))
                 continue
             fi
 
@@ -741,15 +748,17 @@ restore_one_project() {
             local tmp_vol="${vol_name}__restore_$$"
             if ! docker volume create "$tmp_vol" >/dev/null 2>&1; then
                 log_err "      Could not create a temporary volume — skipping"
+                part_errors=$((part_errors + 1))
                 continue
             fi
             if ! docker run --rm \
                     -v "${tmp_vol}:/target" \
                     -v "${vol_archive}:/backup.tar.gz:ro" \
                     alpine:latest \
-                    sh -c "tar xzf /backup.tar.gz -C /target"; then
+                    sh -c "gzip -dc /backup.tar.gz | tar -xf - -C /target"; then
                 log_err "      Unpacking failed — the working volume is untouched"
                 docker volume rm "$tmp_vol" >/dev/null 2>&1 || true
+                part_errors=$((part_errors + 1))
                 continue
             fi
 
@@ -768,11 +777,13 @@ restore_one_project() {
                 # one: deleting it would leave no good copy on the host
                 log_err "      Error moving data into $vol_name — the unpacked backup is kept in volume ${tmp_vol}"
                 log_err "      Copy it over by hand: docker run --rm -v ${tmp_vol}:/from:ro -v ${vol_name}:/to alpine cp -a /from/. /to/"
+                part_errors=$((part_errors + 1))
             fi
         done
 
         # Single-volume mode — that's all, leave the rest alone
         if [[ -n "$ONLY_VOLUME" ]]; then
+            (( part_errors == 0 )) || return 1
             if (( restored_vols == 0 )); then
                 log_err "Volume '$ONLY_VOLUME' not found in this backup"
                 return 1
@@ -825,8 +836,10 @@ restore_one_project() {
                 fi
             fi
             [[ -e "$target_path" ]] && rm -rf "$target_path"
-            tar xzf "$bind_archive" -C "$(dirname "$target_path")" \
-                || log_warn "Error unpacking $archive_basename"
+            if ! tar xzf "$bind_archive" -C "$(dirname "$target_path")"; then
+                log_err "      Error unpacking $archive_basename"
+                part_errors=$((part_errors + 1))
+            fi
         done
     fi
 
@@ -836,8 +849,14 @@ restore_one_project() {
         for img_file in "${PROJ_BACKUP_DIR}/images/"*.tar.gz; do
             [[ -f "$img_file" ]] || continue
             log "    🐳 $(basename "$img_file")"
-            gunzip -c "$img_file" | docker load || log_warn "docker load error"
+            gunzip -c "$img_file" | docker load || { log_err "    docker load error"; part_errors=$((part_errors + 1)); }
         done
+    fi
+
+    if (( part_errors > 0 )); then
+        log_err "$PROJECT: restore INCOMPLETE — ${part_errors} part(s) did not come back (see above)."
+        log_err "  The project is NOT started, so it does not come up on missing data."
+        return 1
     fi
 
     # 8.5 — Start
@@ -848,12 +867,16 @@ restore_one_project() {
         done
         if [[ -n "$compose_file" ]]; then
             log "  🚀 Starting: cd $TARGET_DIR && docker compose up -d"
-            (cd "$TARGET_DIR" && docker_compose up -d) \
-                || log_warn "docker compose up finished with an error"
+            local up_rc=0
+            (cd "$TARGET_DIR" && docker_compose up -d) || up_rc=$?
             echo >&2
             log "  📊 Status of the project's containers:"
             docker ps -a --filter "label=com.docker.compose.project=$PROJECT" \
                 --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' >&2
+            if (( up_rc != 0 )); then
+                log_err "$PROJECT: the data is restored, but docker compose up failed (exit ${up_rc})"
+                return 1
+            fi
         else
             log_warn "No compose file found in $TARGET_DIR — start skipped"
         fi

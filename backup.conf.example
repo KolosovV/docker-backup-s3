@@ -212,6 +212,9 @@ BACKUP_VOLUMES="true"     # named volumes
 BACKUP_BIND_MOUNTS="true" # bind mounts (host paths)
 BACKUP_PROJECT_DIR="true" # the whole folder with docker-compose.yml
 BACKUP_IMAGES="false"     # docker save of the images (A LOT of space)
+# Containers started without compose ("standalone") go into one extra archive. false — leave them out.
+# To leave out just one: start it with the label docker-backup.skip=true (docker run --label docker-backup.skip=true …).
+BACKUP_STANDALONE="true"
 
 # --- Compression ---
 # gzip level for every archive (volumes, bind mounts, the project folder, images, the final one):
