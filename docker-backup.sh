@@ -385,7 +385,8 @@ if [[ "$DRY_RUN" == "true" ]]; then
             done < <(docker ps -aq --filter "label=com.docker.compose.project=$proj")
             if [[ -n "$local_dbs" ]]; then
                 log "   Database auto-dump:"
-                printf "$local_dbs"
+                # To stderr, like log: on stdout the lines came out before their heading and missed the log file
+                printf '%b' "$local_dbs" >&2
             fi
         fi
     done

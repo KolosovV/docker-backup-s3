@@ -364,6 +364,15 @@ section "Directories to look for projects in"
 declare -a SCAN_DIR_LIST=()
 mapfile -t SCAN_DIR_LIST < <(split_words "${SCAN_DIRS:-}")
 for d in ${SCAN_DIR_LIST[@]+"${SCAN_DIR_LIST[@]}"}; do
+    # A folder inside another one of the list is scanned twice — and usually meant as an exclusion
+    for other in "${SCAN_DIR_LIST[@]}"; do
+        if [[ "$other" != "$d" ]] && path_within "$d" "$other"; then
+            warn "$d is inside $other, which is already scanned. SCAN_DIRS is where to LOOK for projects;"
+            echo "      💡 to leave data out of the backup: BIND_BLACKLIST_REGEX (a whole bind mount, e.g. ...|^${d})"
+            echo "         or BIND_EXCLUDE_PATHS='${d}' (a folder inside a bind mount)"
+            break
+        fi
+    done
     if [[ -d "$d" ]]; then
         count=$(find "$d" -maxdepth 4 \( -name 'docker-compose.yml' -o -name 'docker-compose.yaml' -o -name 'compose.yml' -o -name 'compose.yaml' \) 2>/dev/null | wc -l)
         ok "$d (compose files found: $count)"

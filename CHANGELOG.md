@@ -8,6 +8,15 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.4.2] — 2026-10-22
+
+### Fixed
+- In the dry-run plan the database lines came before their "Database auto-dump:" heading and did not reach the log
+  (they went to stdout).
+- `validate-config.sh` warns about a `SCAN_DIRS` folder inside another one of the list. That is usually an
+  exclusion typed in the wrong place, and the warning says where exclusions go (`BIND_BLACKLIST_REGEX`,
+  `BIND_EXCLUDE_PATHS`). `install.sh` now says plainly that `SCAN_DIRS` is where to look for projects.
+
 ## [1.4.1] — 2026-10-22
 
 ### Fixed
@@ -200,6 +209,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.4.2]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.2
 [1.4.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.1
 [1.4.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.0
 [1.3.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.3.0

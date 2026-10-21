@@ -650,6 +650,8 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
 
     # ─── SCAN_DIRS ───
     ui_title "Where to look for compose projects"
+    ui_note "Folders to LOOK in for docker-compose projects (projects with running containers are found anyway)."
+    ui_note "Not for exclusions: data to leave out goes to BIND_BLACKLIST_REGEX / BIND_EXCLUDE_PATHS in backup.conf."
     SCAN_DIRS=$(ask_value "  Directories, space-separated" "/opt /home /root /srv")
 
     # ─── Notifications (wizards in ui.sh, each sends a test message) ───
