@@ -64,6 +64,7 @@ run_menu 9 5 3 y 4 https://discord.com/api/webhooks/1/x 1 q q 10
 check "email is off" test -z "$(conf_val EMAIL_TO)$(conf_val SMTP_HOST)$(conf_val SMTP_PASSWORD)"
 check "the webhook is saved" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 check "the test went as Discord content" test "$(jq -r '.content|split("\n")[0]' "$MOCK_DIR/body")" == "🟢 **Server $(uname -n): test message**"
+check "it names the program that sent it (not \"_\")" grep -q '^Sent by menu.sh at ' <<< "$(jq -r '.content|split("\n")[1]' "$MOCK_DIR/body")"
 check "the list shows the webhook" grep -q 'Webhook — discord.com (discord)' "$W/out"
 
 section "telegram: a failed test, not kept"

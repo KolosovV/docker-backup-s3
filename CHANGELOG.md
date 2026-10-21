@@ -8,6 +8,12 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.4.1] — 2026-10-22
+
+### Fixed
+- The test message sent from the menu (and from `install.sh`) said "Sent by _" in place of the program's name.
+- Emails now come from "docker-backup-s3", the project's name. They used to come from "docker-backup".
+
 ## [1.4.0] — 2026-10-21
 
 ### Fixed
@@ -194,6 +200,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.4.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.1
 [1.4.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.0
 [1.3.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.3.0
 [1.2.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.2.1

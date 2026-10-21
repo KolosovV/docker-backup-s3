@@ -121,7 +121,7 @@ check "CRLF line endings" grep -q $'\r$' "$m"
 subj="$(grep '^Subject:' "$m" | tr -d '\r')"; enc="${subj#Subject: =?UTF-8?B?}"; enc="${enc%\?=}"
 check "the subject decodes" test "$(printf '%s' "$enc" | base64 -d)" == "🔴 Server web-1: nightly backup with errors"
 check "To" grep -q '^To: a@example.com, b@example.com' "$m"
-check "From = SMTP_USER" grep -q '^From: docker-backup <bk@example.com>' "$m"
+check "From = SMTP_USER, named docker-backup-s3" grep -q '^From: docker-backup-s3 <bk@example.com>' "$m"
 check "Auto-Submitted" grep -q '^Auto-Submitted: auto-generated' "$m"
 tr -d '\r' < "$m" > "$W/mail.lf"
 PYTHONIOENCODING=utf-8 python3 -I - "$W/mail.lf" > "$W/parts" <<'PY'

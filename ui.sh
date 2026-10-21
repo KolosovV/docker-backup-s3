@@ -525,7 +525,7 @@ notify_probe() {
     command -v curl >/dev/null 2>&1 || { echo "curl is not installed"; return 1; }
     # shellcheck disable=SC2016 # $1/$2 belong to the inner bash
     env "${envs[@]}" bash -c 'source "$1" >/dev/null 2>&1 || { echo "cannot load $1"; exit 1; }
-        notify_test "$2" 2>&1 >/dev/null' _ "$lib" "$ch"
+        notify_test "$2" 2>&1 >/dev/null' "${0##*/}" "$lib" "$ch"   # $0 = the caller: "Sent by docker-backup"
 }
 
 # notify_hint <channel> <error> — a note on what usually causes this error

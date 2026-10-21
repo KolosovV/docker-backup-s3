@@ -651,7 +651,7 @@ _notify_email() {
     local html_body
     html_body="$(printf '%s' "$full" | sed -e 's#<code>#<code style="background:\#f2f2f2;padding:0 3px;border-radius:3px">#g' -e 's/$/<br>/')"
     {
-        printf 'From: docker-backup <%s>\n' "$from"
+        printf 'From: docker-backup-s3 <%s>\n' "$from"
         printf 'To: %s\n' "$to_hdr"
         printf 'Subject: =?UTF-8?B?%s?=\n' "$(printf '%s' "$subject" | base64 | tr -d '\n')"
         printf 'Date: %s\n' "$(LC_ALL=C date -R)"
