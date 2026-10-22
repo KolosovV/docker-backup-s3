@@ -81,6 +81,14 @@ S3_MULTIPART_THRESHOLD=""
 # and a brief storage failure (InternalError, SlowDown) turned into a backup error. Empty — 8.
 S3_MAX_ATTEMPTS=""
 
+# Retries of a WHOLE file upload, on top of those: some errors fail the entire upload, not one request
+# (OperationAborted on a big multipart upload, a connection reset, a 5xx). Only transient errors
+# are retried, not wrong keys or a missing bucket; the unfinished upload's parts are aborted before each try.
+# S3_UPLOAD_TRIES — attempts in all (empty — 3); S3_UPLOAD_RETRY_DELAY — the first pause, it triples
+# (empty — 15 s: 15, 45).
+S3_UPLOAD_TRIES=""
+S3_UPLOAD_RETRY_DELAY=""
+
 # ==============================================================================
 # SECONDARY — THE SECONDARY S3 — a second copy of every archive (optional)
 # ==============================================================================

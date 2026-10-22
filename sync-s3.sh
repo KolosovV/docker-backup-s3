@@ -226,12 +226,16 @@ copy_key() {  # $1 = key, $2 = expected_size
     fi
 
     # 2) upload to the destination
+    # Through aws_upload, like the backup: transient storage errors are retried, a failed upload leaves no parts
     _aws_setup "$DST_ROLE"
-    if ! raw="$(aws "${S3_OPTS[@]}" s3 cp "$tmp" "s3://${DST_BUCKET}/${key}" --no-progress 2>&1)"; then
-        cleaned="$(_clean_aws_err "$raw")"
+    if ! aws_upload "$tmp" "s3://${DST_BUCKET}/${key}" 2>"${TMP_DIR}/upload.err"; then
+        raw="$(cat "${TMP_DIR}/upload.err")"
+        cleaned="$(_clean_aws_err "$(grep -v 'trying again\|Aborted the unfinished' <<< "$raw")")"
+        cat "${TMP_DIR}/upload.err" >&2
         LAST_ERR="upload to the destination (${DST_LABEL}): ${cleaned:-unknown aws error}"
         rm -f "$tmp"; return 1
     fi
+    cat "${TMP_DIR}/upload.err" >&2   # the retries, if there were any
 
     # 3) check the size in the destination
     local s3_size

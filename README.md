@@ -452,6 +452,8 @@ Everything else has sensible defaults.
 | `S3_BANDWIDTH_LIMIT` | empty | upload speed limit (shared by all storages) |
 | `S3_MULTIPART_THRESHOLD` | empty | smaller files go in one request rather than in parts (shared) |
 | `S3_MAX_ATTEMPTS` | `8` | aws attempts per request (shared) |
+| `S3_UPLOAD_TRIES` | `3` | attempts of a whole file upload on a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection); a failed attempt's multipart parts are aborted, and the nightly cleanup aborts any older leftovers |
+| `S3_UPLOAD_RETRY_DELAY` | `15` | the first pause between those attempts, in seconds; it triples |
 | `BACKUP_PREFIX` | `backups` | prefix (folder) in the bucket |
 | `RETENTION_DAYS` | `30` | how many days to keep |
 | `BACKUP_MODE` | `hot` | hot/pause/stop |

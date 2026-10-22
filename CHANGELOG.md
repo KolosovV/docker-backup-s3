@@ -37,6 +37,14 @@ although the passphrase file was right there.
   for runs that had started. Now the log says "Backup interrupted (signal INT) at: <the step>" and an error
   notification goes out at any stage ("nothing was saved in this run" before the first project). HUP is handled
   too, and the run's half-made work folder is removed.
+- **A storage's transient error failed the whole upload.** A storage answered a 1.4 GB upload with `OperationAborted`
+  ("a conflicting conditional operation is currently in progress … Try again"). aws's own retries are per request
+  and do not cover that, so the project failed, and with a required copy the run did too. Now a whole file upload
+  is retried on transient errors (OperationAborted, SlowDown, InternalError, RequestTimeout, 5xx, a broken
+  connection), up to `S3_UPLOAD_TRIES` (3) with growing pauses, and the log says "trying again in 15 s (2/3)".
+  Wrong keys or a missing bucket are not retried. The same applies to the primary, the copies and `sync-s3.sh`.
+  The unfinished multipart upload of that file is aborted before each retry and after a final failure, so no
+  billed parts are left behind.
 - **A false "doesn't look like mysqldump" on every MariaDB dump** in `verify-restore.sh`. MariaDB 10.11.8+/11.x
   dumps start with a sandbox line before "-- MariaDB dump", which the check did not accept. Also, on a big dump the
   header was read through a pipeline that failed under `pipefail`. A false warning on every run trains people to

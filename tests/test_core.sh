@@ -81,6 +81,52 @@ check "MySQL" test "$(dump_kind "$W/mysql.sql.gz")" == mysql
 check "PostgreSQL (pg_dumpall)" test "$(dump_kind "$W/pg.sql.gz")" == postgres
 check "something else" test "$(dump_kind "$W/junk.sql.gz")" == unknown
 
+section "aws_upload: transient storage errors are retried, parts are cleaned up"
+S3_OPTS=(); S3_UPLOAD_RETRY_DELAY=0; echo data > "$W/up.bin"
+: > "$W/aws.calls"
+# The fake aws: "s3 cp" fails while $W/fails holds a count above 0, with the message in $W/msg
+aws() {
+    echo "$1 $2 ${*: -1}" >> "$W/aws.calls"
+    case "$1 $2" in
+        "s3 cp")
+            local left; left="$(cat "$W/fails")"
+            if (( left > 0 )); then echo $((left - 1)) > "$W/fails"; cat "$W/msg" >&2; return 1; fi ;;
+        "s3api list-multipart-uploads")
+            echo '{"Uploads":[{"Key":"p/k.tar.gz","UploadId":"U1"},{"Key":"p/k.tar.gz.sha256","UploadId":"U2"}]}' ;;
+    esac
+    return 0
+}
+abort_ids() { grep -c '^s3api abort-multipart-upload' "$W/aws.calls"; }
+cps() { grep -c '^s3 cp' "$W/aws.calls"; }
+echo 'upload failed: An error occurred (OperationAborted) when calling the UploadPart operation: A conflicting conditional operation is currently in progress against this resource. Try again.' > "$W/msg"
+
+echo 1 > "$W/fails"; : > "$W/aws.calls"
+aws_upload "$W/up.bin" s3://b/p/k.tar.gz 2> "$W/up.err"; rc=$?
+check "OperationAborted once, then fine: success" test "$rc" -eq 0
+check "two attempts" test "$(cps)" -eq 2
+check "it says it tries again" grep -q 'OperationAborted) — trying again in 0 s (2/3)' "$W/up.err"
+check "the unfinished upload of THIS key was aborted (U1), not the other key's (U2)" \
+    test "$(grep '^s3api abort-multipart-upload' "$W/aws.calls" | tr '\n' ' ')" == "s3api abort-multipart-upload U1 "
+
+echo 9 > "$W/fails"; : > "$W/aws.calls"
+aws_upload "$W/up.bin" s3://b/p/k.tar.gz 2> "$W/up.err"; rc=$?
+check "always busy: fails after 3 attempts" test "$rc:$(cps)" == "1:3"
+check "and leaves no parts behind (aborted after each try)" test "$(abort_ids)" -eq 3
+
+echo 'An error occurred (AccessDenied) when calling the PutObject operation: Access Denied' > "$W/msg"
+echo 1 > "$W/fails"; : > "$W/aws.calls"
+aws_upload "$W/up.bin" s3://b/p/k.tar.gz 2> "$W/up.err"; rc=$?
+check "AccessDenied is not retried" test "$rc:$(cps)" == "1:1"
+unset -f aws
+
+check "transient: SlowDown" s3_transient "An error occurred (SlowDown) when calling the PutObject operation"
+check "transient: connection reset" s3_transient "Connection was closed before we received a valid response"
+check "transient: 503" s3_transient "An error occurred (503) when calling the UploadPart operation: Service Unavailable"
+if s3_transient "An error occurred (NoSuchBucket) when calling the PutObject operation"; then bad "NoSuchBucket taken as transient"
+else ok "not transient: NoSuchBucket"; fi
+if s3_transient "An error occurred (SignatureDoesNotMatch) when calling the PutObject operation"; then bad "a bad key taken as transient"
+else ok "not transient: SignatureDoesNotMatch"; fi
+
 section "helpers"
 check "plural 1" test "$(plural 1 project projects)" == project
 check "plural 2" test "$(plural 2 project projects)" == projects

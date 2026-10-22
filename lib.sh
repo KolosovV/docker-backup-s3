@@ -70,7 +70,8 @@ log_info()  { echo "${C_DIM}[$(_ts)]${C_RESET} $*" >&2; }
 log_ok()    { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_GREEN}✓${C_RESET} $*" >&2; }
 log_warn()  { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_YELLOW}⚠${C_RESET} $*" >&2; }
 log_err()   { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_RED}❌ $*${C_RESET}" >&2; }
-# LAST_STEP — the step under way, for "interrupted at …"
+# LAST_STEP — the step under way, for "interrupted at …" (read by docker-backup.sh)
+# shellcheck disable=SC2034
 log_step()  { LAST_STEP="$*"; echo "${C_DIM}[$(_ts)]${C_RESET} ${C_CYAN}▶${C_RESET} ${C_BOLD}$*${C_RESET}" >&2; }
 log_done()  { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_GREEN}${C_BOLD}✅ $*${C_RESET}" >&2; }
 
@@ -394,28 +395,67 @@ docker_compose() {
     fi
 }
 
-# Uploads a file to S3, with progress if the file is large
+# s3_transient <aws output> — the failure is worth another try: the storage was busy or the connection broke.
+# aws's own retries (max_attempts) are per HTTP request and do not cover all of these — OperationAborted
+# ("a conflicting conditional operation is in progress", seen on a big upload) fails the whole multipart upload.
+# Not transient: wrong keys, no bucket, no access — trying again would only delay the error.
+s3_transient() {
+    grep -qiE 'OperationAborted|SlowDown|InternalError|RequestTimeout|ServiceUnavailable|Throttl|TooManyRequests|\((500|502|503|504)\)|status code: 5[0-9][0-9]|Connection (reset|was closed|aborted)|connection broken|EndpointConnectionError|Could not connect|Read timeout|timed out|BrokenPipe|UNEXPECTED_EOF|IncompleteRead|reached max retries' <<< "$1" || return 1
+    ! grep -qiE 'AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|NoSuchBucket|InvalidBucketName|Forbidden \(403\)' <<< "$1"
+}
+
+# abort_key_uploads <bucket> <key> — abort unfinished multipart uploads of exactly this key (a failed upload
+# leaves its parts behind: invisible, yet stored and billed). Quiet; best effort.
+abort_key_uploads() {
+    local bucket="$1" key="$2" id
+    while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        AWS_MAX_ATTEMPTS=2 aws_q s3api abort-multipart-upload --bucket "$bucket" --key "$key" --upload-id "$id" >/dev/null 2>&1 \
+            && log "    ✂  Aborted the unfinished upload of this file" \
+            || log_warn "    Could not abort an unfinished upload of $key (the nightly cleanup will try again)"
+    done < <(aws_q s3api list-multipart-uploads --bucket "$bucket" --prefix "$key" --output json 2>/dev/null \
+        | jq -r --arg k "$key" '(.Uploads // [])[] | select(.Key == $k) | .UploadId' 2>/dev/null || true)
+}
+
+# Uploads a file to S3, with progress if the file is large.
+# A transient failure (s3_transient) is retried: S3_UPLOAD_TRIES attempts in all (3), the pauses growing
+# from S3_UPLOAD_RETRY_DELAY seconds (15 → 15, 45). Before every retry, and after the last failure, the
+# unfinished multipart upload of this file is aborted.
 # usage: aws_upload <local> <s3-url>
 aws_upload() {
     local src="$1" dst="$2"
-    local size_mb=0
+    local size_mb=0 tries="${S3_UPLOAD_TRIES:-3}" delay="${S3_UPLOAD_RETRY_DELAY:-15}" try=1 out rc errf
     if [[ -f "$src" ]]; then
         size_mb=$(( $(stat -c %s "$src" 2>/dev/null || echo 0) / 1048576 ))
     fi
-    # Progress is shown for files > 100MB and only on a TTY
-    if [[ "$size_mb" -gt 100 && -t 2 ]]; then
-        aws_q s3 cp "$src" "$dst"  # AWS CLI v2 shows progress on a TTY by default
-    else
-        # Capture the output and the REAL aws exit code (not the grep filter's):
-        # otherwise, under pipefail, a successful upload with no output reads as an error.
-        local out rc
-        out="$(aws_q s3 cp "$src" "$dst" --no-progress 2>&1)"; rc=$?
-        if [[ -n "$out" ]]; then
-            printf '%s\n' "$out" \
-                | grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2 || true
+    local bucket="${dst#s3://}"; local key="${bucket#*/}"; bucket="${bucket%%/*}"
+    while true; do
+        rc=0
+        # Progress is shown for files > 100MB and only on a TTY (its stderr is still kept, to judge a failure)
+        if [[ "$size_mb" -gt 100 && -t 2 ]]; then
+            errf="$(mktemp)"
+            aws_q s3 cp "$src" "$dst" 2> >(tee "$errf" >&2) || rc=$?
+            out="$(cat "$errf" 2>/dev/null)"; rm -f "$errf"
+        else
+            # Capture the output and the REAL aws exit code (not the grep filter's):
+            # otherwise, under pipefail, a successful upload with no output reads as an error.
+            out="$(aws_q s3 cp "$src" "$dst" --no-progress 2>&1)" || rc=$?
+            if [[ -n "$out" ]]; then
+                printf '%s\n' "$out" \
+                    | grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2 || true
+            fi
         fi
-        return "$rc"
-    fi
+        (( rc == 0 )) && return 0
+        if (( try >= tries )) || ! s3_transient "$out"; then
+            abort_key_uploads "$bucket" "$key"
+            return "$rc"
+        fi
+        local wait_s=$(( delay * (3 ** (try - 1)) ))
+        log_warn "    The storage failed the upload ($(printf '%s' "$out" | grep -oiE 'OperationAborted|SlowDown|InternalError|RequestTimeout|ServiceUnavailable|Throttl[a-z]*|TooManyRequests|Connection [a-z]+|timed out|EndpointConnectionError|Could not connect|\((50[0-9])\)|reached max retries' | head -n 1)) — trying again in ${wait_s} s ($((try + 1))/${tries})..."
+        abort_key_uploads "$bucket" "$key"
+        sleep "$wait_s"
+        try=$((try + 1))
+    done
 }
 
 # Uploads an archive to a COPY (secondary, tertiary…) and checks its size.
