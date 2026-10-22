@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.4.4-2496ED" alt="version 1.4.4"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.0-2496ED" alt="version 1.5.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
   <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
@@ -1406,9 +1406,6 @@ sudo /opt/docker-backup-s3/uninstall.sh -y
 # See what would happen
 sudo /opt/docker-backup-s3/uninstall.sh --dry-run
 
-# Keep backup.conf for a reinstall
-sudo /opt/docker-backup-s3/uninstall.sh --keep-conf
-
 # Remove + logs
 sudo /opt/docker-backup-s3/uninstall.sh -y --purge-logs
 
@@ -1429,6 +1426,8 @@ sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 
 ### What is NOT removed
 
+- ❌ **A copy of `backup.conf`**: it stays as `/root/docker-backup.conf.saved-<time>` (mode 600), and `install.sh`
+  offers to take it over on a reinstall. Delete it yourself once it is not needed: it holds the S3 keys.
 - ❌ **Backups in S3** (only with `--purge-s3`)
 - ❌ Logs (only with `--purge-logs`)
 - ❌ GPG passphrase

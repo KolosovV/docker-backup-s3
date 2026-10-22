@@ -236,6 +236,17 @@ if [[ "$(cat "$IT/before.txt")" == "$(cat "$IT/after.txt")" ]]; then ok "the dat
 else bad "the data differs"; echo "--- before:"; cat "$IT/before.txt"; echo "--- after:"; cat "$IT/after.txt"; fi
 
 # ------------------------------------------------------------------------------
+step "Encryption switched off by a second line, the passphrase in place"
+echo 'ENCRYPT_BACKUPS="false"' >> "$CONF"     # the old config's trap: a template default further down wins
+if run quiet docker-backup.sh -c "$CONF" -p "$PROJ"; then ok "the backup itself still works"; else bad "the backup failed"; show_tail quiet; fi
+check "not a plain 'done': a warning" grep -q '^warn|backup done, but check the settings|' <<< "$(hook_msgs)"
+check "it says encryption is off" grep -q 'Encryption is off' <<< "$(hook_msgs | tail -n 1)"
+check "and says the user's true is overridden by the default further down" grep -q 'ENCRYPT_BACKUPS: your "true"' <<< "$(hook_msgs | tail -n 1)"
+if run validate2 validate-config.sh -c "$CONF"; then bad "validate-config passed with a setting given twice"
+else ok "validate-config fails on a setting given twice"; fi
+check "validate-config warns: passphrase in place, encryption off" grep -q 'ENCRYPTION IS OFF' "$IT/validate2.out"
+sed -i '$d' "$CONF"                            # back to one line
+
 step "A failed run: the primary S3 is down"
 docker stop "$S3C" >/dev/null
 if run fail docker-backup.sh -c "$CONF" -p "$PROJ"; then bad "the backup reported success with S3 down"

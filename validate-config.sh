@@ -182,6 +182,21 @@ if [[ "$BACKUP_MODE" == "hot" ]]; then
     warn "BACKUP_MODE=hot — database consistency is ensured by the database auto-dump + pre-backup-hook.sh"
 fi
 
+# A variable set twice: bash keeps the last one, so a "true" higher up silently loses to a template default lower
+# down. This is how encryption was found switched off on a server with the passphrase in place.
+dups="$(conf_duplicates "$CONFIG_FILE" "${SCRIPT_DIR}/backup.conf.example")"
+if [[ -n "$dups" ]]; then
+    section "Values set more than once"
+    while IFS=$'\t' read -r name lline lval eline eval_ lost; do
+        if [[ "$lost" == "1" ]]; then
+            err "$name: your ${eval_} (line ${eline}) is overridden by the default ${lval} further down (line ${lline}) — ${lval} is used"
+        else
+            echo "  ${C_DIM}ℹ $name is set more than once; line ${lline} wins: ${lval}${C_RESET}"
+        fi
+    done <<< "$dups"
+    grep -q $'\t1$' <<< "$dups" && echo "      💡 Delete the lower line (or keep one line per setting) in $CONFIG_FILE"
+fi
+
 # ==============================================================================
 # 2. PERMISSIONS
 # ==============================================================================
@@ -283,6 +298,10 @@ if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
     else
         err "ENCRYPT_BACKUPS=true, but gpg is not installed"
     fi
+fi
+if [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]]; then
+    warn "‼ ENCRYPTION IS OFF, but the passphrase file ${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase} exists"
+    echo "      Backups go to S3 unencrypted. If that is not deliberate: ENCRYPT_BACKUPS=\"true\" in $CONFIG_FILE"
 fi
 
 # ==============================================================================

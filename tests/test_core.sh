@@ -58,6 +58,17 @@ check "a listing error keeps its exit code" test "$rc" -eq 254
 check "and says why" grep -q 'NoSuchBucket' "$W/lb"
 unset -f aws
 
+section "conf_duplicates: a setting given twice"
+printf 'A=1\nENCRYPT_BACKUPS="true"\n# ENCRYPT_BACKUPS="no, a comment"\nexport ENCRYPT_BACKUPS="false"  # tail\nNOTIFY_NAME="v"\nNOTIFY_NAME=""\n' > "$W/dup.conf"
+printf 'SCAN_DIRS="/opt /srv"\nSCAN_DIRS="/a b"\n' >> "$W/dup.conf"
+d="$(conf_duplicates "$W/dup.conf" "$REPO/backup.conf.example")"
+check "ENCRYPT_BACKUPS: the user's true lost to the default false further down" \
+    grep -qx $'ENCRYPT_BACKUPS\t4\t"false"\t2\t"true"\t1' <<< "$d"
+check "NOTIFY_NAME: the user's name lost to the default empty one" grep -qx $'NOTIFY_NAME\t6\t""\t5\t"v"\t1' <<< "$d"
+check "an override at the end is a duplicate, not a lost value" grep -qx $'SCAN_DIRS\t8\t"/a b"\t7\t"/opt /srv"\t0' <<< "$d"
+check "a single setting is not reported" bash -c '! grep -q "^A" <<< "$1"' _ "$d"
+check "the template has no duplicates" test -z "$(conf_duplicates "$REPO/backup.conf.example")"
+
 section "helpers"
 check "plural 1" test "$(plural 1 project projects)" == project
 check "plural 2" test "$(plural 2 project projects)" == projects

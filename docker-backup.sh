@@ -82,6 +82,20 @@ fi
 # --- Dependency check ---
 require_cmd docker tar gzip aws jq
 [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && require_cmd gpg
+
+# Settings that silently do the wrong thing — in the log now and in this run's notification (CONF_WARNINGS, HTML).
+# Encryption found off with the passphrase in place is the case this is here for.
+CONF_WARNINGS=""
+if [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]]; then
+    log_warn "Encryption is OFF (ENCRYPT_BACKUPS=${ENCRYPT_BACKUPS:-}), but ${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase} exists — backups go unencrypted"
+    CONF_WARNINGS+="${CONF_WARNINGS:+$'\n'}⚠️ <b>Encryption is off</b> (ENCRYPT_BACKUPS=$(html_esc "${ENCRYPT_BACKUPS:-}")), although the passphrase file <code>$(html_esc "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}")</code> exists: these backups are not encrypted."
+fi
+# A setting of the user's overridden by a template default further down (see conf_duplicates)
+while IFS=$'\t' read -r _dup _ll _lv _el _ev _lost; do
+    [[ "$_lost" == "1" ]] || continue
+    log_warn "$_dup: your ${_ev} (line ${_el} of $CONFIG_FILE) is overridden by the default ${_lv} further down (line ${_ll})"
+    CONF_WARNINGS+="${CONF_WARNINGS:+$'\n'}⚠️ <code>$(html_esc "$_dup")</code>: your <code>$(html_esc "$_ev")</code> (line ${_el} of backup.conf) is overridden by the default <code>$(html_esc "$_lv")</code> further down (line ${_ll}), so the default is used."
+done < <(conf_duplicates "$CONFIG_FILE" "${SCRIPT_DIR}/backup.conf.example")
 { notify_configured telegram || notify_configured webhook || notify_configured email; } && require_cmd curl
 
 # --- Emergency exit ---
@@ -1215,6 +1229,7 @@ stats="${size_txt} in $(fmt_duration $TOTAL_DURATION), timestamp <code>${TIMESTA
 if (( ${#ORPHAN_DROPPED[@]} > 0 )); then
     stats+=$'\n'"Deleted copies older than ${RETENTION_DAYS:-30} days of projects no longer on the server: <b>$(_join "${!ORPHAN_DROPPED[@]}")</b>."
 fi
+[[ -n "$CONF_WARNINGS" ]] && stats+=$'\n'"${CONF_WARNINGS}"
 in_primary="In the primary storage (${primary_host}): ${saved} $(plural "$saved" project projects)."
 if (( ${#LOST[@]} > 0 )); then
     body="Saved nowhere: <b>$(_join "${LOST[@]}")</b>."$'\n'"${in_primary}"
@@ -1234,7 +1249,12 @@ else
         2) where="in both storages" ;;
         *) where="in all ${stores} storages" ;;
     esac
-    notify success "backup done" "Saved ${saved} $(plural "$saved" project projects) ${where}."$'\n'"${stats^}"
+    # Saved, but a setting silently does the wrong thing — not a plain "done" (and it reaches NOTIFY_ON=error too)
+    if [[ -n "$CONF_WARNINGS" ]]; then
+        notify warn "backup done, but check the settings" "Saved ${saved} $(plural "$saved" project projects) ${where}."$'\n'"${stats^}"
+    else
+        notify success "backup done" "Saved ${saved} $(plural "$saved" project projects) ${where}."$'\n'"${stats^}"
+    fi
 fi
 
 [[ "$TOTAL_FAILED" -eq 0 ]] && exit 0 || exit 1

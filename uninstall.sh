@@ -36,7 +36,6 @@ NON_INTERACTIVE="false"
 PURGE_LOGS="false"
 PURGE_S3="false"
 DRY_RUN="false"
-KEEP_CONF="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,7 +44,6 @@ while [[ $# -gt 0 ]]; do
         -n|--dry-run)     DRY_RUN="true"; shift ;;
         --purge-logs)     PURGE_LOGS="true"; shift ;;
         --purge-s3)       PURGE_S3="true"; shift ;;
-        --keep-conf)      KEEP_CONF="true"; shift ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [options]
@@ -58,7 +56,6 @@ Removes Docker Backup System.
       --purge-logs     also remove /var/log/docker-backup*.log
       --purge-s3       ⚠️  DELETE ALL BACKUPS IN S3 — primary + every copy
                        (requires explicit confirmation)
-      --keep-conf      keep backup.conf after removal (for a reinstall)
   -h, --help           this help
 
 NOT REMOVED automatically:
@@ -331,7 +328,7 @@ fi
 echo
 log_step "Removal plan"
 
-[[ "$FOUND_TARGET" == "true" ]]    && echo "  • Files: $TARGET_DIR/$([[ "$KEEP_CONF" == "true" ]] && echo "*.sh (backup.conf is kept)" || echo "*")"
+[[ "$FOUND_TARGET" == "true" ]]    && echo "  • Files: $TARGET_DIR/* (a copy of backup.conf is kept in /root)"
 [[ "$FOUND_CRON" == "true" ]]      && echo "  • Cron job"
 [[ "$FOUND_SYSTEMD" == "true" ]]   && echo "  • Systemd timer + service"
 [[ "$FOUND_LOGROTATE" == "true" ]] && echo "  • /etc/logrotate.d/docker-backup"
@@ -505,16 +502,18 @@ fi
 if [[ "$FOUND_TARGET" == "true" ]]; then
     log_step "Removing the installation files"
 
-    if [[ "$KEEP_CONF" == "true" ]]; then
-        # Keep backup.conf separately
-        if [[ -f "$TARGET_DIR/backup.conf" ]]; then
-            BACKUP_CONF_SAVED="${TARGET_DIR}.backup.conf.saved.$(date +%Y%m%d_%H%M%S)"
-            if [[ "$DRY_RUN" == "true" ]]; then
-                log_dry "Save backup.conf to $BACKUP_CONF_SAVED"
-            else
-                cp -p "$TARGET_DIR/backup.conf" "$BACKUP_CONF_SAVED"
-                log_ok "backup.conf saved to $BACKUP_CONF_SAVED"
-            fi
+    # A copy of backup.conf always stays: it holds the keys and every setting, and install.sh takes it over
+    # on a reinstall (find_previous_conf). Without it a reinstall starts from the template — and silently
+    # loses whatever the wizard does not ask about (encryption has been lost that way).
+    if [[ -f "$TARGET_DIR/backup.conf" ]]; then
+        BACKUP_CONF_SAVED="/root/docker-backup.conf.saved-$(date +%Y%m%d_%H%M%S)"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_dry "Save backup.conf to $BACKUP_CONF_SAVED"
+        elif (umask 077; cp -p "$TARGET_DIR/backup.conf" "$BACKUP_CONF_SAVED") && chmod 600 "$BACKUP_CONF_SAVED"; then
+            log_ok "backup.conf saved to $BACKUP_CONF_SAVED (install.sh will offer to take it over)"
+        else
+            log_err "Could not save backup.conf to $BACKUP_CONF_SAVED — not removing $TARGET_DIR"
+            exit 1
         fi
     fi
 
@@ -614,7 +613,7 @@ if [[ "$PURGE_S3" != "true" && -n "${PRIMARY_S3_BUCKET:-}" ]]; then
 fi
 
 # Saved conf
-if [[ "$KEEP_CONF" == "true" && -n "${BACKUP_CONF_SAVED:-}" ]]; then
+if [[ -n "${BACKUP_CONF_SAVED:-}" && "$DRY_RUN" != "true" ]]; then
     echo "  ${C_GREEN}• backup.conf saved:${C_RESET} $BACKUP_CONF_SAVED"
 fi
 

@@ -8,6 +8,33 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [1.5.0] — 2026-10-22
+
+Encryption must never end up off without a word. On a server set up again from scratch, `install.sh` built
+`backup.conf` from the template and its questions never touched encryption. Backups were then made unencrypted,
+although the passphrase file was right there.
+
+### Added
+- **The installer asks about encryption.** If `/root/.docker-backup-passphrase` already exists, the default is to
+  encrypt with it. If it does not, the installer offers to generate one and tells you to copy it off the server.
+  It also asks for the server's name in notifications (`NOTIFY_NAME`).
+- **A loud warning when the passphrase file exists but `ENCRYPT_BACKUPS` is not "true"**: in `validate-config.sh`,
+  in `install.sh`, in the backup log, and in every backup notification. The notification then comes as
+  "backup done, but check the settings" (🟠), so it reaches `NOTIFY_ON=error` too.
+- **A setting of yours overridden by a template default further down** in `backup.conf` (a variable given twice;
+  bash uses the last line) is reported the same way: `ENCRYPT_BACKUPS: your "true" (line 12) is overridden by the
+  default "false" further down (line 290)`. In `validate-config.sh` it is an error. A value appended at the end on
+  purpose is noted, not flagged.
+- **`install.sh` offers to take over the settings of an earlier installation**: `/opt/docker-backup/backup.conf`,
+  or the copy `uninstall.sh` leaves. A copy as it was stays next to it as `backup.conf.imported-<time>`.
+- `tests/test_install.sh`: install and update keep every value of an existing config (old `S3_*` names included),
+  the take-over, uninstall and reinstall, and the warnings. The integration test makes a real backup with
+  encryption switched off by a second line and checks the warning.
+
+### Changed
+- `uninstall.sh` always keeps a copy of `backup.conf` as `/root/docker-backup.conf.saved-<time>` (mode 600) and
+  does not remove the installation if it cannot save it. `--keep-conf` is gone; it is what always happens now.
+
 ## [1.4.4] — 2026-10-22
 
 ### Fixed
@@ -233,6 +260,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[1.5.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.5.0
 [1.4.4]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.4
 [1.4.3]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.3
 [1.4.2]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.2

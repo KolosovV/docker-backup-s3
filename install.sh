@@ -94,6 +94,37 @@ ask_secret() { ui_password "$@" || { echo "Cancelled." >&2; exit 130; }; }
 # Checks whether the minimum required fields in backup.conf hold real values
 # usage: is_conf_filled <path-to-conf>
 # returns: 0 if everything holds real values, 1 if something is a placeholder/empty
+# The settings of an earlier installation elsewhere: older versions lived in /opt/docker-backup, and
+# uninstall.sh leaves a copy in /root. Prints the path; 1 if there is none.
+find_previous_conf() {
+    local c
+    for c in /opt/docker-backup/backup.conf $(ls -t /root/docker-backup.conf.saved-* 2>/dev/null); do
+        [[ -f "$c" && "$(realpath -m "$c")" != "$(realpath -m "$TARGET_DIR/backup.conf")" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+# create_conf — a working backup.conf where there is none: the earlier installation's settings if found
+# (a copy of them stays next to it as backup.conf.imported-<time>), otherwise the template.
+# Starting from the template when settings exist loses whatever the wizard does not ask about —
+# that is how a reinstall once left encryption switched off.
+create_conf() {
+    local prev
+    if prev="$(find_previous_conf)"; then
+        log_step "Settings of an earlier installation"
+        if ask_yn "Found $prev — take these settings over (keys, encryption, notifications, everything)?" "y"; then
+            cp -p "$prev" "$TARGET_DIR/backup.conf"
+            cp -p "$prev" "$TARGET_DIR/backup.conf.imported-$(date +%Y%m%d_%H%M%S)"
+            chmod 600 "$TARGET_DIR"/backup.conf "$TARGET_DIR"/backup.conf.imported-* 2>/dev/null || true
+            EXISTING_CONF="true"
+            log_ok "backup.conf taken over from $prev (a copy as it was: backup.conf.imported-*)"
+            return 0
+        fi
+    fi
+    cp -f "$CONF_TEMPLATE" "$TARGET_DIR/backup.conf"
+    log_ok "backup.conf created from $(basename "$CONF_TEMPLATE") (needs filling in)"
+}
+
 is_conf_filled() {
     local conf="$1"
     [[ -f "$conf" ]] || return 1
@@ -474,9 +505,8 @@ if [[ "$NORM_SOURCE" == "$NORM_TARGET" ]]; then
         EXISTING_CONF="true"
         # The message about the conf comes later, after the is_conf_filled check
     else
-        # A fresh repository clone: no working config yet, only the template
-        cp -f "$CONF_TEMPLATE" "$TARGET_DIR/backup.conf"
-        log_ok "backup.conf created from $(basename "$CONF_TEMPLATE") (needs filling in)"
+        # A fresh repository clone: no working config yet — an earlier installation's, or the template
+        create_conf
     fi
 else
     # Normal mode: copy from source to target
@@ -516,8 +546,7 @@ else
     if [[ -f "$TARGET_DIR/backup.conf" ]]; then
         log_ok "backup.conf already exists — keeping yours (not overwriting)"
     else
-        cp -f "$CONF_TEMPLATE" "$TARGET_DIR/backup.conf"
-        log_ok "backup.conf created from the template (needs filling in)"
+        create_conf
     fi
 fi
 
@@ -567,6 +596,19 @@ if [[ "${EXISTING_CONF:-false}" == "true" ]]; then
         log_step "Existing backup.conf"
         log_ok "backup.conf holds real values — leaving it as is"
         log "    To reconfigure — edit: $TARGET_DIR/backup.conf"
+        # A kept config can still silently do the wrong thing: a setting given twice (the last line wins),
+        # or encryption off with its passphrase file in place
+        _chk="$(bash -c 'source "$1" >/dev/null 2>&1 || exit 0; source "$2" >/dev/null 2>&1
+            conf_duplicates "$2" "$3" | awk -F "\t" "\$6 == 1 { printf \"lost\t%s: your %s (line %s) is overridden by the default %s further down (line %s)\n\", \$1, \$5, \$4, \$3, \$2 }"
+            [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]] \
+                && printf "encoff\t%s\n" "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}"
+            true' _ "$TARGET_DIR/lib.sh" "$TARGET_DIR/backup.conf" "$TARGET_DIR/backup.conf.example")"
+        while IFS=$'\t' read -r _k _v; do
+            case "$_k" in
+                lost)   log_warn "    ‼ $_v — delete the lower line" ;;
+                encoff) log_warn "    ‼ Encryption is OFF, although the passphrase file $_v exists: ENCRYPT_BACKUPS=\"true\" if that is not deliberate" ;;
+            esac
+        done <<< "$_chk"
         if [[ -n "${BACKUP_CONF_BAK:-}" ]]; then
             log "    The old copy is saved in: $BACKUP_CONF_BAK"
         fi
@@ -654,6 +696,34 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     ui_note "Not for exclusions: data to leave out goes to BIND_BLACKLIST_REGEX / BIND_EXCLUDE_PATHS in backup.conf."
     SCAN_DIRS=$(ask_value "  Directories, space-separated" "/opt /home /root /srv")
 
+    # ─── Encryption ───
+    # Asked, not left at the template's "false": a passphrase file already on the server means backups were
+    # encrypted before, and starting unencrypted without a word is the thing this tool must never do.
+    ui_title "Encryption"
+    PASS_FILE="/root/.docker-backup-passphrase"
+    ENC_VAL="false"
+    if [[ -f "$PASS_FILE" ]]; then
+        ui_note "A passphrase file is already here: $PASS_FILE (backups were encrypted with it)."
+        ask_yn "  Encrypt backups with it (GPG, AES-256)?" "y" && ENC_VAL="true"
+    else
+        ui_note "GPG encryption with a passphrase file. The storages then hold only ciphertext."
+        ui_note "⚠ Without the passphrase the backups cannot be restored: keep a copy OFF this server."
+        if ask_yn "  Encrypt backups (a new passphrase is generated into $PASS_FILE)?" "y"; then
+            if (umask 077; head -c 48 /dev/urandom | base64 | tr -d '\n' > "$PASS_FILE") && chmod 600 "$PASS_FILE"; then
+                ENC_VAL="true"
+                ui_later "🔐 A new passphrase is in $PASS_FILE — copy it to your password manager now: sudo cat $PASS_FILE"
+                log_ok "Passphrase generated: $PASS_FILE — copy it off the server: sudo cat $PASS_FILE"
+            else
+                log_warn "Could not create $PASS_FILE — encryption stays off"
+            fi
+        fi
+    fi
+
+    # ─── The server's name in messages ───
+    ui_title "Server name"
+    NAME_VAL=$(ask_value "  Name of this server in notifications" "$(uname -n)"); NAME_VAL="$(trim "$NAME_VAL")"
+    [[ "$NAME_VAL" == "$(uname -n)" ]] && NAME_VAL=""   # empty = the hostname, as the template says
+
     # ─── Notifications (wizards in ui.sh, each sends a test message) ───
     NOTIFY_LIB="$TARGET_DIR/lib.sh"
     NOTIFY_SET=""
@@ -675,6 +745,9 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     conf_set BACKUP_PREFIX  "$BACKUP_PREFIX_VAL"
     conf_set RETENTION_DAYS "$RETENTION_VAL" --raw
     conf_set SCAN_DIRS      "$SCAN_DIRS"
+    conf_set ENCRYPT_BACKUPS "$ENC_VAL"
+    conf_set GPG_PASSPHRASE_FILE "$PASS_FILE"
+    conf_set NOTIFY_NAME    "$NAME_VAL" --allow-empty
     [[ -n "$NOTIFY_SET" ]] && notify_save
 
     log_ok "backup.conf configured"

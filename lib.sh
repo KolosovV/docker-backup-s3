@@ -241,6 +241,35 @@ s3_conf_migrate() {
     return 0
 }
 
+# conf_duplicates <conf> [template] — variables assigned more than once (bash keeps the LAST one).
+# One line per variable, TAB-separated:
+#   NAME  LAST_LINE  LAST_VALUE  EARLIER_LINE  EARLIER_VALUE  LOST
+# EARLIER_* — the latest earlier line with a different value (or the first one if all are the same).
+# LOST=1 — the last value is the template's default and an earlier line said something else: the user's
+# setting is silently overridden by a default further down (how encryption was found switched off).
+# A value appended at the end on purpose (an "overrides" block) is a duplicate with LOST=0.
+conf_duplicates() {
+    [[ -f "$1" ]] || return 0
+    awk -F '\t' -v OFS='\t' '
+        function parse(s,   name, val) {
+            if (!match(s, /^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=/)) return ""
+            name = substr(s, RSTART, RLENGTH); sub(/^[[:space:]]*(export[[:space:]]+)?/, "", name); sub(/=$/, "", name)
+            val = substr(s, RSTART + RLENGTH); sub(/[[:space:]]+#.*$/, "", val); sub(/[[:space:]]+$/, "", val)
+            PV = val; return name
+        }
+        FNR == NR && FILENAME != ARGV[2] { if ((k = parse($0)) != "" && !(k in def)) def[k] = PV; next }
+        { if ((k = parse($0)) == "") next
+          n[k]++; if (n[k] > 1) { pl[k] = ll[k]; pv[k] = lv[k] } ; ll[k] = FNR; lv[k] = PV
+          if (n[k] == 1) { fl[k] = FNR; fv[k] = PV }
+          vals[k, n[k]] = PV; lines[k, n[k]] = FNR }
+        END { for (k in n) if (n[k] > 1) {
+                el = fl[k]; ev = fv[k]
+                for (i = n[k] - 1; i >= 1; i--) if (vals[k, i] != lv[k]) { el = lines[k, i]; ev = vals[k, i]; break }
+                lost = ((k in def) && lv[k] == def[k] && ev != lv[k]) ? 1 : 0
+                print k, ll[k], lv[k], el, ev, lost } }
+    ' "${2:-/dev/null}" "$1" | sort
+}
+
 # Roles separated by spaces — for messages (the scripts run with IFS=$'\n\t', and ${S3_ROLES[*]} would print one per line)
 s3_roles_txt() { local IFS=' '; printf '%s' "${S3_ROLES[*]}"; }
 
