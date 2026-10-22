@@ -8,6 +8,12 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup version` (or the `VERSION` file).
 
+## [Unreleased]
+
+### Changed
+- The menu and the installer look the same on every distribution: classic blue whiptail. Ubuntu's own palette
+  made them magenta. A palette of your own (`NEWT_COLORS`, `NEWT_COLORS_FILE`) is kept.
+
 ## [1.5.0] — 2026-10-22
 
 Encryption must never end up off without a word. On a server set up again from scratch, `install.sh` built

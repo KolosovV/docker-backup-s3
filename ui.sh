@@ -31,6 +31,11 @@ ui_init() {
         UI_MODE="plain"
     fi
     if [[ "$UI_MODE" == "whiptail" ]]; then
+        # The same colors everywhere: Ubuntu's newt palette turns the blue parts magenta. These are newt's own
+        # defaults for exactly those parts. A palette of the admin's own (NEWT_COLORS, NEWT_COLORS_FILE) wins.
+        if [[ -z "${NEWT_COLORS:-}" && -z "${NEWT_COLORS_FILE:-}" ]]; then
+            export NEWT_COLORS='root=white,blue checkbox=lightgray,blue entry=lightgray,blue label=blue,lightgray actlistbox=lightgray,blue helpline=white,blue roottext=white,blue emptyscale=,blue disentry=blue,lightgray'
+        fi
         if UI_NOTE_FILE="$(mktemp "${TMPDIR:-/tmp}/docker-backup-ui.XXXXXX" 2>/dev/null)"; then
             # Our own EXIT trap only if the script has none (it would replace the script's one)
             [[ -z "$(trap -p EXIT)" ]] && trap 'rm -f "$UI_NOTE_FILE"' EXIT

@@ -85,4 +85,16 @@ check "NOTIFY_NAME saved" test "$(conf_val NOTIFY_NAME)" == web-9
 check "test-all reports the webhook" grep -q '✓ webhook: sent' "$W/out"
 check "the new name is in the message" grep -q 'Server web-9: test message' <<< "$(jq -r .content "$MOCK_DIR/body")"
 
+section "whiptail colors"
+# A whiptail stub and a terminal stand-in: ui_init picks whiptail mode and sets the palette
+printf '#!/bin/sh\nexit 0\n' > "$W/bin/whiptail"; chmod +x "$W/bin/whiptail"; : > "$W/tty"
+colors() { env -u NEWT_COLORS -u NEWT_COLORS_FILE "$@" TERM=xterm UI_TTY="$W/tty" \
+    bash -c 'source "$1/ui.sh"; ui_init; printf "%s|%s" "$UI_MODE" "${NEWT_COLORS:-}"' _ "$REPO"; }
+out="$(colors)"
+check "whiptail mode gets blue, not the distribution's magenta" grep -q '^whiptail|root=white,blue ' <<< "$out"
+out="$(colors NEWT_COLORS='root=white,black')"
+check "the admin's own palette is kept" test "$out" == 'whiptail|root=white,black'
+out="$(colors NEWT_COLORS_FILE=/etc/my-palette)"
+check "and so is a palette file" test "$out" == 'whiptail|'
+
 finish
