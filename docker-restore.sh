@@ -890,9 +890,13 @@ restore_one_project() {
             [[ -f "${TARGET_DIR}/${f}" ]] && { compose_file="$f"; break; }
         done
         if [[ -n "$compose_file" ]]; then
-            log "  🚀 Starting: cd $TARGET_DIR && docker compose up -d"
+            # -f: the file found above, whatever its name. -p in place: the project keeps
+            # its own name (and so its restored volumes, PROJECT_*) even if it was not named after its folder.
+            local -a up_args=(-f "$compose_file")
+            [[ -z "$RESTORE_DIR" ]] && up_args=(-p "$PROJECT" "${up_args[@]}")
+            log "  🚀 Starting: cd $TARGET_DIR && docker compose ${up_args[*]} up -d"
             local up_rc=0
-            (cd "$TARGET_DIR" && docker_compose up -d) || up_rc=$?
+            (cd "$TARGET_DIR" && docker_compose "${up_args[@]}" up -d) || up_rc=$?
             echo >&2
             log "  📊 Status of the project's containers:"
             docker ps -a --filter "label=com.docker.compose.project=$PROJECT" \

@@ -36,7 +36,8 @@ although the passphrase file was right there.
   trace: nothing in the log, no notification. The log pipe died with the signal, and notifications were sent only
   for runs that had started. Now the log says "Backup interrupted (signal INT) at: <the step>" and an error
   notification goes out at any stage ("nothing was saved in this run" before the first project). HUP is handled
-  too, and the run's half-made work folder is removed.
+  too, and the run's half-made work folder is removed. The log pipe now runs in its own session: under bash 5.3
+  (Arch) Ctrl+C killed it despite `trap ''`, and the handler died on its first write, with exit code 1.
 - **A storage's transient error failed the whole upload.** A storage answered a 1.4 GB upload with `OperationAborted`
   ("a conflicting conditional operation is currently in progress … Try again"). aws's own retries are per request
   and do not cover that, so the project failed, and with a required copy the run did too. Now a whole file upload
@@ -50,7 +51,29 @@ although the passphrase file was right there.
   header was read through a pipeline that failed under `pipefail`. A false warning on every run trains people to
   ignore the real one.
 
+- **`BACKUP_MODE=stop` stopped and started the project through `cd <folder> && docker compose stop`.** That acts on a
+  project named after the folder, so a project started under another name (`-p`, `name:`) was not stopped. Now
+  the project's running containers are found by its label (as `pause` always did), and exactly those are started
+  again.
+- **After a restore in place the project was started without its name.** A project not named after its folder
+  came up as a new project on empty volumes, next to its restored ones. It is now started with its own name
+  (`-p`) and the compose file that was found (`-f`).
+
+- **No SQL dump of MariaDB 11.** Its images have no `mysqldump`, so the auto-dump failed, and only the raw volume
+  went into the backup. The dump now runs `mariadb-dump` where the image has it, and `mysqldump` otherwise. The
+  integration test now has a MariaDB 11 database next to Postgres.
+- **A copy with an empty region silently used the primary's.** Requests are signed for the region, and a storage
+  of another provider may reject that one. The region is now required for every enabled storage: the menu asks
+  for it, `validate-config.sh` reports an empty one as an error, and a storage without it does not count as set
+  up. Install and update write the primary's region into an enabled copy that had none (what it used before),
+  keep a copy of the config and say so — check that it is right for that storage.
+
 ### Changed
+- The error notification after a run is titled "backup with errors" (it was "nightly backup with errors"), and the
+  docs and the menu say "scheduled" rather than "nightly": the schedule is yours.
+- **Docker Compose v2 only.** The fallback to the standalone `docker-compose` v1, which Docker ended in 2023, is
+  removed: it was never tested. `install.sh` and `validate-config.sh` check that the `docker compose` plugin is
+  there.
 - `uninstall.sh` always keeps a copy of `backup.conf` as `/root/docker-backup.conf.saved-<time>` (mode 600) and
   does not remove the installation if it cannot save it. `--keep-conf` is gone; it is what always happens now.
 

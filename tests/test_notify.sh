@@ -42,7 +42,7 @@ BODY="Saved nowhere: <b>app&amp;db</b>."$'\n'"Details: <code>tail -n 80 /var/log
 LONG="$(for i in $(seq 1 300); do echo "• <b>project-$i</b>: something went wrong here"; done)"
 
 section "filters"
-reset; notify error "nightly backup with errors" "$BODY"
+reset; notify error "backup with errors" "$BODY"
 check "no channels — nothing sent" test "$(calls)" == 0
 TELEGRAM_BOT_TOKEN="1:abc"; TELEGRAM_CHAT_ID="42"
 reset; notify success "backup done" "x"
@@ -52,8 +52,8 @@ check "NOTIFY_ON=none sends nothing" test "$(calls)" == 0
 NOTIFY_ON=error
 
 section "telegram"
-reset; notify error "nightly backup with errors" "$BODY"
-check "HTML head line" grep -q '^🔴 <b>Server web-1: nightly backup with errors</b>' "$MOCK_DIR/tg.1"
+reset; notify error "backup with errors" "$BODY"
+check "HTML head line" grep -q '^🔴 <b>Server web-1: backup with errors</b>' "$MOCK_DIR/tg.1"
 check "one call" test "$(calls)" == 1
 reset; notify error "long" "$LONG"
 check "a long message goes straight as plain text" test "$(calls)" == 1
@@ -67,9 +67,9 @@ TELEGRAM_BOT_TOKEN=""; TELEGRAM_CHAT_ID=""
 section "webhook: discord"
 NOTIFY_WEBHOOK_URL="https://discord.com/api/webhooks/1/abc"
 check "auto → discord" test "$(webhook_format)" == discord
-reset; notify error "nightly backup with errors" "$BODY"
+reset; notify error "backup with errors" "$BODY"
 c="$(jq -r .content "$MOCK_DIR/body.1")"
-check "bold head" test "${c%%$'\n'*}" == "🔴 **Server web-1: nightly backup with errors**"
+check "bold head" test "${c%%$'\n'*}" == "🔴 **Server web-1: backup with errors**"
 check "entities decoded" grep -q 'app&db' <<< "$c"
 check "code in backticks" grep -q '`tail -n 80' <<< "$c"
 check "mentions disabled" test "$(jq -c .allowed_mentions "$MOCK_DIR/body.1")" == '{"parse":[]}'
@@ -88,9 +88,9 @@ check "only the text field" test "$(jq -r 'keys|join(",")' "$MOCK_DIR/body.1")" 
 section "webhook: json"
 NOTIFY_WEBHOOK_URL="https://example.com/hook"
 check "auto → json" test "$(webhook_format)" == json
-reset; notify error "nightly backup with errors" "$BODY"
+reset; notify error "backup with errors" "$BODY"
 j="$MOCK_DIR/body.1"
-check "level/server/title" test "$(jq -r '[.level,.server,.title]|join("|")' "$j")" == "error|web-1|nightly backup with errors"
+check "level/server/title" test "$(jq -r '[.level,.server,.title]|join("|")' "$j")" == "error|web-1|backup with errors"
 check "details in plain text" test "$(jq -r .details "$j")" == "Saved nowhere: app&db."$'\n'"Details: tail -n 80 /var/log/docker-backup.log"
 check "time in UTC" grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$' <<< "$(jq -r .time "$j")"
 NOTIFY_WEBHOOK_FORMAT=discord
@@ -109,7 +109,7 @@ unset MOCK_CODE; NOTIFY_WEBHOOK_URL=""
 section "email"
 EMAIL_TO="a@example.com, b@example.com"; SMTP_HOST="smtp.example.com"
 SMTP_USER='bk@example.com'; SMTP_PASSWORD='p"a$s\w'"'"'d'
-reset; notify error "nightly backup with errors" "$BODY"
+reset; notify error "backup with errors" "$BODY"
 a="$(cat "$MOCK_DIR/args.1")"
 check "starttls → smtp://…:587" grep -qx 'smtp://smtp.example.com:587' <<< "$a"
 check "--ssl-reqd" grep -qx -- '--ssl-reqd' <<< "$a"
@@ -119,7 +119,7 @@ check "the curl config is escaped" test "$(cat "$MOCK_DIR/cfg.1")" == 'user = "b
 m="$MOCK_DIR/mail.1"
 check "CRLF line endings" grep -q $'\r$' "$m"
 subj="$(grep '^Subject:' "$m" | tr -d '\r')"; enc="${subj#Subject: =?UTF-8?B?}"; enc="${enc%\?=}"
-check "the subject decodes" test "$(printf '%s' "$enc" | base64 -d)" == "🔴 Server web-1: nightly backup with errors"
+check "the subject decodes" test "$(printf '%s' "$enc" | base64 -d)" == "🔴 Server web-1: backup with errors"
 check "To" grep -q '^To: a@example.com, b@example.com' "$m"
 check "From = SMTP_USER, named docker-backup-s3" grep -q '^From: docker-backup-s3 <bk@example.com>' "$m"
 check "Auto-Submitted" grep -q '^Auto-Submitted: auto-generated' "$m"
@@ -134,7 +134,7 @@ for p in msg.walk():
 PY
 check "plain and HTML parts" grep -c '^== text/' "$W/parts" -q
 check "the plain part" grep -q '^Saved nowhere: app&db.$' "$W/parts"
-check "the HTML part with <br>" grep -q '<b>Server web-1: nightly backup with errors</b><br>' "$W/parts"
+check "the HTML part with <br>" grep -q '<b>Server web-1: backup with errors</b><br>' "$W/parts"
 check "styled code" grep -q '<code style=' "$W/parts"
 SMTP_SECURITY=tls; reset; notify_send error t b email; a="$(cat "$MOCK_DIR/args.1")"
 check "tls → smtps://…:465" grep -qx 'smtps://smtp.example.com:465' <<< "$a"

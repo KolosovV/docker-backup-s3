@@ -345,7 +345,7 @@ menu_schedule() {
     local choice method preset spec
     while true; do
         UI_TITLE="Scheduled runs"
-        choice="$(ui_menu "Nightly backups run from cron or a systemd timer." \
+        choice="$(ui_menu "Scheduled backups run from cron or a systemd timer." \
             status "Show the current setup" \
             set    "Set up or change the schedule…" \
             remove "Remove scheduled runs")" || return 0

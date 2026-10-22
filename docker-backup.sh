@@ -74,10 +74,13 @@ else
     # Duplicate stderr (logs) to the file, filtering out SSL warnings.
     # --line-buffered, and _on_exit waits for this pipe: under systemd the service's leftover processes are
     # killed the moment the script exits, and whatever grep still held in its buffer (the summary) was lost.
-    # The pipe ignores INT/TERM/HUP: Ctrl+C reaches the whole process group, and the pipe used to die first —
-    # then not even "Got signal" made it to the log. It ends on its own when the script closes stderr.
-    exec 2> >(trap '' INT TERM HUP; tee -a >(grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >> "$LOG_FILE") \
-        | grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2)
+    # The pipe runs in its own session (setsid): Ctrl+C reaches the whole process group, and the pipe used to die
+    # first — then the "interrupted" lines went nowhere, and the write killed the handler. "trap ''" alone does not
+    # protect it: bash 5.3 lets the signal kill tee anyway. It ends on its own when the script closes stderr.
+    _log_noise='InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised'
+    _setsid=(); command -v setsid >/dev/null 2>&1 && _setsid=(setsid)
+    exec 2> >(exec ${_setsid[@]+"${_setsid[@]}"} bash -c 'trap "" INT TERM HUP
+        tee -a >(grep --line-buffered -v -E "$1" >> "$2") | grep --line-buffered -v -E "$1" >&2' _ "$_log_noise" "$LOG_FILE")
     LOG_PIPE_PID=$!
     # A spare handle on the log pipe: a signal can arrive while stderr is redirected elsewhere for one
     # command (aws_q sends aws's stderr through its own filter, which Ctrl+C kills). _on_exit goes back to this
@@ -125,6 +128,8 @@ _resume_paused_project() {
 # like a hanging one. A failed pre-start check (space, S3 access) reports on its own; a signal during the
 # checks does not, so a signal is reported at any stage.
 _on_exit() {
+    # No death by SIGPIPE while cleaning up, and stderr back on the log pipe — before writing anything
+    trap '' PIPE
     [[ -n "${LOG_FD:-}" ]] && exec 2>&"$LOG_FD"
     _resume_paused_project
     release_lock
@@ -159,6 +164,10 @@ _on_exit() {
 
 _on_signal() {
     INTERRUPT_SIGNAL="$1"   # _on_exit (the EXIT trap) logs it and sends the notification
+    # The signal may have come while stderr went into one command's own filter, which Ctrl+C just killed:
+    # the next write there would kill the script by SIGPIPE (bash 5.3 does) before the EXIT trap ever runs
+    trap '' PIPE
+    [[ -n "${LOG_FD:-}" ]] && exec 2>&"$LOG_FD"
     _resume_paused_project
     release_lock
     exit 130
@@ -514,11 +523,18 @@ done
 # 2. PAUSE/RESUME FUNCTIONS
 # ==============================================================================
 pause_project() {
-    local proj="$1" dir="$2"
+    local proj="$1"   # $2 (the folder) is not needed: containers are found by the label
     case "$BACKUP_MODE" in
         stop)
-            log "  ${C_YELLOW}⏸${C_RESET}  docker compose stop ($proj)"
-            (cd "$dir" && docker_compose stop) || log_warn "stop failed"
+            # By the project's label, like pause — not "cd dir && compose stop": that misses a project started
+            # under another name (-p, name:) — "compose stop" in the folder would act on another project. Only the containers
+            # that were running are stopped, and exactly those are started again.
+            log "  ${C_YELLOW}⏸${C_RESET}  docker stop on the running containers of project $proj"
+            STOPPED_CONTAINERS="$(docker ps -q --filter "label=com.docker.compose.project=$proj" | tr '\n' ' ')"
+            if [[ -n "${STOPPED_CONTAINERS// /}" ]]; then
+                # shellcheck disable=SC2086 # container IDs, one word each
+                (IFS=' '; docker stop $STOPPED_CONTAINERS >/dev/null) || log_warn "Some containers did not stop"
+            fi
             ;;
         pause)
             log "  ${C_YELLOW}⏸${C_RESET}  docker pause on the containers of project $proj"
@@ -529,11 +545,15 @@ pause_project() {
 }
 
 resume_project() {
-    local proj="$1" dir="$2"
+    local proj="$1"
     case "$BACKUP_MODE" in
         stop)
-            log "  ${C_GREEN}▶${C_RESET}  docker compose start ($proj)"
-            (cd "$dir" && docker_compose start) || log_warn "start failed"
+            log "  ${C_GREEN}▶${C_RESET}  docker start on the containers stopped for the backup"
+            if [[ -n "${STOPPED_CONTAINERS// /}" ]]; then
+                # shellcheck disable=SC2086
+                (IFS=' '; docker start $STOPPED_CONTAINERS >/dev/null) || log_warn "Some containers did not start"
+            fi
+            STOPPED_CONTAINERS=""
             ;;
         pause)
             log "  ${C_GREEN}▶${C_RESET}  docker unpause"
@@ -1202,7 +1222,7 @@ fi
 log "${C_BOLD}${C_BLUE}===================================================================${C_RESET}"
 
 # Run summary — one line in a file (LAST_RUN_FILE). The backup reports its own errors to Telegram,
-# but it can't report that it never started (cron broken, server down overnight) — an external
+# but it can't report that it never started (cron broken, the server down at the scheduled time) — an external
 # monitor can see that by this file's age. A separate file rather than the log:
 # the monitor doesn't need access to /var/log, which holds other logs too.
 LAST_RUN_FILE="${LAST_RUN_FILE:-/var/lib/docker-backup/last-run.json}"
@@ -1257,7 +1277,7 @@ if (( ${#LOST[@]} > 0 )); then
     body="Saved nowhere: <b>$(_join "${LOST[@]}")</b>."$'\n'"${in_primary}"
     [[ -n "$copy_lines" ]] && body+=$'\n'"$copy_lines"
     body+=$'\n'"${stats}"$'\n'"$(notify_log_hint)"
-    notify error "nightly backup with errors" "$body"
+    notify error "backup with errors" "$body"
 elif [[ -n "$copy_lines" ]]; then
     level=warn
     $copy_bad_required && level=error   # a required copy — so it's an error

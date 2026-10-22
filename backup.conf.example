@@ -32,8 +32,8 @@ PRIMARY_S3_ACCESS_KEY="YOUR_ACCESS_KEY"
 PRIMARY_S3_SECRET_KEY="YOUR_SECRET_KEY"
 # Your S3 endpoint (e.g. https://s3.example.com) — fill it in manually.
 PRIMARY_S3_ENDPOINT="https://s3.example.com"
-# Region. Many S3-compatible storages accept any; if the provider
-# requires a specific one — set it. us-east-1 is a safe default for signing.
+# Region — required: every request is signed for it, and many S3-compatible storages reject a wrong one.
+# Take it from your provider's docs or panel (us-east-1, eu-central-1, ru-1, default, …).
 PRIMARY_S3_REGION="us-east-1"
 # Bucket name — create it beforehand in the provider's panel.
 PRIMARY_S3_BUCKET="your-bucket-name"
@@ -74,7 +74,7 @@ S3_BANDWIDTH_LIMIT=""
 # which some storages keep in a hidden service container and bill for; with a single request —
 # nothing is left. S3 accepts up to 5 GB in one request: set it no higher than 4GB.
 # THE PRICE: one request is one stream, while multipart aws uploads in 10 — on a loaded storage a single
-# stream can be very slow. Empty by default; the nightly cleanup (abort_stale_uploads) protects against leftovers.
+# stream can be very slow. Empty by default; the rotation step of every full run (abort_stale_uploads) protects against leftovers.
 S3_MULTIPART_THRESHOLD=""
 
 # How many attempts aws gets per S3 request (retries with growing backoff). aws's default is 3,
@@ -119,7 +119,7 @@ SECONDARY_S3_SECRET_KEY=""
 SECONDARY_S3_RESTORE_ACCESS_KEY=""
 SECONDARY_S3_RESTORE_SECRET_KEY=""
 
-# Endpoint (e.g. https://s3.other-provider.com), region (empty — same as the primary), bucket —
+# Endpoint (e.g. https://s3.other-provider.com), region (required — this provider's, see its docs), bucket —
 # create it beforehand in the provider's panel.
 SECONDARY_S3_ENDPOINT=""
 SECONDARY_S3_REGION=""
@@ -158,7 +158,7 @@ TERTIARY_S3_SECRET_KEY=""
 TERTIARY_S3_RESTORE_ACCESS_KEY=""
 TERTIARY_S3_RESTORE_SECRET_KEY=""
 
-# Endpoint (e.g. https://s3.other-provider.com), region (empty — same as the primary), bucket —
+# Endpoint (e.g. https://s3.other-provider.com), region (required — this provider's, see its docs), bucket —
 # create it beforehand in the provider's panel.
 TERTIARY_S3_ENDPOINT=""
 TERTIARY_S3_REGION=""

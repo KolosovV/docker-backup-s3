@@ -118,7 +118,9 @@ for role in "${S3_ROLES[@]}"; do
     if [[ -n "$val" && ! "$val" =~ ^https?:// ]]; then
         err "${P}_ENDPOINT has no http(s):// — give the scheme (e.g. https://${val})"
     fi
-    val="$(s3_var "$role" REGION)";           ok "${P}_REGION = ${val:-(not set)}"
+    val="$(s3_var "$role" REGION)"
+    if [[ -n "$val" ]]; then ok "${P}_REGION = ${val}"
+    else err "${P}_REGION is empty — the storage's region is required (requests are signed for it): see your provider's docs"; fi
     val="$(s3_var "$role" ADDRESSING_STYLE)"; ok "${P}_ADDRESSING_STYLE = ${val:-path}"
     val="$(s3_var "$role" OPTS_EXTRA)";       ok "${P}_OPTS_EXTRA = ${val:-(empty)}"
     check_no_verify "${P}_OPTS_EXTRA"
@@ -255,6 +257,15 @@ for cmd in "${!DEPS[@]}"; do
         err "$cmd is not installed (${DEPS[$cmd]})"
     fi
 done
+
+# Compose v2 (the docker CLI plugin): restore starts projects with it
+if command -v docker >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then
+        ok "docker compose — $(docker compose version 2>&1 | head -1)"
+    else
+        err "docker compose (v2) is not installed — restore cannot start projects. Install the Docker Compose plugin"
+    fi
+fi
 
 # AWS CLI must be v2
 if command -v aws >/dev/null 2>&1; then

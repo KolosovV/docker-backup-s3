@@ -359,10 +359,10 @@ store_wizard() {
         secret="$(ui_password "  Secret Key (hidden input)")" || return 1
     fi
     ep="$(ui_input "  Endpoint (e.g. ${example})" "${ST[$role:ENDPOINT]:-}")" || return 1
-    region="$(ui_input "  Region" "${ST[$role:REGION]:-us-east-1}")" || return 1
+    region="$(ui_input "  Region (required: as your provider names it, e.g. us-east-1, ru-1, default)" "${ST[$role:REGION]:-us-east-1}")" || return 1
     bucket="$(ui_input "  Bucket name (create it beforehand in the provider's panel)" "${ST[$role:BUCKET]:-}")" || return 1
 
-    key="$(trim "$key")"; secret="$(trim "$secret")"; bucket="$(trim "$bucket")"
+    key="$(trim "$key")"; secret="$(trim "$secret")"; region="$(trim "$region")"; bucket="$(trim "$bucket")"
     # Normalize the endpoint (add https:// if no scheme is given)
     ep_raw="$ep"
     ep="$(normalize_endpoint "$ep")"
@@ -377,7 +377,7 @@ store_wizard() {
     fi
     case "$addr" in path|virtual) ;; *) addr="path" ;; esac
 
-    if [[ -z "$key" || -z "$secret" || -z "$ep" || -z "$bucket" ]]; then
+    if [[ -z "$key" || -z "$secret" || -z "$ep" || -z "$region" || -z "$bucket" ]]; then
         log_warn "${title}: some fields are empty — fill in ${role^^}_S3_* later in ${CONF_FILE}"
         ui_later "⚠ ${title}: some fields are empty — fill in ${role^^}_S3_* later in ${CONF_FILE}"
     fi

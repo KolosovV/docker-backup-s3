@@ -11,9 +11,9 @@
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.5.0-2496ED" alt="version 1.5.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
-  <img src="https://img.shields.io/badge/bash-4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4+">
-  <img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux">
-  <img src="https://img.shields.io/badge/Docker%20Compose-v1%20%7C%20v2-2496ED?logo=docker&logoColor=white" alt="Docker Compose v1 | v2">
+  <img src="https://img.shields.io/badge/bash-4.4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4.4+">
+  <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20x86__64%20%7C%20arm64-FCC624?logo=linux&logoColor=black" alt="Linux · x86_64 | arm64">
+  <img src="https://img.shields.io/badge/Docker%20Compose-v2-2496ED?logo=docker&logoColor=white" alt="Docker Compose v2">
   <img src="https://img.shields.io/badge/storage-S3--compatible-0EA5A4?logo=amazons3&logoColor=white" alt="S3-compatible">
 </p>
 
@@ -29,7 +29,8 @@
 
 ---
 
-Every night each compose project on the server becomes one archive: its named volumes, bind mounts,
+On the schedule you set (cron or a systemd timer: daily, several times a day, weekdays, your own time), each
+compose project on the server becomes one archive: its named volumes, bind mounts,
 project folder and fresh database dumps (PostgreSQL, MySQL/MariaDB, Redis, MongoDB — found automatically).
 The archive goes to the **primary** storage first, then to an optional **secondary** and **tertiary** one —
 for example, at other providers — and each upload is checked by size and `sha256`. Endpoints, regions, keys
@@ -54,10 +55,11 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 - 🚦 **Bandwidth limit** for S3 uploads
 - 🔐 **GPG encryption** of archives (optional)
 - 🔍 **Integrity check** — size via S3 head-object plus a `sha256` manifest next to the archive (in every storage)
+- 🔁 **Upload retries** — a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection) is retried, and the failed upload's parts are aborted
 - ✅ **Completeness control** — if a volume or bind mount didn't make it into the archive, the project is marked as failed, not as a "success"
 - 🗂 **GFS rotation** (day/week/month) and the `KEEP_MIN_BACKUPS` floor — the latest copies are never deleted
 - 🔒 **Lock** against a double start (via an atomic mkdir)
-- 📡 **Notifications** to Telegram, email (your SMTP) and a webhook (Discord, Slack, Mattermost or your own JSON receiver)
+- 📡 **Notifications** to Telegram, email (your SMTP) and a webhook (Discord, Slack, Mattermost or your own JSON receiver) — an interrupted run (Ctrl+C, a kill, a shutdown) is reported too
 - 🧪 **Dry-run** for safe testing
 - 🔑 **Read-only S3 key** for restore (protection against deletion from dev/staging)
 - 🛟 **Restore from any storage** — `--from secondary|tertiary` (or the interactive choice) pulls from a copy if the primary is unavailable
@@ -121,7 +123,7 @@ sudo /opt/docker-backup-s3/docker-backup.sh           # real backup
 sudo /opt/docker-backup-s3/status.sh                 # system overview
 ```
 
-If the installer set up cron — from here on everything runs by itself.
+If the installer set up scheduled runs (cron or a systemd timer), from here on everything runs by itself.
 
 ---
 
@@ -145,7 +147,7 @@ Destructive actions (an in-place restore, `--prune`, writing to the primary from
 the scripts themselves keep their own confirmations too. Before the first change to the config the menu
 saves a copy `backup.conf.bak.<time>`; if the config still uses the old `S3_*` names, it offers to rename them first.
 
-The menu uses `whiptail` (it is in Debian/Ubuntu by default; on RHEL — the `newt` package). Without it, or with
+The menu uses `whiptail` (`install.sh` installs it: the `whiptail`, `newt` or `libnewt` package). Without it, or with
 `UI_PLAIN=true`, the same menu works as numbered prompts. Without a terminal (cron, pipes) there is no menu — use
 the subcommands, they pass their arguments to the script as is:
 
@@ -211,8 +213,8 @@ In each compose project folder (optional):
 
 ### Supported systems
 
-Tested on every push. On each of these systems CI runs `install.sh -y` on a fresh install, then the
-tests and the full integration test (backup → restore → compare), see `tests/distros/`:
+Tested in CI on every release and once a week. On each of these systems CI runs `install.sh -y` on a fresh
+install, then the tests and the full integration test (backup → restore → compare), see `tests/distros/`:
 
 | Distribution | Package manager | AWS CLI v2 from |
 |---|---|---|
@@ -225,11 +227,11 @@ tests and the full integration test (backup → restore → compare), see `tests
 | Arch Linux | pacman | the official installer |
 | Alpine 3.20 | apk | the `aws-cli` package (the official build needs glibc) |
 
-- **bash 4+.** On Alpine, install it first: `apk add bash`. Everything else, `install.sh` installs itself: only
+- **bash 4.4+** (tested 4.4 to 5.3). On Alpine, install it first: `apk add bash`. Everything else, `install.sh` installs itself: only
   what is missing, under each distro's own package names. That includes the GNU versions of `date`, `stat`, `tar`
   and `grep` on Alpine and the full `gnupg` (with `gpg-agent`) on Amazon Linux.
-- **Docker** + Compose: both v2 (the `docker compose` plugin) and v1 (`docker-compose`) are supported and picked
-  automatically. The installer does not install Docker.
+- **Docker** with **Compose v2** (the `docker compose` plugin, part of every current Docker install). The standalone
+  `docker-compose` v1 is not supported: Docker ended it in 2023. The installer does not install Docker.
 - **Scheduling:** cron (cronie, cron or dcron) or a systemd timer. Without systemd (Alpine with OpenRC) cron is
   used and `crond` is enabled through OpenRC.
 - **AWS CLI v2:** the official AWS installer into `/usr/local/bin` comes first. Where it does not run (musl), the
@@ -238,7 +240,7 @@ tests and the full integration test (backup → restore → compare), see `tests
 - **Scheduling on a real init:** the cron service, the systemd timer and service, and cron starting a backup on its
   own are tested on a VM and with systemd as PID 1 on Debian, Ubuntu, Rocky 9, AlmaLinux 8, Fedora, openSUSE and
   Arch (systemd 239 to 25x).
-- Other Linux distributions with bash 4+ and these tools work too; they are just not in CI.
+- Other Linux distributions with bash 4.4+ and these tools should work too; they are just not in CI.
 
 > On CentOS/RHEL `dos2unix` lives in EPEL. If it did not install, that is not critical: the scripts fix line
 > endings with `sed`.
@@ -246,9 +248,15 @@ tests and the full integration test (backup → restore → compare), see `tests
 ### With `install.sh`
 
 The installer does everything itself:
-1. Installs dependencies via the system package manager — `apt`/`dnf`/`yum`/`zypper`/`pacman` (`jq`, `tar`, `gzip`, `dos2unix`, `curl`, `gpg`, `unzip`, `cron`)
-2. Installs AWS CLI v2 with the official AWS installer into `/usr/local/bin`; if that fails — via snap. If aws is already installed from snap, it offers to switch to the official one: snap updates aws-cli by itself, and such updates have broken uploads (new checksums some storages reject, a CA bundle without the GlobalSign root)
-3. Checks that Docker is present
+1. Installs the missing dependencies via the system package manager — `apt`/`dnf`/`yum`/`zypper`/`pacman`/`apk`:
+   `jq`, `tar`, `gzip`, `dos2unix`, `curl`, `gpg` (with `gpg-agent`), `unzip`, cron, `whiptail`, `logrotate`,
+   `util-linux`, `findutils`, `procps` (on Alpine also the GNU `coreutils`, `grep`, `sed`, `tar`). Only what is missing,
+   one package at a time if the whole list fails; a package manager busy right after boot is waited for
+2. Installs AWS CLI v2 with the official AWS installer into `/usr/local/bin` and checks that it runs; where it cannot
+   (musl: Alpine), the distro's package if it is v2; snap is the last fallback. If aws is already installed from snap,
+   it offers to switch to the official one: snap updates aws-cli by itself, and such updates have broken uploads
+   (new checksums some storages reject, a CA bundle without the GlobalSign root)
+3. Checks that Docker and the `docker compose` (v2) plugin are present (it does not install them)
 4. Copies the files (or works in-place if source = target). If there is no `backup.conf` yet but an earlier
    installation left one (`/opt/docker-backup/backup.conf`, or the copy `uninstall.sh` keeps in `/root`), it
    offers to take those settings over, and keeps a copy as it was (`backup.conf.imported-<time>`)
@@ -312,7 +320,7 @@ The installer handles the config carefully:
 
 | Config state | Behavior |
 |---|---|
-| **Does not exist** | Creates it from the template and offers to fill it in interactively |
+| **Does not exist** | If an earlier installation left its settings (`/opt/docker-backup/backup.conf`, or the copy `uninstall.sh` keeps in `/root`), offers to take them over; otherwise creates it from the template and runs the wizard |
 | **Exists and is filled in** | Leaves it as is, no questions |
 | **Exists, but with placeholder values** (`YOUR_ACCESS_KEY`, an empty bucket/endpoint) | Interactive: asks "Fill in the settings now?" → runs the wizard. With `-y`: a warning + a hint |
 
@@ -351,10 +359,11 @@ In your S3 provider's panel:
 - The access / S3 keys section (Access keys)
 - Copy the **Access Key** and **Secret Key**, put them into `PRIMARY_S3_ACCESS_KEY` / `PRIMARY_S3_SECRET_KEY`
 - Find out the storage **endpoint** (e.g. `https://s3.example.com`) → `PRIMARY_S3_ENDPOINT`
+- and its **region** (from the provider's docs or panel: `us-east-1`, `ru-1`, `default`, …) → `PRIMARY_S3_REGION`: it is required
 
 Optional: a second, read-only key for a restore server — `<ROLE>_S3_RESTORE_ACCESS_KEY` / `<ROLE>_S3_RESTORE_SECRET_KEY` for each storage (`PRIMARY`, `SECONDARY`, `TERTIARY`). If set, `docker-restore.sh` reads with these keys, and backups cannot be deleted/overwritten with them.
 
-For each copy, get keys from its provider and put them into `SECONDARY_S3_ACCESS_KEY` / `SECONDARY_S3_SECRET_KEY` (or `TERTIARY_…`), plus `_ENDPOINT` and `_BUCKET`.
+For each copy, get keys from its provider and put them into `SECONDARY_S3_ACCESS_KEY` / `SECONDARY_S3_SECRET_KEY` (or `TERTIARY_…`), plus `_ENDPOINT`, `_REGION` and `_BUCKET`.
 
 ---
 
@@ -371,9 +380,14 @@ sudo git clone https://github.com/KolosovV/docker-backup-s3.git /tmp/new-version
 sudo /tmp/new-version/update.sh
 ```
 
-If `/opt/docker-backup-s3` itself is a git clone, `git pull` there updates the scripts (your `backup.conf` is in
-`.gitignore` and stays untouched); then run `sudo /opt/docker-backup-s3/update.sh --migrate-conf` once, so an old
-config gets the new storage names.
+If `/opt/docker-backup-s3` itself is a git clone (installed with `git clone --branch vX.Y.Z`), switch it to the new
+release there; your `backup.conf` is in `.gitignore` and stays untouched:
+
+```bash
+sudo git -C /opt/docker-backup-s3 fetch --tags --force
+sudo git -C /opt/docker-backup-s3 checkout v1.5.0          # the release you want
+sudo /opt/docker-backup-s3/update.sh --migrate-conf        # once, for a config with the old S3_* names
+```
 
 What it does:
 - Compares file versions and shows what will actually change
@@ -436,6 +450,7 @@ The file is `/opt/docker-backup-s3/backup.conf`. The minimum needed:
 PRIMARY_S3_ACCESS_KEY="your_key"
 PRIMARY_S3_SECRET_KEY="your_secret"
 PRIMARY_S3_ENDPOINT="https://s3.example.com"
+PRIMARY_S3_REGION="us-east-1"        # your provider's region: required
 PRIMARY_S3_BUCKET="your-bucket-name"
 SCAN_DIRS="/opt /home /root /srv"
 ```
@@ -446,21 +461,26 @@ Everything else has sensible defaults.
 |---|---|---|
 | `PRIMARY_S3_ACCESS_KEY`, `_SECRET_KEY` | — | the primary storage key (full permissions) |
 | `PRIMARY_S3_ENDPOINT` | empty | S3 endpoint URL (fill in manually, e.g. `https://s3.example.com`) |
-| `PRIMARY_S3_REGION` | `us-east-1` | signing region (many S3s accept any) |
+| `PRIMARY_S3_REGION` | `us-east-1` | **required**: the storage's region as the provider names it; every request is signed for it, and many storages reject a wrong one |
 | `PRIMARY_S3_BUCKET` | empty | bucket name (create it beforehand) |
 | `PRIMARY_S3_OPTS_EXTRA` | empty | extra aws options; `--ca-bundle /etc/ssl/certs/ca-certificates.crt` if aws doesn't trust a valid certificate (the installer checks and sets it itself) |
 | `PRIMARY_S3_ADDRESSING_STYLE` | `path` | path/virtual |
 | `PRIMARY_S3_RESTORE_ACCESS_KEY`, `_SECRET_KEY` | empty | optional read-only key for restore, status, verify-restore |
-| `SECONDARY_S3_*`, `TERTIARY_S3_*` | — | copies: the same fields as `PRIMARY_S3_*` (an empty region — same as the primary) |
+| `SECONDARY_S3_*`, `TERTIARY_S3_*` | — | copies: the same fields as `PRIMARY_S3_*`, the region required too |
 | `SECONDARY_S3_ENABLED`, `TERTIARY_S3_ENABLED` | `false` | enable the copy |
 | `SECONDARY_S3_REQUIRED`, `TERTIARY_S3_REQUIRED` | `false` | `true` = a failed upload to this copy makes the project fail |
 | `S3_BANDWIDTH_LIMIT` | empty | upload speed limit (shared by all storages) |
 | `S3_MULTIPART_THRESHOLD` | empty | smaller files go in one request rather than in parts (shared) |
 | `S3_MAX_ATTEMPTS` | `8` | aws attempts per request (shared) |
-| `S3_UPLOAD_TRIES` | `3` | attempts of a whole file upload on a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection); a failed attempt's multipart parts are aborted, and the nightly cleanup aborts any older leftovers |
+| `S3_UPLOAD_TRIES` | `3` | attempts of a whole file upload on a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection); a failed attempt's multipart parts are aborted, and the rotation step of every full run aborts any older leftovers |
 | `S3_UPLOAD_RETRY_DELAY` | `15` | the first pause between those attempts, in seconds; it triples |
 | `BACKUP_PREFIX` | `backups` | prefix (folder) in the bucket |
 | `RETENTION_DAYS` | `30` | how many days to keep |
+| `KEEP_MIN_BACKUPS` | `3` | this many latest backups of each project are never deleted |
+| `GFS_ENABLED` | `false` | GFS rotation instead of `RETENTION_DAYS` (see [Backup rotation](#backup-rotation)) |
+| `GFS_DAILY`, `GFS_WEEKLY`, `GFS_MONTHLY` | `7`, `4`, `6` | how many daily, weekly and monthly backups GFS keeps |
+| `CHECKSUM_MANIFEST` | `true` | a `.sha256` file next to every archive |
+| `SCAN_DIRS` | `/opt /home /root /srv` | folders to look for compose projects in (not exclusions) |
 | `BACKUP_MODE` | `hot` | hot/pause/stop |
 | `BACKUP_VOLUMES` | `true` | back up named volumes |
 | `BACKUP_BIND_MOUNTS` | `true` | back up bind mounts |
@@ -482,7 +502,8 @@ Everything else has sensible defaults.
 | `DB_DUMP_TIMEOUT` | `1800` | timeout for each dump (sec) |
 | `ENCRYPT_BACKUPS` | `false` | GPG encryption |
 | `GPG_PASSPHRASE_FILE` | `/root/.docker-backup-passphrase` | passphrase file |
-| `NOTIFY_ON` | `error` | none/error/always |
+| `NOTIFY_ON` | `error` | none / error (errors and warnings) / always |
+| `NOTIFY_NAME` | empty | the server's name in messages; empty — the hostname |
 | `TELEGRAM_BOT_TOKEN` | empty | bot token |
 | `TELEGRAM_CHAT_ID` | empty | recipient ID |
 | `NOTIFY_WEBHOOK_URL` | empty | webhook URL |
@@ -497,6 +518,7 @@ Everything else has sensible defaults.
 | `LOCK_FILE` | `/var/run/docker-backup.lock` | base path for the lock; the lock itself is a `<LOCK_FILE>.d` directory with the PID inside (atomic `mkdir`) |
 | `WORK_DIR` | `/var/tmp/docker-backup` | temporary folder |
 | `LOG_FILE` | `/var/log/docker-backup.log` | log path |
+| `LAST_RUN_FILE` | `/var/lib/docker-backup/last-run.json` | the last run's result, for an external monitor |
 
 ### Backup modes (`BACKUP_MODE`)
 
@@ -504,7 +526,7 @@ Everything else has sensible defaults.
 |---|---|---|---|
 | `hot` | none | via the database auto-dump | **default** — no downtime |
 | `pause` | milliseconds | medium | general purpose |
-| `stop` | seconds to minutes | perfect | for critical databases without auto-dump |
+| `stop` | seconds to minutes | perfect | for critical databases without auto-dump; the project's running containers are stopped and started again |
 
 ### Checking the settings
 
@@ -515,7 +537,11 @@ sudo /opt/docker-backup-s3/validate-config.sh
 The script checks:
 - That the required fields are filled in and the value formats
 - File permissions and CRLF
-- Whether the dependencies are installed (including the AWS CLI v2 check)
+- Whether the dependencies are installed (including the AWS CLI v2 check and the `docker compose` plugin)
+- A setting of yours overridden by a template default further down in `backup.conf` (a setting given twice)
+- `SCAN_DIRS` folders inside one another (usually an exclusion typed in the wrong place)
+- Encryption: that `gpg` really encrypts and decrypts a test file, and a loud warning when the passphrase file exists
+  but `ENCRYPT_BACKUPS` is not `true`
 - Access to each storage — the primary and the enabled copies (a test write + read + delete); on `CERTIFICATE_VERIFY_FAILED` — a check with the system CA bundle and a ready line for `backup.conf`
 - Each storage's read-only key, if set
 - Old `S3_*` names in the config (suggests `update.sh --migrate-conf`)
@@ -560,7 +586,7 @@ SECONDARY_S3_REQUIRED="false"                  # see the table below
 SECONDARY_S3_ACCESS_KEY="..."
 SECONDARY_S3_SECRET_KEY="..."
 SECONDARY_S3_ENDPOINT="https://s3.other-provider.com"
-SECONDARY_S3_REGION=""                         # empty — same as the primary
+SECONDARY_S3_REGION="..."                      # required: this provider's region
 SECONDARY_S3_BUCKET="..."
 SECONDARY_S3_ADDRESSING_STYLE="path"
 SECONDARY_S3_OPTS_EXTRA=""
@@ -687,8 +713,8 @@ When a backup runs, for each project the script:
 1. Goes through all running containers of the project
 2. Determines the database type from the container image:
    - `postgres`, `postgis`, `timescale*` → `pg_dumpall`
-   - `mysql`, `percona` → `mysqldump --all-databases --single-transaction`
-   - `mariadb` → the same
+   - `mysql`, `percona`, `mariadb` → `mariadb-dump` where the image has it (MariaDB 11 has no `mysqldump`), otherwise
+     `mysqldump`; `--all-databases --single-transaction`
    - `redis`, `keydb` → `BGSAVE` + copying the RDB
    - `mongo` → `mongodump --archive --gzip`
 3. Saves the dump into the `db-dumps/` subfolder inside the project
@@ -697,7 +723,8 @@ When a backup runs, for each project the script:
 ### What ends up in S3
 
 ```
-backups/myapp/2026-05-12_03-00-00/myapp__2026-05-12_03-00-00.tar.gz
+backups/myapp/2026-05-12_03-00-00/myapp__2026-05-12_03-00-00.tar.gz          (.tar.gz.gpg if encrypted)
+backups/myapp/2026-05-12_03-00-00/myapp__2026-05-12_03-00-00.tar.gz.sha256   # the manifest
 └── myapp/
     ├── project_dir.tar.gz         # the whole folder with docker-compose.yml
     │   └── myapp/
@@ -706,9 +733,11 @@ backups/myapp/2026-05-12_03-00-00/myapp__2026-05-12_03-00-00.tar.gz
     │       └── db-dumps/                              ← the dumps are here
     │           ├── postgres_myapp-postgres-1_...sql.gz
     │           └── redis_myapp-redis-1_...rdb.gz
-    └── volumes/                   # the databases' raw data directories
-        ├── volume_myapp_postgres_data.tar.gz
-        └── volume_myapp_redis_data.tar.gz
+    ├── volumes/                   # named volumes (the databases' raw data directories too)
+    │   ├── volume_myapp_postgres_data.tar.gz
+    │   └── volume_myapp_redis_data.tar.gz
+    ├── binds/                     # bind mounts outside the project folder
+    └── inspect/                   # docker inspect of every container (paths, for the restore)
 ```
 
 Each archive will contain **both an SQL dump** (for a reliable restore) **and the raw volume** (for a fast restore).
@@ -873,7 +902,7 @@ sudo /opt/docker-backup-s3/verify-restore.sh --from tertiary
 - ✅ The integrity of every volume inside
 - ✅ The integrity of the DB dumps:
   - PostgreSQL: gzip + magic header (`PostgreSQL database dump`)
-  - MySQL: gzip + magic (`mysqldump`/`MySQL dump`)
+  - MySQL/MariaDB: gzip + the `mysqldump`/`mariadb-dump` header (MariaDB 10.11.8+/11 start with a sandbox line first)
   - Redis: gzip + RDB magic (`REDIS`)
   - MongoDB: gzip
 
@@ -906,10 +935,13 @@ Encryption is end-to-end and the same for all storages:
 2. **Upload** — the `.gpg` is uploaded to the primary S3, its size is checked via `head-object` on the `.gpg` key.
 3. **Copies (secondary, tertiary S3)** — the very same `.gpg` with the same key is uploaded there, its size checked the same way.
 4. **Restore** — `docker-restore.sh` recognizes an encrypted file by the `.gpg` extension, downloads it and decrypts it on the fly before unpacking (the same `GPG_PASSPHRASE_FILE` is needed).
-5. **Checks** — `validate-config.sh` checks that `gpg` is present, that the passphrase file exists and its permissions (600); `verify-restore.sh` runs the full download→decrypt→unpack cycle.
+5. **Checks** — `validate-config.sh` checks that the passphrase file exists, its permissions (600), and that `gpg` really encrypts and decrypts a test file; `verify-restore.sh` runs the full download→decrypt→unpack cycle.
 6. **Rotation/deletion** — expired objects are deleted by key in every bucket, whether they are encrypted or not.
 
 ### Enabling it
+
+The installer asks about it: it offers to encrypt with a passphrase file already on the server, or to generate one.
+By hand:
 
 **1.** Install `gpg` (the installer installs it automatically; manually — `apt install gnupg`).
 
@@ -1027,14 +1059,14 @@ SMTP_PASSWORD="..."
 SMTP_FROM="backup@example.com"
 ```
 
-The subject is the notification line (`🔴 Server web-1: nightly backup with errors`), and the body has a plain-text and an
+The subject is the notification line (`🔴 Server web-1: backup with errors`), and the body has a plain-text and an
 HTML part. The password goes to curl in a temporary file, not on the command line. `validate-config.sh` sends a test
 email. Many hosting providers block outgoing port 25, so use 587 or 465.
 
 ### Notification levels
 
 - `none` — never
-- `error` — errors only (recommended)
+- `error` — problems only: errors and warnings (recommended)
 - `always` — every run
 
 ---
@@ -1138,7 +1170,7 @@ sudo /opt/docker-backup-s3/docker-restore.sh
 3. Asks for the date for each selected project
 4. Shows the plan + an overwrite warning
 5. Downloads, decrypts, unpacks, restores
-6. Runs `docker compose up -d`
+6. Starts the project (`docker compose -p <project> -f <file> up -d`), only if every volume and folder came back
 
 ### Non-interactively
 
@@ -1445,7 +1477,7 @@ sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 ### Safeguards
 
 - Shows what was found when it starts
-- Warns if a backup is running (an active lock pid)
+- Refuses while a backup is running (an active lock pid): nothing is removed, exit code 1
 - `--purge-s3` requires typing `DELETE ALL BACKUPS`
 - `--dry-run` shows the plan without executing it
 
@@ -1466,7 +1498,7 @@ sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 - A double start (lock via mkdir — an atomic operation)
 - A bind-mount blacklist against accidentally backing up `/`
 - Renaming the folder to `.before-restore-EPOCH` before a restore
-- An integrity check after upload (head-object)
+- An integrity check after upload (size via head-object, the `sha256` manifest) and retries of transient upload errors
 - In `uninstall.sh` — S3 is not touched without explicit confirmation
 - In `update.sh` — the syntax of the new files is checked before replacing
 - In `docker-backup.sh -p` — rotation is skipped so others' backups aren't deleted
@@ -1631,12 +1663,15 @@ tests/run.sh -v notify  # one file, every check printed
 
 They need only bash, jq, python3 and the usual coreutils: no Docker, no S3 and no network, because curl is
 replaced by a stub that records what it was given. `test_repo` checks that every script parses, has LF line endings and
-the executable bit, and that `VERSION`, the changelog and the badge agree. `test_core` covers paths, archiving and
-restore name matching, `test_notify` covers every notification channel and format, and `test_menu` drives the
-menu's notification section end to end from a file of answers (it needs root, so it uses `sudo` or skips itself).
+the executable bit, and that `VERSION`, the changelog and the badge agree. `test_core` covers paths, archiving,
+restore name matching, upload retries (a fake aws that fails with OperationAborted), DB dump recognition and settings
+given twice. `test_notify` covers every notification channel and format, `test_menu` drives the menu's notification
+section end to end from a file of answers, and `test_install` checks that install, update, uninstall and a reinstall
+keep every value of a config, and that the installer's wizard asks about encryption. `test_menu` and `test_install`
+need root (they use `sudo` or skip themselves), and `test_install` runs only in a container or in CI.
 
-The integration test runs everything for real: Docker, a compose project with Postgres, named volumes and bind
-mounts, and S3 in a container (Versity Gateway):
+The integration test runs everything for real: Docker, a compose project with Postgres, MariaDB 11, named volumes
+and bind mounts (one with an excluded folder), not named after its folder, and S3 in a container (Versity Gateway):
 
 ```bash
 sudo tests/integration/run.sh       # -k keeps the containers and files for a look
@@ -1644,9 +1679,11 @@ sudo tests/integration/run.sh       # -k keeps the containers and files for a lo
 
 It checks the config, makes an encrypted backup to the primary, shows its contents, runs `verify-restore.sh` and
 syncs to the secondary. Then it wipes out the project (containers, volumes, folders), restores it from the
-secondary and compares the database, the volume, the bind mounts and the project folder with what was there. Last,
-it runs a backup with S3 down, which must fail. It also checks that each step sends its notification. It needs
-Docker with Compose v2, AWS CLI v2, jq, python3 and gpg, and it removes everything it created.
+secondary and compares both databases, the volume, the bind mounts and the project folder with what was there.
+It also runs a backup in `stop` mode, one with encryption switched off by a second line (a warning must come), a
+Ctrl+C during the S3 access check (it must be logged and reported), and a backup with S3 down, which must fail.
+Every step's notification is checked. It needs Docker with Compose v2, AWS CLI v2, jq, python3 and gpg, and it
+removes everything it created.
 
 The distro test repeats all of that on each supported distribution, in a fresh container that shares the host's
 Docker. In each one it runs `install.sh -y`, checks that every tool is there (and is the GNU one where it matters),

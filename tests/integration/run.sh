@@ -22,7 +22,7 @@ KEEP=false; [[ "${1:-}" == "-k" ]] && KEEP=true
 IT="$(mktemp -d "${DBT_WORK:-/tmp}/dbit.XXXXXX")"
 chmod 755 "$IT"
 PROJ="itproj"
-PDIR="$IT/srv/$PROJ"
+PDIR="$IT/srv/${PROJ}-app"   # not named like the project: its name must come from -p, not from the folder
 EXT="$IT/srv/${PROJ}-ext"          # a bind mount NEXT TO the project folder (the 1.0.1 fix)
 S3C="dbit-s3-$$"
 S3PORT=17070
@@ -53,10 +53,11 @@ s3() { AWS_ACCESS_KEY_ID=itkey AWS_SECRET_ACCESS_KEY=itsecret AWS_DEFAULT_REGION
        AWS_CONFIG_FILE=/dev/null aws --endpoint-url "http://127.0.0.1:${S3PORT}" "$@"; }
 psql_q() { docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T db psql -U postgres -d itdb -tAc "$1"; }
 app_sh() { docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T app sh -c "$1"; }
-wait_pg() {
+mdb_q() { docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T mdb mariadb -uroot -pitpass -N -B -e "$1"; }
+wait_pg() {   # Postgres and MariaDB both answer
     local _
-    for _ in $(seq 1 60); do
-        psql_q 'select 1' >/dev/null 2>&1 && return 0
+    for _ in $(seq 1 90); do
+        psql_q 'select 1' >/dev/null 2>&1 && mdb_q 'select 1' >/dev/null 2>&1 && return 0
         sleep 1
     done
     return 1
@@ -64,6 +65,7 @@ wait_pg() {
 # The project's data in one line per item, to compare before and after.
 fingerprint() {
     echo "db: $(psql_q "select count(*) || ':' || md5(string_agg(v, ',' order by id)) from t")"
+    echo "mariadb: $(mdb_q "select count(*), md5(group_concat(v order by id separator ',')) from it.t")"
     echo "appdata: $(app_sh 'cd /data && sha256sum big.bin note.txt')"
     echo "files: $(app_sh 'cd /files && sha256sum a.txt sub/b.txt')"
     echo "ext: $(app_sh 'cat /ext/ext.txt')"
@@ -112,6 +114,12 @@ services:
       POSTGRES_DB: itdb
     volumes:
       - pgdata:/var/lib/postgresql/data
+  mdb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: itpass
+    volumes:
+      - mdbdata:/var/lib/mysql
   app:
     image: alpine:3.20
     command: ["sleep", "infinity"]
@@ -121,6 +129,7 @@ services:
       - ${EXT}:/ext
 volumes:
   pgdata: {}
+  mdbdata: {}
   appdata: {}
 EOF
 printf 'SECRET_SETTING=%s\n' "$RANDOM$RANDOM" > "$PDIR/.env"
@@ -131,6 +140,7 @@ mkdir -p "$EXT/rebuildable"; echo "must not be backed up" > "$EXT/rebuildable/bi
 docker compose -p "$PROJ" -f "$PDIR/compose.yaml" up -d --quiet-pull >/dev/null 2>&1 || die "compose up failed"
 wait_pg || die "Postgres did not start"
 psql_q "create table t(id int primary key, v text); insert into t select g, md5(g::text) from generate_series(1, 5000) g;" >/dev/null
+mdb_q "create database it; create table it.t(id int primary key, v varchar(40)); insert into it.t select seq, md5(seq) from seq_1_to_3000;" >/dev/null
 app_sh 'head -c 3000000 /dev/urandom > /data/big.bin; echo note > /data/note.txt'
 fingerprint > "$IT/before.txt"
 cat "$IT/before.txt"
@@ -188,7 +198,7 @@ check "aws is pinned to the classic transfer client" grep -q 'preferred_transfer
 check "no transfer-client warning from aws" bash -c "! grep -q \"Using the 'classic' s3 transfer client\" '$IT/backup.out'"
 check "the secondary got nothing (disabled)" test -z "$(s3 s3 ls --recursive s3://secondary/ 2>/dev/null)"
 check "webhook: backup done, worded right" grep -qE '^success\|backup done\|Saved 1 project in the primary storage \(127\.0\.0\.1:[0-9]+\)\. / [0-9.]+ [MG]B in ' <<< "$(hook_msgs)"
-check "the containers run again after the backup" test "$(docker compose -p "$PROJ" -f "$PDIR/compose.yaml" ps -q --status running | wc -l)" -eq 2
+check "the containers run again after the backup" test "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter status=running | wc -l)" -eq 3
 
 step "The plan shows the exclusion"
 run plan docker-backup.sh -c "$CONF" -p "$PROJ" --dry-run
@@ -199,17 +209,31 @@ if run contents docker-restore.sh -c "$CONF" -p "$PROJ" -t "$TS" --contents -y; 
 check "the Postgres volume is in it" grep -q "${PROJ}_pgdata" "$IT/contents.out"
 check "the app volume is in it" grep -q "${PROJ}_appdata" "$IT/contents.out"
 check "a Postgres dump is in it" grep -qi 'itdb\|postgres.*\.sql' "$IT/contents.out"
+check "a MariaDB 11 dump is in it (mariadb-dump: the image has no mysqldump)" grep -q 'mariadb_.*\.sql\.gz' "$IT/contents.out"
 check "the bind mount next to the project folder is in it" grep -q "${PROJ}_ext\|${PROJ}-ext" "$IT/contents.out"
 
 step "verify-restore"
 if run verify verify-restore.sh -c "$CONF" -p "$PROJ"; then ok "verify-restore exit 0"; else bad "verify-restore failed"; show_tail verify; fi
+check "the MariaDB dump is recognized (no false 'doesn't look like' warning)" bash -c '! grep -q "look like" "$1"' _ "$IT/verify.out"
+check "it says MySQL/MariaDB for it" grep -q 'mariadb_.*(MySQL' "$IT/verify.out"
 check "webhook: backups restore fine" grep -q '^success|backups restore fine|' <<< "$(hook_msgs)"
 
 # ------------------------------------------------------------------------------
+step "BACKUP_MODE=stop: the project's containers are stopped and started again"
+started_before="$(docker inspect -f '{{.State.StartedAt}}' "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter "label=com.docker.compose.service=db")")"
+cp "$CONF" "$IT/stop.conf"; echo 'BACKUP_MODE="stop"' >> "$IT/stop.conf"
+if run stopmode docker-backup.sh -c "$IT/stop.conf" -p "$PROJ"; then ok "a backup in stop mode"
+else bad "the stop-mode backup failed"; show_tail stopmode; fi
+db_id="$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter "label=com.docker.compose.service=db")"
+check "the database was really stopped and started (a new start time)" test -n "$db_id" -a "$(docker inspect -f '{{.State.StartedAt}}' "$db_id" 2>/dev/null)" != "$started_before"
+check "all three containers run again" test "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter status=running | wc -l)" -eq 3
+wait_pg || bad "Postgres did not come back after the stop-mode backup"
+
 step "Sync to the secondary"
 echo 'SECONDARY_S3_ENABLED="true"' >> "$CONF"
 if run sync sync-s3.sh -c "$CONF" -y; then ok "sync-s3.sh exit 0"; else bad "sync-s3.sh failed"; show_tail sync; fi
 s3 s3 ls --recursive "s3://secondary/it/$PROJ/" > "$IT/secondary.ls" 2>/dev/null
+s3 s3 ls --recursive "s3://primary/it/$PROJ/" > "$IT/primary.ls" 2>/dev/null   # the stop-mode backup added one
 check "the secondary has the same objects and sizes" test "$(awk '{print $3, $4}' "$IT/primary.ls" | sort)" == "$(awk '{print $3, $4}' "$IT/secondary.ls" | sort)"
 check "webhook: storages synchronized" grep -q '^success|storages synchronized|' <<< "$(hook_msgs)"
 if run sync2 sync-s3.sh -c "$CONF" -y && grep -q 'already in sync' "$IT/sync2.out"; then ok "a second sync copies nothing"
@@ -261,12 +285,17 @@ BG=$!
 set +m
 for _ in $(seq 1 60); do grep -q 'Checking access to the primary S3' "$IT/backup.log" 2>/dev/null && break; sleep 1; done
 sleep 2
+if ! kill -0 "$BG" 2>/dev/null; then
+    bad "the run ended before the signal could be sent (the hanging storage did not hang it)"; show_tail int
+fi
 kill -INT -- "-$BG" 2>/dev/null
 wait "$BG"; int_rc=$?
 kill "$HOLE_PID" 2>/dev/null
 check "the run stopped with an error code ($int_rc)" test "$int_rc" -ne 0
 check "the log says it was interrupted, by which signal and where" \
     grep -q 'Backup interrupted (signal INT) at: 🔌 Checking access to the primary S3' "$IT/backup.log"
+grep -q 'Backup interrupted' "$IT/backup.log" \
+    || { show_tail int; echo "---- last lines of backup.log:"; tail -n 15 "$IT/backup.log"; echo "----"; }
 check "a notification: interrupted before the first project" \
     grep -q '^error|backup interrupted|Stopped by signal INT .*nothing was saved in this run' <<< "$(hook_msgs | tail -n 1)"
 check "the lock is released" test ! -e "$IT/lock.d"

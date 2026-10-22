@@ -215,6 +215,7 @@ _s3_compat() {
 s3_conf_migrate() {
     local conf="$1" f alt bak
     local -a renamed=()
+    _s3_region_fill "$conf" || return 1
     for f in "${S3_FIELDS[@]}"; do
         grep -q "^S3_${f}=" "$conf" && renamed+=("$f")
     done
@@ -272,6 +273,31 @@ conf_duplicates() {
     ' "${2:-/dev/null}" "$1" | sort
 }
 
+# _s3_region_fill <conf> — an enabled copy with an empty region: write the primary's region in, explicitly.
+# Older versions used the primary's region for such a copy silently; now the region is required, and this keeps
+# a working config working. A copy of the file is kept. Prints what it did.
+_s3_region_fill() {
+    local conf="$1" role var primary bak=""
+    primary="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${PRIMARY_S3_REGION:-${S3_REGION:-}}"' _ "$conf")"
+    [[ -n "$primary" ]] || return 0
+    for role in "${S3_ROLES[@]:1}"; do
+        var="${role^^}_S3"
+        bash -c 'source "$1" >/dev/null 2>&1; n="$2_ENABLED"; r="$2_REGION"; [[ "${!n:-false}" == "true" && -z "${!r:-}" ]]' _ "$conf" "$var" || continue
+        if [[ -z "$bak" ]]; then
+            bak="${conf}.bak.$(date +%Y%m%d_%H%M%S)"
+            cp -p "$conf" "$bak" || { printf 'Could not make a copy %s — leaving the config alone\n' "$bak"; return 1; }
+        fi
+        if grep -q "^${var}_REGION=" "$conf"; then
+            sed -i "s|^${var}_REGION=.*|${var}_REGION=\"${primary}\"|" "$conf"
+        else
+            printf '%s_REGION="%s"\n' "$var" "$primary" >> "$conf"
+        fi
+        printf '%s_REGION was empty — set to the primary region "%s" (as it was used before). Check that it is right for this storage.\n' "$var" "$primary"
+    done
+    [[ -n "$bak" ]] && printf 'Copy before the change: %s\n' "$bak"
+    return 0
+}
+
 # Roles separated by spaces — for messages (the scripts run with IFS=$'\n\t', and ${S3_ROLES[*]} would print one per line)
 s3_roles_txt() { local IFS=' '; printf '%s' "${S3_ROLES[*]}"; }
 
@@ -315,9 +341,11 @@ s3_enabled()  { [[ "$1" == "primary" || "$(s3_var "$1" ENABLED)" == "true" ]]; }
 s3_required() { [[ "$1" == "primary" || "$(s3_var "$1" REQUIRED)" == "true" ]]; }
 
 # Are the keys, endpoint and bucket filled in
+# s3_complete <role> — the storage's settings are all there. The region too: every request is signed for it, and
+# many S3-compatible storages reject a wrong one (it used to fall back to the primary's — wrong for another provider).
 s3_complete() {
     local f
-    for f in ACCESS_KEY SECRET_KEY ENDPOINT BUCKET; do
+    for f in ACCESS_KEY SECRET_KEY ENDPOINT REGION BUCKET; do
         [[ -n "$(s3_var "$1" "$f")" ]] || return 1
     done
     return 0
@@ -352,7 +380,7 @@ _aws_setup() {
     export AWS_ACCESS_KEY_ID="$key"
     export AWS_SECRET_ACCESS_KEY="$secret"
     region="$(s3_var "$role" REGION)"
-    export AWS_DEFAULT_REGION="${region:-${PRIMARY_S3_REGION:-us-east-1}}"
+    export AWS_DEFAULT_REGION="$region"   # required (s3_complete); no fallback to another storage's region
     addr="$(s3_var "$role" ADDRESSING_STYLE)"
     export AWS_S3_ADDRESSING_STYLE="${addr:-path}"
 
@@ -382,15 +410,13 @@ aws_q() {
     aws "${S3_OPTS[@]}" "$@" 2> >(grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2)
 }
 
-# docker compose wrapper: supports both v2 (the "docker compose" plugin)
-# and v1 (the separate "docker-compose" binary). usage: docker_compose stop
+# docker compose (v2, the Docker CLI plugin). The standalone docker-compose v1 is not supported: Docker ended it
+# in 2023. usage: docker_compose -p NAME -f FILE up -d
 docker_compose() {
     if docker compose version >/dev/null 2>&1; then
         docker compose "$@"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        docker-compose "$@"
     else
-        log_err "docker compose not found (neither the v2 plugin nor docker-compose v1)"
+        log_err "docker compose (v2) is not installed: install the Docker Compose plugin (docker-compose-plugin)"
         return 127
     fi
 }
@@ -412,7 +438,7 @@ abort_key_uploads() {
         [[ -z "$id" ]] && continue
         AWS_MAX_ATTEMPTS=2 aws_q s3api abort-multipart-upload --bucket "$bucket" --key "$key" --upload-id "$id" >/dev/null 2>&1 \
             && log "    ✂  Aborted the unfinished upload of this file" \
-            || log_warn "    Could not abort an unfinished upload of $key (the nightly cleanup will try again)"
+            || log_warn "    Could not abort an unfinished upload of $key (the rotation step of the next full run will try again)"
     done < <(aws_q s3api list-multipart-uploads --bucket "$bucket" --prefix "$key" --output json 2>/dev/null \
         | jq -r --arg k "$key" '(.Uploads // [])[] | select(.Key == $k) | .UploadId' 2>/dev/null || true)
 }
@@ -771,8 +797,8 @@ abort_stale_uploads() {
     while IFS=$'\t' read -r key id; do
         [[ -z "$id" ]] && continue
         # Two attempts, not S3_MAX_ATTEMPTS: an upload the storage won't abort (seen on an S3-compatible storage under
-        # load — InternalError on every abort) would otherwise eat minutes of nightly rotation each,
-        # every night. If it fails — we'll try again the next night.
+        # load — InternalError on every abort) would otherwise eat minutes of the rotation on
+        # every run. If it fails — we'll try again on the next run.
         if AWS_MAX_ATTEMPTS=2 aws_q s3api abort-multipart-upload --bucket "$bucket" --key "$key" --upload-id "$id" >/dev/null; then
             n=$((n + 1))
             log "  ✂  Aborted an unfinished upload: $key"
@@ -928,6 +954,12 @@ dump_postgres() {
 }
 
 # --- MySQL/MariaDB dump ---
+# The dump command, run inside the container: mariadb-dump where there is one — MariaDB 11 images no longer have
+# mysqldump at all (the dump failed, and only the raw volume went into the backup) — otherwise mysqldump.
+# MYSQL_PWD (passed with docker exec -e) is read by both.
+_MYSQL_DUMP_CMD='if command -v mariadb-dump >/dev/null 2>&1; then d=mariadb-dump; else d=mysqldump; fi
+exec "$d" --all-databases --single-transaction --quick --routines --triggers -u root'
+
 dump_mysql() {
     local container="$1" project_dir="$2" timestamp="$3" db_type="$4"
     local dumps_dir="${project_dir}/${DB_DUMPS_DIR:-db-dumps}"
@@ -952,8 +984,7 @@ dump_mysql() {
     if [[ -z "$mysql_pass" ]]; then
         log_warn "    No MYSQL_ROOT_PASSWORD/MARIADB_ROOT_PASSWORD found — trying without a password"
         if timeout "${DB_DUMP_TIMEOUT:-1800}" \
-            docker exec "$container" sh -c \
-            'mysqldump --all-databases --single-transaction --quick --routines --triggers -u root' \
+            docker exec "$container" sh -c "$_MYSQL_DUMP_CMD" \
             2>/dev/null | gzip > "$out"; then
             log_ok "    ${db_type^} dump done"
             prune_old_dumps "$dumps_dir" "${db_type}_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
@@ -962,8 +993,7 @@ dump_mysql() {
     else
         # Password goes via the MYSQL_PWD env, not --password (visible in ps)
         if timeout "${DB_DUMP_TIMEOUT:-1800}" \
-            docker exec -e "MYSQL_PWD=$mysql_pass" "$container" sh -c \
-            'mysqldump --all-databases --single-transaction --quick --routines --triggers -u root' \
+            docker exec -e "MYSQL_PWD=$mysql_pass" "$container" sh -c "$_MYSQL_DUMP_CMD" \
             2>/dev/null | gzip > "$out"; then
 
             local size; size=$(du -h "$out" | awk '{print $1}')
@@ -973,7 +1003,7 @@ dump_mysql() {
         fi
     fi
 
-    log_warn "    mysqldump failed for $cname"
+    log_warn "    mariadb-dump/mysqldump failed for $cname"
     rm -f "$out"
     return 1
 }

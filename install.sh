@@ -476,6 +476,12 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
     # --- Docker — NOT installed automatically, only checked ---
     if command -v docker >/dev/null 2>&1; then
         log_ok "Docker found ($(docker --version 2>&1 | head -1))"
+        if docker compose version >/dev/null 2>&1; then
+            log_ok "docker compose found ($(docker compose version 2>&1 | head -1))"
+        else
+            log_warn "docker compose (v2) is not installed — restore cannot start projects."
+            log "    Install the Docker Compose plugin: https://docs.docker.com/compose/install/linux/"
+        fi
     else
         log_err "Docker not found!"
         log "    Install Docker for your distro: https://docs.docker.com/engine/install/"
