@@ -249,7 +249,9 @@ The installer does everything itself:
 1. Installs dependencies via the system package manager — `apt`/`dnf`/`yum`/`zypper`/`pacman` (`jq`, `tar`, `gzip`, `dos2unix`, `curl`, `gpg`, `unzip`, `cron`)
 2. Installs AWS CLI v2 with the official AWS installer into `/usr/local/bin`; if that fails — via snap. If aws is already installed from snap, it offers to switch to the official one: snap updates aws-cli by itself, and such updates have broken uploads (new checksums some storages reject, a CA bundle without the GlobalSign root)
 3. Checks that Docker is present
-4. Copies the files (or works in-place if source = target)
+4. Copies the files (or works in-place if source = target). If there is no `backup.conf` yet but an earlier
+   installation left one (`/opt/docker-backup/backup.conf`, or the copy `uninstall.sh` keeps in `/root`), it
+   offers to take those settings over, and keeps a copy as it was (`backup.conf.imported-<time>`)
 5. `dos2unix` + `chmod +x` + `chmod 600 backup.conf`
 6. Asks for the settings interactively (in whiptail dialogs if whiptail is installed, plain prompts otherwise):
    - **Primary S3**: Access/Secret/Endpoint/Region/Bucket + addressing style (path/virtual); then checks the bucket and certificate trust itself (see below)
@@ -257,6 +259,9 @@ The installer does everything itself:
    - **Prefix in the bucket** (`BACKUP_PREFIX`)
    - **Retention** (`RETENTION_DAYS`)
    - Directories to scan (`SCAN_DIRS`)
+   - **Encryption**: with the passphrase file already on the server, if there is one; otherwise it offers to
+     generate one (copy it off the server: without it the backups cannot be restored)
+   - The server's name in notifications (`NOTIFY_NAME`)
    - Telegram token and chat_id, with a real check via a test message
    - Webhook URL (optional), with a test message
    - Email: recipients, SMTP server, security, login, sender (optional), with a test email

@@ -90,5 +90,38 @@ check "the reinstall takes the saved copy over" grep -q "taken over from $saved"
 same_values "$R/backup.conf" "reinstall"
 rm -f /root/docker-backup.conf.saved-*
 
+section "the wizard (a fresh install, answered prompt by prompt)"
+# wizard_run <dir> <answers…> — install.sh without -y, plain prompts, answers from a file
+wizard_run() {
+    local d="$1"; shift
+    mkdir -p "$d"; cp -a "$REPO/." "$d/"; rm -rf "$d/.git" "$d/backup.conf"
+    printf '%s\n' "$@" > "$W/answers"
+    UI_PLAIN=true UI_TTY="$W/answers" bash "$d/install.sh" --skip-deps --no-cron --skip-validate --target "$d" > "$W/wizard.log" 2>&1
+}
+#  continue?, access, secret, endpoint, region, bucket, addressing, secondary?, tertiary?, prefix, retention, scan dirs,
+#  encrypt?, server name, telegram?, webhook?, email?, logrotate?
+answers=(y AKIAWIZARD123 wizard-secret https://s3.wizard.example "" wiz-bucket path n n "" "" "" y web-7 n n n y)
+PASS_FILE=/root/.docker-backup-passphrase
+had_pass=false; [[ -f "$PASS_FILE" ]] && { had_pass=true; cp -p "$PASS_FILE" "$W/pass.keep"; }
+
+echo "an existing passphrase" > "$PASS_FILE"; chmod 600 "$PASS_FILE"
+wizard_run "$W/opt/wiz1" "${answers[@]}"
+c="$W/opt/wiz1/backup.conf"
+check "a passphrase on the server: the wizard says it is there" grep -q "A passphrase file is already here" "$W/wizard.log"
+check "ENCRYPT_BACKUPS=true written" test "$(val "$c" ENCRYPT_BACKUPS)" == true
+check "GPG_PASSPHRASE_FILE written" test "$(val "$c" GPG_PASSPHRASE_FILE)" == "$PASS_FILE"
+check "the passphrase itself untouched" grep -qx 'an existing passphrase' "$PASS_FILE"
+check "the server name written" test "$(val "$c" NOTIFY_NAME)" == web-7
+check "the storage written" test "$(val "$c" PRIMARY_S3_BUCKET)" == wiz-bucket
+
+rm -f "$PASS_FILE"
+wizard_run "$W/opt/wiz2" "${answers[@]}"
+c="$W/opt/wiz2/backup.conf"
+check "no passphrase: the wizard warns what it means" grep -q "Without the passphrase the backups cannot be restored" "$W/wizard.log"
+check "and does: mode 600, not empty" test "$(stat -c %a "$PASS_FILE" 2>/dev/null)" == 600 -a -s "$PASS_FILE"
+check "it says to copy it off the server" grep -q 'copy it off the server' "$W/wizard.log"
+check "ENCRYPT_BACKUPS=true written" test "$(val "$c" ENCRYPT_BACKUPS)" == true
+
+rm -f "$PASS_FILE"; $had_pass && cp -p "$W/pass.keep" "$PASS_FILE"
 rm -f /usr/local/bin/docker-backup /etc/logrotate.d/docker-backup
 finish
