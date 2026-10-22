@@ -69,6 +69,18 @@ check "an override at the end is a duplicate, not a lost value" grep -qx $'SCAN_
 check "a single setting is not reported" bash -c '! grep -q "^A" <<< "$1"' _ "$d"
 check "the template has no duplicates" test -z "$(conf_duplicates "$REPO/backup.conf.example")"
 
+section "verify-restore.sh: what made a DB dump"
+eval "$(sed -n '/^dump_kind() {/,/^}/p' "$REPO/verify-restore.sh")"
+big() { yes "INSERT INTO t VALUES (1,'some row to make the dump big');" | head -n 60000; }
+{ printf '/*M!999999\\- enable the sandbox mode */ \n-- MariaDB dump 10.19  Distrib 10.11.19-MariaDB, for debian-linux-gnu (x86_64)\n--\n'; big; } | gzip > "$W/mariadb_new.sql.gz"
+{ printf -- '-- MySQL dump 10.13  Distrib 8.0.36, for Linux (x86_64)\n--\n-- Host: localhost\n'; big; } | gzip > "$W/mysql.sql.gz"
+{ printf -- '--\n-- PostgreSQL database cluster dump\n--\n'; big; } | gzip > "$W/pg.sql.gz"
+{ printf 'hello\nnot a dump\n'; big; } | gzip > "$W/junk.sql.gz"
+check "MariaDB 10.11.8+ (the sandbox line first, a 2 MB dump)" test "$(dump_kind "$W/mariadb_new.sql.gz")" == mysql
+check "MySQL" test "$(dump_kind "$W/mysql.sql.gz")" == mysql
+check "PostgreSQL (pg_dumpall)" test "$(dump_kind "$W/pg.sql.gz")" == postgres
+check "something else" test "$(dump_kind "$W/junk.sql.gz")" == unknown
+
 section "helpers"
 check "plural 1" test "$(plural 1 project projects)" == project
 check "plural 2" test "$(plural 2 project projects)" == projects

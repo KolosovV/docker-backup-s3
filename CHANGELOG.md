@@ -31,6 +31,17 @@ although the passphrase file was right there.
   the take-over, uninstall and reinstall, and the warnings. The integration test makes a real backup with
   encryption switched off by a second line and checks the warning.
 
+### Fixed
+- **An interrupted backup was silent.** Ctrl+C (or a kill) during the checks before the first project left no
+  trace: nothing in the log, no notification. The log pipe died with the signal, and notifications were sent only
+  for runs that had started. Now the log says "Backup interrupted (signal INT) at: <the step>" and an error
+  notification goes out at any stage ("nothing was saved in this run" before the first project). HUP is handled
+  too, and the run's half-made work folder is removed.
+- **A false "doesn't look like mysqldump" on every MariaDB dump** in `verify-restore.sh`. MariaDB 10.11.8+/11.x
+  dumps start with a sandbox line before "-- MariaDB dump", which the check did not accept. Also, on a big dump the
+  header was read through a pipeline that failed under `pipefail`. A false warning on every run trains people to
+  ignore the real one.
+
 ### Changed
 - `uninstall.sh` always keeps a copy of `backup.conf` as `/root/docker-backup.conf.saved-<time>` (mode 600) and
   does not remove the installation if it cannot save it. `--keep-conf` is gone; it is what always happens now.

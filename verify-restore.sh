@@ -95,6 +95,18 @@ SESSION_START=$(date +%s)
 # HELPERS
 # ==============================================================================
 
+# dump_kind <file.sql.gz> — what made the dump, by its first lines: postgres, mysql or unknown.
+# The header is read into a variable first: "gunzip | head | grep -q" fails under pipefail on a big dump
+# (gunzip gets SIGPIPE), which looked like "not a dump". MariaDB 10.11.8+/11.x puts
+# "/*M!999999\- enable the sandbox mode */" before "-- MariaDB dump", hence several lines and both names.
+dump_kind() {
+    local head
+    head="$(gunzip -c "$1" 2>/dev/null | head -n 20 || true)"
+    if grep -qE 'PostgreSQL database (cluster )?dump|^--[[:space:]]+PostgreSQL' <<< "$head"; then echo postgres
+    elif grep -qE -- '-- (MySQL|MariaDB) dump|mysqldump|mariadb-dump|^-- Server version' <<< "$head"; then echo mysql
+    else echo unknown; fi
+}
+
 # List of projects in S3
 list_s3_projects() {
     aws_q s3api list-objects-v2 \
@@ -347,7 +359,7 @@ verify_project() {
                 # gunzip integrity
                 if gunzip -t "$d" 2>/dev/null; then
                     # Check that it starts with a PostgreSQL header
-                    if gunzip -c "$d" 2>/dev/null | head -5 | grep -qE 'PostgreSQL database dump|--\s+PostgreSQL'; then
+                    if [[ "$(dump_kind "$d")" == postgres ]]; then
                         local lines; lines=$(gunzip -c "$d" 2>/dev/null | wc -l)
                         log_ok "    $name (PostgreSQL, $lines lines)"
                     else
@@ -364,11 +376,11 @@ verify_project() {
                 [[ -f "$d" ]] || continue
                 local name; name=$(basename "$d")
                 if gunzip -t "$d" 2>/dev/null; then
-                    if gunzip -c "$d" 2>/dev/null | head -5 | grep -qE 'MySQL dump|mysqldump|-- Server version'; then
+                    if [[ "$(dump_kind "$d")" == mysql ]]; then
                         local lines; lines=$(gunzip -c "$d" 2>/dev/null | wc -l)
                         log_ok "    $name (MySQL, $lines lines)"
                     else
-                        log_warn "    $name — gzip is intact, but it doesn't look like mysqldump"
+                        log_warn "    $name — gzip is intact, but it doesn't look like a mysqldump/mariadb-dump"
                     fi
                 else
                     log_err "    $name — corrupted gzip"

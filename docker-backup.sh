@@ -74,9 +74,15 @@ else
     # Duplicate stderr (logs) to the file, filtering out SSL warnings.
     # --line-buffered, and _on_exit waits for this pipe: under systemd the service's leftover processes are
     # killed the moment the script exits, and whatever grep still held in its buffer (the summary) was lost.
-    exec 2> >(tee -a >(grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >> "$LOG_FILE") \
+    # The pipe ignores INT/TERM/HUP: Ctrl+C reaches the whole process group, and the pipe used to die first —
+    # then not even "Got signal" made it to the log. It ends on its own when the script closes stderr.
+    exec 2> >(trap '' INT TERM HUP; tee -a >(grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >> "$LOG_FILE") \
         | grep --line-buffered -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2)
     LOG_PIPE_PID=$!
+    # A spare handle on the log pipe: a signal can arrive while stderr is redirected elsewhere for one
+    # command (aws_q sends aws's stderr through its own filter, which Ctrl+C kills). _on_exit goes back to this
+    # handle, or its "interrupted" lines would go nowhere.
+    exec {LOG_FD}>&2
 fi
 
 # --- Dependency check ---
@@ -114,30 +120,45 @@ _resume_paused_project() {
     PAUSED_DIR=""
 }
 
-# The backup broke off mid-run (script error, kill, server shutdown) — say so
-# right away. Otherwise only an external monitor would notice, a day later, as "did not run".
-# Pre-start checks (space, S3 access) report on their own, so only after RUN_STARTED.
+# The backup broke off (script error, Ctrl+C, kill, server shutdown) — say so right away. Otherwise
+# only an external monitor would notice, a day later, as "did not run", and an interrupted run would look
+# like a hanging one. A failed pre-start check (space, S3 access) reports on its own; a signal during the
+# checks does not, so a signal is reported at any stage.
 _on_exit() {
+    [[ -n "${LOG_FD:-}" ]] && exec 2>&"$LOG_FD"
     _resume_paused_project
     release_lock
-    if [[ "${RUN_STARTED:-false}" == "true" && "${RUN_DONE:-false}" != "true" ]]; then
+    if [[ "${RUN_DONE:-false}" != "true" ]] && [[ "${RUN_STARTED:-false}" == "true" || -n "${INTERRUPT_SIGNAL:-}" ]]; then
         RUN_DONE=true
-        local body=""
-        [[ -n "${INTERRUPT_SIGNAL:-}" ]] && body+="Stopped by signal ${INTERRUPT_SIGNAL} (a shutdown or a kill)."$'\n'
+        local body="" step="${LAST_STEP:-}"
+        step="${step#"${step%%[![:space:]]*}"}"
+        if [[ -n "${INTERRUPT_SIGNAL:-}" ]]; then
+            body+="Stopped by signal ${INTERRUPT_SIGNAL} (Ctrl+C, a shutdown or a kill)${step:+ at: $(html_esc "$step")}."$'\n'
+        fi
         [[ -n "${CURRENT_PROJECT:-}" ]] && body+="Interrupted on project <b>$(html_esc "$CURRENT_PROJECT")</b>, its containers were brought back."$'\n'
-        body+="Some projects were not saved."$'\n'"$(notify_log_hint)"
-        notify error "backup interrupted" "$body"
+        if [[ "${RUN_STARTED:-false}" == "true" ]]; then body+="Some projects were not saved."
+        else body+="It stopped before the first project: nothing was saved in this run."; fi
+        log_err "Backup interrupted${INTERRUPT_SIGNAL:+ (signal ${INTERRUPT_SIGNAL})}${step:+ at: ${step}}"
+        notify error "backup interrupted" "${body}"$'\n'"$(notify_log_hint)"
     fi
+    # Half-made archives of this run are of no use, and they take space
+    [[ -n "${BACKUP_ROOT:-}" && -d "$BACKUP_ROOT" ]] && rm -rf "$BACKUP_ROOT"
     # Let the log pipe finish writing: close our end, wait for it (see "Logging to a file")
+    # Up to 5 s, not a plain "wait": after a signal bash may still hold another copy of the pipe (seen as fd 11),
+    # so the pipe never sees its end and the two would wait for each other forever. Lines are passed on one
+    # at a time, so by now they are written; the pipe ends by itself once this process is gone.
     if [[ -n "${LOG_PIPE_PID:-}" ]]; then
-        exec 2>&-
-        wait "$LOG_PIPE_PID" 2>/dev/null || true
+        exec 2>&- {LOG_FD}>&-
+        local _i
+        for _i in $(seq 1 50); do
+            kill -0 "$LOG_PIPE_PID" 2>/dev/null || break
+            sleep 0.1
+        done
     fi
 }
 
 _on_signal() {
-    INTERRUPT_SIGNAL="$1"
-    log_err "Got signal $1 — aborting"
+    INTERRUPT_SIGNAL="$1"   # _on_exit (the EXIT trap) logs it and sends the notification
     _resume_paused_project
     release_lock
     exit 130
@@ -149,6 +170,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
     trap '_on_exit' EXIT
     trap '_on_signal INT' INT
     trap '_on_signal TERM' TERM
+    trap '_on_signal HUP' HUP
 fi
 
 # --- AWS CLI ---

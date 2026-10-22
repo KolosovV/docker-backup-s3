@@ -70,7 +70,8 @@ log_info()  { echo "${C_DIM}[$(_ts)]${C_RESET} $*" >&2; }
 log_ok()    { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_GREEN}✓${C_RESET} $*" >&2; }
 log_warn()  { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_YELLOW}⚠${C_RESET} $*" >&2; }
 log_err()   { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_RED}❌ $*${C_RESET}" >&2; }
-log_step()  { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_CYAN}▶${C_RESET} ${C_BOLD}$*${C_RESET}" >&2; }
+# LAST_STEP — the step under way, for "interrupted at …"
+log_step()  { LAST_STEP="$*"; echo "${C_DIM}[$(_ts)]${C_RESET} ${C_CYAN}▶${C_RESET} ${C_BOLD}$*${C_RESET}" >&2; }
 log_done()  { echo "${C_DIM}[$(_ts)]${C_RESET} ${C_GREEN}${C_BOLD}✅ $*${C_RESET}" >&2; }
 
 fail() { log_err "$*"; exit 1; }

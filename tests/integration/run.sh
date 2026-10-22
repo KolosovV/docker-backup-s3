@@ -247,6 +247,31 @@ else ok "validate-config fails on a setting given twice"; fi
 check "validate-config warns: passphrase in place, encryption off" grep -q 'ENCRYPTION IS OFF' "$IT/validate2.out"
 sed -i '$d' "$CONF"                            # back to one line
 
+step "Ctrl+C during the S3 access check"
+# A "storage" that accepts the connection and never answers, so the run sits in the access check
+python3 -c 'import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", 17072)); s.listen(5); c=[]
+while True: c.append(s.accept()[0])' &
+HOLE_PID=$!
+sed 's|^PRIMARY_S3_ENDPOINT=.*|PRIMARY_S3_ENDPOINT="http://127.0.0.1:17072"|' "$CONF" > "$IT/hang.conf"
+echo 'PRIMARY_S3_ENDPOINT="http://127.0.0.1:17072"' >> "$IT/hang.conf"
+: > "$IT/backup.log"
+set -m   # its own process group, like a job in a terminal: Ctrl+C goes to the whole group, the log pipe too
+"$REPO/docker-backup.sh" -c "$IT/hang.conf" -p "$PROJ" > "$IT/int.out" 2>&1 &
+BG=$!
+set +m
+for _ in $(seq 1 60); do grep -q 'Checking access to the primary S3' "$IT/backup.log" 2>/dev/null && break; sleep 1; done
+sleep 2
+kill -INT -- "-$BG" 2>/dev/null
+wait "$BG"; int_rc=$?
+kill "$HOLE_PID" 2>/dev/null
+check "the run stopped with an error code ($int_rc)" test "$int_rc" -ne 0
+check "the log says it was interrupted, by which signal and where" \
+    grep -q 'Backup interrupted (signal INT) at: 🔌 Checking access to the primary S3' "$IT/backup.log"
+check "a notification: interrupted before the first project" \
+    grep -q '^error|backup interrupted|Stopped by signal INT .*nothing was saved in this run' <<< "$(hook_msgs | tail -n 1)"
+check "the lock is released" test ! -e "$IT/lock.d"
+check "no half-made work folder left" test -z "$(find "$IT/work" -mindepth 1 -maxdepth 1 -type d -name '20*' 2>/dev/null)"
+
 step "A failed run: the primary S3 is down"
 docker stop "$S3C" >/dev/null
 if run fail docker-backup.sh -c "$CONF" -p "$PROJ"; then bad "the backup reported success with S3 down"
