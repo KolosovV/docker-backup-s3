@@ -1709,8 +1709,9 @@ tests/systemd/run.sh rockylinux:9       # systemd in a container (privileged)
 ```
 
 On every push GitHub Actions runs ShellCheck (warnings and errors), the tests, the integration test and the
-systemd test on its own VM. Release tags, a weekly run and manual runs also run the distro test for each
-distribution, the systemd test in each distribution's container, and aarch64: see `.github/workflows/ci.yml`.
+systemd test on its own VM. The tag of the current release (the one matching `VERSION` on main), a monthly run and
+manual runs also run the distro test for each distribution, the systemd test in each distribution's container, and
+aarch64: see `.github/workflows/ci.yml`.
 
 ---
 

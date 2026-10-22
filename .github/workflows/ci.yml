@@ -1,15 +1,16 @@
 name: CI
 
-# Every push: ShellCheck, the tests, the integration test and a real VM with systemd (minutes).
-# Release tags, the weekly run and a manual run also do every distribution, systemd as init in containers
-# and aarch64 under QEMU (an hour and more): the heavy part, kept off ordinary pushes.
+# Every push and pull request: ShellCheck, the tests, the integration test and a real VM with systemd (minutes).
+# The heavy part — every distribution, systemd as init in containers, aarch64 under QEMU (about two hours of
+# runner time) — runs for the current release tag only (the one matching VERSION on main; re-pushed old tags
+# get the light part), monthly, and by hand.
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
   schedule:
-    - cron: '17 4 * * 1'
+    - cron: '17 4 1 * *'
   workflow_dispatch:
     inputs:
       suite:
@@ -21,15 +22,48 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the run in progress; tag runs are left to finish
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   shellcheck:
     runs-on: ubuntu-24.04
+    outputs:
+      heavy: ${{ steps.heavy.outputs.suites }}
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck (warnings and errors)
         run: |
           shellcheck --version
           shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh tests/*/*.sh
+      - name: Which heavy suites run
+        id: heavy
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          suites=""
+          case "$EVENT" in
+            schedule) suites="distros systemd arm64" ;;
+            workflow_dispatch)
+              case "$SUITE" in
+                all) suites="distros systemd arm64" ;;
+                none) ;;
+                *) suites="$SUITE" ;;
+              esac ;;
+            push)
+              if [[ "$REF" == refs/tags/* ]]; then
+                git fetch -q --depth=1 origin main
+                current="v$(git show FETCH_HEAD:VERSION | tr -d '[:space:]')"
+                if [[ "${REF#refs/tags/}" == "$current" ]]; then suites="distros systemd arm64"
+                else echo "${REF#refs/tags/} is not the current release ($current): light part only"; fi
+              fi ;;
+          esac
+          echo "heavy suites: ${suites:-none}"
+          echo "suites=${suites}" >> "$GITHUB_OUTPUT"
 
   tests:
     runs-on: ubuntu-24.04
@@ -70,7 +104,8 @@ jobs:
 
   distros:
     # install.sh -y on a fresh system, then the tests and the integration test there
-    if: (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'distros')
+    needs: shellcheck
+    if: contains(needs.shellcheck.outputs.heavy, 'distros')
     name: distro ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -96,7 +131,8 @@ jobs:
 
   systemd:
     # systemd as PID 1 in a container of each distribution: the timer, the service, cron firing
-    if: (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'systemd')
+    needs: shellcheck
+    if: contains(needs.shellcheck.outputs.heavy, 'systemd')
     name: systemd ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -118,7 +154,8 @@ jobs:
 
   arm64:
     # aarch64 under QEMU: the official AWS CLI for aarch64, the tools, the tests and the integration test
-    if: (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'arm64')
+    needs: shellcheck
+    if: contains(needs.shellcheck.outputs.heavy, 'arm64')
     name: arm64 ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
