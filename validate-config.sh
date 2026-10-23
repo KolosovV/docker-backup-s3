@@ -363,7 +363,11 @@ _aws_setup primary
 # ==============================================================================
 section "Working directories"
 
+_seen_dirs=""
 for d in "$WORK_DIR" "$(dirname "$LOG_FILE")" "$(dirname "${LOCK_FILE:-/var/run/docker-backup.lock}")"; do
+    # The log and the lock usually share a folder: one line for it
+    [[ $'\n'"$_seen_dirs"$'\n' == *$'\n'"$d"$'\n'* ]] && continue
+    _seen_dirs+="$d"$'\n'
     if [[ -d "$d" ]]; then
         if [[ -w "$d" ]]; then
             ok "$d (writable)"

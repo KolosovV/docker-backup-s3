@@ -242,16 +242,21 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
             *)                        echo "$1" ;;
         esac
     }
-    pm_install() {   # pm_install <package…> — exit code of the package manager
-        case "$PKG_MGR" in
+    # pm_install <package…> — exit code of the package manager. Its output (dpkg prints pages even with -qq) is
+    # shown only when it fails: the last lines, which say why.
+    pm_install() {
+        local out rc=0
+        out="$(case "$PKG_MGR" in
             # Wait for the lock: right after boot unattended-upgrades often holds it
             apt-get) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq "$@" ;;
             dnf|yum) "$PKG_MGR" install -y -q "$@" ;;
             zypper)  zypper --non-interactive -q install -y "$@" ;;
             pacman)  pacman -S --noconfirm --needed "$@" ;;
             apk)     apk add --no-cache -q "$@" ;;
-            *)       return 1 ;;
-        esac
+            *)       exit 1 ;;
+        esac 2>&1)" || rc=$?
+        (( rc == 0 )) || printf '%s\n' "$out" | tail -n 15 | sed 's/^/    /' >&2
+        return "$rc"
     }
     install_base_deps() {
         local -a want=() failed=()
@@ -268,7 +273,7 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         # Alpine: busybox has date/stat/sed/grep/find, but not the GNU options the scripts use (date -d, stat -c…)
         [[ "$PKG_MGR" == "apk" ]] && want+=(coreutils findutils grep sed tar gzip util-linux procps)
         (( ${#want[@]} )) || { log_ok "Base packages are already there"; return 0; }
-        log "  Installing: ${want[*]}"
+        log "  Installing: $(IFS=' '; printf '%s' "${want[*]}")"
         case "$PKG_MGR" in
             apt-get) apt-get -o DPkg::Lock::Timeout=300 update -qq || true ;;
             pacman)  pacman -Sy --noconfirm >/dev/null || true ;;
@@ -288,7 +293,7 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
             failed+=("$p")
         done
         if (( ${#failed[@]} )); then
-            log_warn "Could not install: ${failed[*]} — install them by hand"
+            log_warn "Could not install: $(IFS=' '; printf '%s' "${failed[*]}") — install them by hand"
             return 1
         fi
         log_ok "Base packages installed"
@@ -849,7 +854,7 @@ fi
 # ==============================================================================
 echo
 echo "${C_BOLD}${C_GREEN}╔═══════════════════════════════════════════════════════════════╗"
-echo "║                  ✅  Installation complete                     ║"
+echo "║                  ✅  Installation complete                    ║"
 echo "╚═══════════════════════════════════════════════════════════════╝${C_RESET}"
 echo
 
@@ -860,7 +865,7 @@ echo "${C_BOLD}Next steps:${C_RESET}"
 echo
 echo "  ${C_CYAN}•${C_RESET} ${C_BOLD}Menu for everything below:  sudo docker-backup${C_RESET}"
 if [[ "${EXISTING_CONF:-false}" != "true" && "$NON_INTERACTIVE" == "true" ]]; then
-    echo "  ${C_YELLOW}1.${C_RESET} Fill in the S3 keys and the bucket:"
+    echo "  ${C_YELLOW}•${C_RESET} ${C_BOLD}First, fill in the S3 keys, the region and the bucket:${C_RESET}"
     echo "       sudo nano $TARGET_DIR/backup.conf"
     echo
 fi

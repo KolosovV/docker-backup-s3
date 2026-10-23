@@ -15,6 +15,21 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/backup.conf"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--config) CONFIG_FILE="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: $0 [-c FILE]"
+            echo
+            echo "S3 access diagnostics with the real aws errors: for the primary and every enabled copy —"
+            echo "whether the key works, which addressing style works, and what to put into backup.conf."
+            echo
+            echo "  -c, --config FILE   config file (default: backup.conf next to the script)"
+            echo "  -h, --help          this help"
+            exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
 [[ -f "$CONFIG_FILE" ]] || { echo "❌ No $CONFIG_FILE"; exit 1; }
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"

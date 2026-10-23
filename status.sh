@@ -86,7 +86,7 @@ age_human() {
 clear 2>/dev/null || true
 cat <<EOF
 ${C_BOLD}${C_BLUE}╔═══════════════════════════════════════════════════════════════╗
-║   📊  Docker Backup System — Status                            ║
+║   📊  Docker Backup System — Status                           ║
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
 ${C_DIM}  Host: $(uname -n)    Date: $(date '+%Y-%m-%d %H:%M:%S')${C_RESET}
 
@@ -107,12 +107,15 @@ while IFS=$'\t' read -r project workdir; do
 done < <(docker ps -a --format '{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | sort -u)
 
 # bash under set -u needs special handling of empty associative arrays
+# rule N — N "─" (a table's underline). Not printf %-Ns: it pads by bytes, and "─" takes three.
+rule() { local s; printf -v s '%*s' "$1" ''; printf '%s' "${s// /─}"; }
+
 local_count=${#LOCAL_PROJECTS[@]}
 if (( local_count == 0 )); then
     echo "  ${C_DIM}(none found)${C_RESET}"
 else
     printf "  %-45s %-12s %s\n" "Project" "Containers" "Volumes"
-    printf "  %-45s %-12s %s\n" "──────────────────────────────────────" "──────────" "──────"
+    echo "  $(rule 45) $(rule 12) $(rule 7)"
     for proj in "${!LOCAL_PROJECTS[@]}"; do
         # Count containers
         running=$(docker ps -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null | wc -l)
@@ -133,7 +136,7 @@ else
         done < <(docker ps -q --filter "label=com.docker.compose.project=$proj" 2>/dev/null)
         db_info=""
         if [[ ${#db_types[@]} -gt 0 ]]; then
-            db_info=" ${C_MAGENTA}🗄${C_RESET} ${db_types[*]}"
+            db_info=" ${C_MAGENTA}🗄${C_RESET} $(join_list "${db_types[@]}")"
         fi
 
         # Status color
@@ -145,8 +148,8 @@ else
             color_dot=$(status_dot err)
         fi
 
-        printf "  %s %-43s %s/%s%-7s %d%s\n" \
-            "$color_dot" "$proj" "$running" "$total" "" "$volumes_count" "$db_info"
+        printf "  %s %-43s %-12s %d%s\n" \
+            "$color_dot" "$proj" "${running}/${total}" "$volumes_count" "$db_info"
     done
 fi
 echo
@@ -206,7 +209,8 @@ show_store() {
         size=${size:-0}
         objects=$((objects + 1))
         bytes=$((bytes + size))
-        count["$proj"]=$((${count["$proj"]:-0} + 1))
+        # A backup is its archive; the .sha256 next to it is not another one
+        [[ "$key" == *.sha256 ]] || count["$proj"]=$((${count["$proj"]:-0} + 1))
         total["$proj"]=$((${total["$proj"]:-0} + size))
         (( epoch > ${latest["$proj"]:-0} )) && latest["$proj"]=$epoch
         (( epoch < oldest )) && oldest=$epoch
@@ -229,7 +233,7 @@ show_store() {
     elif (( last_age < 86400 * 2 )); then last_status=$(status_dot warn)
     else last_status=$(status_dot err); fi
 
-    echo "  $last_status Latest backup:      $(date -d "@$newest" '+%Y-%m-%d %H:%M:%S')  ($(age_human "$newest"))"
+    echo "  $last_status Latest backup:       $(date -d "@$newest" '+%Y-%m-%d %H:%M:%S')  ($(age_human "$newest"))"
     echo "    Oldest:              $(date -d "@$oldest" '+%Y-%m-%d %H:%M:%S')  ($(age_human "$oldest"))"
     echo "    Objects:             $objects"
     echo "    Total size:          $(human_size $bytes)"
@@ -239,7 +243,7 @@ show_store() {
     # Per project
     echo "  ${C_BOLD}Per project:${C_RESET}"
     printf "    %-45s %-10s %-12s %s\n" "Project" "Backups" "Size" "Latest"
-    printf "    %-45s %-10s %-12s %s\n" "──────────────────────────────────" "────────" "──────" "──────────"
+    echo "    $(rule 45) $(rule 10) $(rule 12) $(rule 10)"
     for proj in $(printf '%s\n' "${!latest[@]}" | sort); do
         latest_age=$((now - ${latest[$proj]}))
         if (( latest_age < 86400 )); then dot=$(status_dot ok)
@@ -446,7 +450,7 @@ echo
 # ==============================================================================
 echo "${C_BOLD}${C_CYAN}━━━ Latest log entries ━━━${C_RESET}"
 
-for log_path in /var/log/docker-backup.log /var/log/docker-backup-cron.log; do
+for log_path in "${LOG_FILE:-/var/log/docker-backup.log}" /var/log/docker-backup-cron.log; do
     if [[ -f "$log_path" ]]; then
         size=$(stat -c %s "$log_path" 2>/dev/null || echo 0)
         last_modified=$(stat -c %Y "$log_path" 2>/dev/null || echo 0)

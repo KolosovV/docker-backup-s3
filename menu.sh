@@ -404,13 +404,15 @@ store_line() {
 }
 
 menu_storages() {
-    local role
+    local role short=""
+    # whiptail shows the role as the tag, so the line skips the name; plain prompts show no tags
+    [[ "$UI_MODE" == "whiptail" ]] && short=short
     while true; do
         UI_TITLE="Storage settings"
         role="$(ui_menu "Every archive goes to the primary first, then to each enabled copy." \
-            primary   "$(store_line primary short)" \
-            secondary "$(store_line secondary short)" \
-            tertiary  "$(store_line tertiary short)")" || return 0
+            primary   "$(store_line primary "$short")" \
+            secondary "$(store_line secondary "$short")" \
+            tertiary  "$(store_line tertiary "$short")")" || return 0
         menu_store "$role"
     done
 }

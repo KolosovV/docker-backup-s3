@@ -13,6 +13,7 @@
 #
 #   sudo ./drop-project.sh mailcow-dockerized          # look
 #   sudo ./drop-project.sh mailcow-dockerized --yes    # delete — IRREVERSIBLE
+#   -c, --config FILE   config file (default: backup.conf next to the script)
 # ==============================================================================
 set -euo pipefail
 IFS=$'\n\t'

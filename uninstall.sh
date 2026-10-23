@@ -540,9 +540,9 @@ fi
 echo
 echo "${C_BOLD}${C_GREEN}╔═══════════════════════════════════════════════════════════════╗"
 if [[ "$DRY_RUN" == "true" ]]; then
-    echo "║                  🧪  DRY-RUN complete                          ║"
+    echo "║                  🧪  DRY-RUN complete                         ║"
 else
-    echo "║                  ✅  Removal complete                          ║"
+    echo "║                  ✅  Removal complete                         ║"
 fi
 echo "╚═══════════════════════════════════════════════════════════════╝${C_RESET}"
 echo

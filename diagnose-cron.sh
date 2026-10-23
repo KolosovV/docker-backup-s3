@@ -5,59 +5,69 @@
 # Run it to understand why a false warning about cron may appear.
 # ==============================================================================
 
+case "${1:-}" in
+    -h|--help)
+        echo "Usage: $0"
+        echo
+        echo "Shows what setup-cron.sh sees about cron on this system: the binary, the process, the systemd"
+        echo "units, root's crontab. Run it when setup-cron.sh warns about cron although it is there."
+        exit 0 ;;
+    "") ;;
+    *) echo "Unknown argument: $1 (see --help)" >&2; exit 1 ;;
+esac
+
+os="$( . /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")"
 echo "=== Cron diagnostics on $(uname -n) ==="
 echo "Date: $(date)"
-echo "OS: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | head -1)"
+echo "OS: ${os:-unknown}"
 echo
 
 echo "─── 1. Looking for the binary ───"
 for cmd_path in /usr/sbin/cron /usr/sbin/crond /usr/bin/cron /usr/bin/crond; do
-    if [[ -x "$cmd_path" ]]; then
-        echo "  ✓ Found: $cmd_path"
-        ls -la "$cmd_path"
-    else
-        echo "  ✗ Missing: $cmd_path"
-    fi
+    if [[ -x "$cmd_path" ]]; then echo "  ✓ Found: $cmd_path"
+    else echo "  ✗ Missing: $cmd_path"; fi
 done
 
 echo
 echo "─── 2. command -v ───"
 echo "  PATH=$PATH"
-command -v cron && echo "  ✓ command -v cron works" || echo "  ✗ command -v cron found nothing"
-command -v crond && echo "  ✓ command -v crond works" || echo "  ✗ command -v crond found nothing"
-
-echo
-echo "─── 3. pgrep ───"
-pgrep -x cron && echo "  ✓ pgrep -x cron found processes" || echo "  ✗ pgrep -x cron found nothing"
-pgrep -x crond && echo "  ✓ pgrep -x crond found" || echo "  ✗ pgrep -x crond found nothing"
-pgrep -f '/usr/sbin/cron' && echo "  ✓ pgrep -f /usr/sbin/cron found" || echo "  ✗ pgrep -f /usr/sbin/cron found nothing"
-
-echo
-echo "─── 4. systemctl ───"
-for u in cron cron.service crond crond.service cronie cronie.service; do
-    state=$(systemctl is-active "$u" 2>/dev/null || echo "?")
-    enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo "?")
-    echo "  $u: is-active=$state, is-enabled=$enabled"
+for c in cron crond; do
+    if p="$(command -v "$c")"; then echo "  ✓ command -v $c: $p"
+    else echo "  ✗ command -v $c found nothing"; fi
 done
 
 echo
-echo "─── 5. systemctl list-unit-files ───"
-systemctl list-unit-files 2>/dev/null | grep -E "cron|crond|cronie" | head -5 || echo "  (nothing found)"
+echo "─── 3. The cron process ───"
+for c in cron crond; do
+    if pids="$(pgrep -x "$c")"; then echo "  ✓ pgrep -x $c: $(tr '\n' ' ' <<< "$pids")"
+    else echo "  ✗ pgrep -x $c found nothing"; fi
+done
 
 echo
-echo "─── 6. ps ───"
-ps -ef 2>/dev/null | grep -E "[c]ron|[c]rond" | head -5 || echo "  (no cron processes found)"
+echo "─── 4. systemctl ───"
+if command -v systemctl >/dev/null 2>&1; then
+    for u in cron crond cronie; do
+        # is-enabled prints "not-found" and fails: take what it printed, "?" only when it printed nothing
+        state="$(systemctl is-active "$u" 2>/dev/null)"; enabled="$(systemctl is-enabled "$u" 2>/dev/null)"
+        echo "  $u: is-active=${state:-?}, is-enabled=${enabled:-?}"
+    done
+else
+    echo "  (no systemctl)"
+fi
 
 echo
-echo "─── 7. service status ───"
-service cron status 2>&1 | head -5 || echo "  (service cron does not respond)"
+echo "─── 5. Processes ───"
+procs="$(ps -eo pid,args 2>/dev/null | grep -E '(^|/| )(cron|crond)( |$)' | grep -v -e grep -e diagnose-cron)"
+if [[ -n "$procs" ]]; then printf '%s\n' "$procs" | head -5 | sed 's/^/  /'
+else echo "  (no cron processes)"; fi
 
 echo
-echo "─── 8. crontab ───"
-crontab -l 2>&1 | head -3 || echo "  (crontab is empty or unavailable)"
+echo "─── 6. root's crontab ───"
+if tab="$(crontab -l 2>/dev/null)" && [[ -n "$tab" ]]; then printf '%s\n' "$tab" | grep -v '^#' | head -5 | sed 's/^/  /'
+else echo "  (empty or none)"; fi
 
 echo
 echo "─── SUMMARY ───"
-echo "If you see a cron process in step 3 or systemctl is-active=active in step 4,"
-echo "then setup-cron.sh will NOT show the warning about installing cron."
-echo "If the warning shows up anyway — that's a bug, send this output."
+echo "If step 3 or 5 shows a cron process, or step 4 shows is-active=active,"
+echo "setup-cron.sh will NOT warn about installing cron."
+echo "If it warns anyway, that is a bug: please report it with this output."

@@ -301,6 +301,15 @@ _s3_region_fill() {
 # Roles separated by spaces — for messages (the scripts run with IFS=$'\n\t', and ${S3_ROLES[*]} would print one per line)
 s3_roles_txt() { local IFS=' '; printf '%s' "${S3_ROLES[*]}"; }
 
+# days_ago N — "today", "1 day ago", "N days ago"
+days_ago() {
+    case "$1" in 0) printf 'today' ;; 1) printf '1 day ago' ;; *) printf '%s days ago' "$1" ;; esac
+}
+
+# join_list <item…> — "a, b, c" for messages. Not "${arr[*]}": the scripts run with IFS=$'\n\t', and that would put
+# one item per line.
+join_list() { local IFS=$'\x1f'; local s="$*"; printf '%s' "${s//$'\x1f'/, }"; }
+
 s3_is_role() {
     local r
     for r in "${S3_ROLES[@]}"; do [[ "$r" == "$1" ]] && return 0; done
@@ -465,7 +474,8 @@ aws_upload() {
         else
             # Capture the output and the REAL aws exit code (not the grep filter's):
             # otherwise, under pipefail, a successful upload with no output reads as an error.
-            out="$(aws_q s3 cp "$src" "$dst" --no-progress 2>&1)" || rc=$?
+            # --only-show-errors: aws says "upload: <file> to <url>" for every success, which only fills the log
+            out="$(aws_q s3 cp "$src" "$dst" --only-show-errors 2>&1)" || rc=$?
             if [[ -n "$out" ]]; then
                 printf '%s\n' "$out" \
                     | grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2 || true
@@ -960,7 +970,7 @@ dump_postgres() {
         | gzip > "$out"; then
 
         local size; size=$(du -h "$out" | awk '{print $1}')
-        log_ok "    Postgres dump done: $size"
+        log_ok "    PostgreSQL dump done: $size"
         prune_old_dumps "$dumps_dir" "postgres_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
         return 0
     else
@@ -996,14 +1006,15 @@ dump_mysql() {
 
     local out="${dumps_dir}/${db_type}_${cname}_${timestamp}.sql.gz"
 
-    log "    🐬 ${db_type^}: $cname -> $(basename "$out")"
+    local db_name="MySQL"; [[ "$db_type" == mariadb ]] && db_name="MariaDB"
+    log "    🐬 ${db_name}: $cname -> $(basename "$out")"
 
     if [[ -z "$mysql_pass" ]]; then
         log_warn "    No MYSQL_ROOT_PASSWORD/MARIADB_ROOT_PASSWORD found — trying without a password"
         if timeout "${DB_DUMP_TIMEOUT:-1800}" \
             docker exec "$container" sh -c "$_MYSQL_DUMP_CMD" \
             2>/dev/null | gzip > "$out"; then
-            log_ok "    ${db_type^} dump done"
+            log_ok "    ${db_name} dump done"
             prune_old_dumps "$dumps_dir" "${db_type}_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
             return 0
         fi
@@ -1014,7 +1025,7 @@ dump_mysql() {
             2>/dev/null | gzip > "$out"; then
 
             local size; size=$(du -h "$out" | awk '{print $1}')
-            log_ok "    ${db_type^} dump done: $size"
+            log_ok "    ${db_name} dump done: $size"
             prune_old_dumps "$dumps_dir" "${db_type}_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
             return 0
         fi

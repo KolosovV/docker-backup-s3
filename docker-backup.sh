@@ -341,7 +341,7 @@ if [[ -n "$PROJECT_FILTER" ]]; then
     done
 
     if [[ ${#NOT_FOUND[@]} -gt 0 ]]; then
-        log_err "Projects not found: ${NOT_FOUND[*]}"
+        log_err "Projects not found: $(join_list "${NOT_FOUND[@]}")"
         log "    Projects available on this host:"
         if [[ ${#PROJECTS[@]} -gt 0 ]]; then
             for p in "${!PROJECTS[@]}"; do
@@ -425,7 +425,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
 
         # Database auto-dump
         if [[ "${AUTO_DUMP_DATABASES:-true}" == "true" ]]; then
-            local_dbs=""
+            local_dbs=()
             while IFS= read -r cid; do
                 [[ -z "$cid" ]] && continue
                 cimg=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null || true)
@@ -434,16 +434,15 @@ if [[ "$DRY_RUN" == "true" ]]; then
                 dtype=$(detect_db_type "$cimg")
                 if [[ -n "$dtype" ]]; then
                     if [[ "$cstate" == "running" ]]; then
-                        local_dbs+="     ${C_MAGENTA}🗄${C_RESET}  $dtype: $cname (image: $cimg)\n"
+                        local_dbs+=("     ${C_MAGENTA}🗄${C_RESET}  $dtype: $cname (image: $cimg)")
                     else
-                        local_dbs+="     ${C_DIM}🗄  $dtype: $cname (state=$cstate, dump skipped)${C_RESET}\n"
+                        local_dbs+=("     ${C_DIM}🗄  $dtype: $cname (state=$cstate, dump skipped)${C_RESET}")
                     fi
                 fi
             done < <(docker ps -aq --filter "label=com.docker.compose.project=$proj")
-            if [[ -n "$local_dbs" ]]; then
+            if (( ${#local_dbs[@]} )); then
                 log "   Database auto-dump:"
-                # To stderr, like log: on stdout the lines came out before their heading and missed the log file
-                printf '%b' "$local_dbs" >&2
+                for l in "${local_dbs[@]}"; do log "$l"; done
             fi
         fi
     done
@@ -1220,7 +1219,7 @@ if [[ "$TOTAL_FAILED" -eq 0 ]]; then
 else
     log_err "Backup finished with errors. Timestamp: ${TIMESTAMP}"
     log "    Succeeded: ${TOTAL_SUCCESS}/${TOTAL_PROJECTS}"
-    log "    Errors:    ${TOTAL_FAILED}  (${FAILED_PROJECTS[*]})"
+    log "    Errors:    ${TOTAL_FAILED}  ($(join_list "${FAILED_PROJECTS[@]}"))"
     log "    Time:      $(fmt_duration $TOTAL_DURATION)"
 fi
 log "${C_BOLD}${C_BLUE}===================================================================${C_RESET}"
@@ -1240,7 +1239,7 @@ fi
 # Summary to Telegram: what was saved, where, and what is missing. After last-run.json — a failure here must not
 # leave the monitor without a summary.
 RUN_DONE=true
-_join() { local IFS=','; local out="$*"; printf '%s' "$(html_esc "${out//,/, }")"; }
+_join() { html_esc "$(join_list "$@")"; }
 size_txt="${TOTAL_MB} MB"
 (( TOTAL_MB >= 1024 )) && size_txt="$(awk -v m="$TOTAL_MB" 'BEGIN { printf "%.1f GB", m/1024 }')"
 primary_host="$(html_esc "$(s3_host "$PRIMARY_S3_ENDPOINT")")"

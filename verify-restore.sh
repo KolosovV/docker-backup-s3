@@ -217,7 +217,9 @@ verify_project() {
     local local_archive="${proj_dir}/${archive_name}"
 
     log "  ⬇  Downloading..."
-    if ! aws_q s3 cp "s3://${SRC_BUCKET}/${s3_key}" "$local_archive" 2>&1 | tail -5; then
+    # Progress on a terminal; in a log (cron) a progress line per chunk is noise — errors only there
+    local -a quiet=(); [[ -t 2 ]] || quiet=(--only-show-errors)
+    if ! aws_q s3 cp "s3://${SRC_BUCKET}/${s3_key}" "$local_archive" ${quiet[@]+"${quiet[@]}"}; then
         log_err "Download failed"
         FAILED_PROJECTS+=("$project")
         FAILURE_REASONS+=("Download error")

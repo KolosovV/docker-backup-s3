@@ -190,6 +190,8 @@ out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -e -p nothing-like-this 2>&1)";
 check "no matches is not a failure" test "$rc" -eq 0
 
 section "helpers"
+check "join_list: one line, comma-separated (IFS has a newline here)" test "$(join_list a b 'c d')" == "a, b, c d"
+check "join_list: one item" test "$(join_list solo)" == "solo"
 check "plural 1" test "$(plural 1 project projects)" == project
 check "plural 2" test "$(plural 2 project projects)" == projects
 check "html_esc" test "$(html_esc 'a<b>&c')" == 'a&lt;b&gt;&amp;c'

@@ -91,10 +91,15 @@ source "${SCRIPT_DIR}/lib.sh"
 require_cmd docker tar gzip aws jq
 [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && require_cmd gpg
 
+# A terminal to ask on. Without one (cron, a pipe) a question would fail on /dev/tty with a cryptic error —
+# need_tty says which option answers it instead.
+HAVE_TTY=false; { : </dev/tty; } 2>/dev/null && HAVE_TTY=true
+need_tty() { $HAVE_TTY || fail "No terminal to ask on — $1"; }
+
 # --- Choosing the restore source: the primary S3 or one of the copies ---
-# Priority: the --from flag > interactive choice (if copies are enabled) > primary
+# Priority: the --from flag > interactive choice (if copies are enabled and there is a terminal) > primary
 SRC_ROLE="${FROM_ROLE:-primary}"
-if [[ -z "$FROM_ROLE" && ${#S3_COPIES[@]} -gt 0 && "$NON_INTERACTIVE" != "true" ]]; then
+if [[ -z "$FROM_ROLE" && ${#S3_COPIES[@]} -gt 0 && "$NON_INTERACTIVE" != "true" ]] && $HAVE_TTY; then
     _choices=(primary "${S3_COPIES[@]}")
     {
         echo
@@ -302,7 +307,7 @@ if [[ "$LIST_MODE" == "true" ]]; then
                 local_dt="$(echo "$ts" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
                 if epoch="$(date -d "$local_dt" +%s 2>/dev/null)"; then
                     diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                    age="${diff_days} days ago"
+                    age="$(days_ago "$diff_days")"
                 else
                     age="—"
                 fi
@@ -327,7 +332,7 @@ if [[ "$LIST_MODE" == "true" ]]; then
                 latest_pretty="$(echo "$latest" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
                 if epoch="$(date -d "$latest_pretty" +%s 2>/dev/null)"; then
                     diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                    last_info="${diff_days} days ago"
+                    last_info="$(days_ago "$diff_days")"
                 else
                     last_info="$latest"
                 fi
@@ -472,7 +477,7 @@ if [[ -z "$PROJECT_ARG" ]]; then
             latest_pretty="$(echo "$latest" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
             if epoch="$(date -d "$latest_pretty" +%s 2>/dev/null)"; then
                 diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                line="$p   [$p_count backups, latest $diff_days days ago]"
+                line="$p   [$p_count $(plural "$p_count" backup backups), latest $(days_ago "$diff_days")]"
             else
                 line="$p   [$p_count backups]"
             fi
@@ -483,6 +488,7 @@ if [[ -z "$PROJECT_ARG" ]]; then
         PRETTY_TO_NAME["$line"]="$p"
     done
 
+    need_tty "give the projects with -p"
     mapfile -t chosen_lines < <(choose_many_from_list "📦 Available projects:" "${PROJECT_PRETTY_LIST[@]}")
     for line in "${chosen_lines[@]}"; do
         SELECTED_PROJECTS+=("${PRETTY_TO_NAME[$line]}")
@@ -496,14 +502,14 @@ else
         for existing in "${PROJECTS_LIST[@]}"; do
             [[ "$existing" == "$p" ]] && { found=true; break; }
         done
-        [[ "$found" == "true" ]] || fail "Project '$p' not found. Available: ${PROJECTS_LIST[*]}"
+        [[ "$found" == "true" ]] || fail "Project '$p' not found. Available: $(join_list "${PROJECTS_LIST[@]}")"
         SELECTED_PROJECTS+=("$p")
     done
 fi
 
 [[ ${#SELECTED_PROJECTS[@]} -eq 0 ]] && fail "No project selected"
 
-log_ok "Projects selected: ${#SELECTED_PROJECTS[@]}  (${SELECTED_PROJECTS[*]})"
+log_ok "Projects selected: ${#SELECTED_PROJECTS[@]}  ($(join_list "${SELECTED_PROJECTS[@]}"))"
 
 if [[ ${#SELECTED_PROJECTS[@]} -gt 1 && -n "$RESTORE_DIR" ]]; then
     log_warn "--dir is ignored with multi-select: each project is restored to its original path"
@@ -551,12 +557,13 @@ for proj in "${SELECTED_PROJECTS[@]}"; do
             local_dt="$(echo "$ts" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
             if epoch="$(date -d "$local_dt" +%s 2>/dev/null)"; then
                 diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                PRETTY_LIST+=("$ts   ($diff_days days ago)")
+                PRETTY_LIST+=("$ts   ($(days_ago "$diff_days"))")
             else
                 PRETTY_LIST+=("$ts")
             fi
         done
 
+        need_tty "give the timestamp with -t"
         chosen="$(choose_one_from_list "📅 Date for project '$proj':" "${PRETTY_LIST[@]}")"
         PROJECT_TIMESTAMP["$proj"]="$(echo "$chosen" | awk '{print $1}')"
     fi
@@ -605,6 +612,7 @@ done
 
 # The --contents and --extract-to modes have no destructive effects, nothing to ask
 if [[ "$NON_INTERACTIVE" != "true" && "$READONLY_MODE" != "true" ]]; then
+    need_tty "confirm with -y"
     read -rp "Continue? [y/yes]: " confirm </dev/tty
     is_yes "$confirm" || { log "Cancelled."; exit 0; }
 fi
@@ -637,7 +645,9 @@ restore_one_project() {
     trap "rm -rf '$TMP_DIR'" RETURN
 
     log "  ⬇  Downloading the archive ${SRC_S3_GEN}..."
-    aws_q s3 cp "$S3_URL" "${TMP_DIR}/${ARCHIVE_NAME}" \
+    # Progress on a terminal; in a log or a pipe a progress line per chunk is noise — errors only there
+    local -a quiet=(); [[ -t 2 ]] || quiet=(--only-show-errors)
+    aws_q s3 cp "$S3_URL" "${TMP_DIR}/${ARCHIVE_NAME}" ${quiet[@]+"${quiet[@]}"} \
         || { log_err "Could not download $S3_URL"; return 1; }
 
     # Check against the sha256 manifest, if there is one next to the archive. The size already matched
@@ -708,6 +718,7 @@ restore_one_project() {
             mkdir -p "$parent_dir"
 
             if [[ -e "$TARGET_DIR" && "$NON_INTERACTIVE" != "true" ]]; then
+                need_tty "confirm overwriting with -y"
                 read -rp "    Directory $TARGET_DIR exists. Overwrite? [y/yes]: " ow </dev/tty
                 is_yes "$ow" || { log "    Cancelled for $PROJECT"; return 1; }
             fi
@@ -854,6 +865,7 @@ restore_one_project() {
             log "    📁 Bind: $target_path"
             mkdir -p "$(dirname "$target_path")"
             if [[ -e "$target_path" && "$NON_INTERACTIVE" != "true" ]]; then
+                need_tty "confirm overwriting with -y"
                 read -rp "      $target_path exists. Overwrite? [y/yes]: " ow </dev/tty
                 if ! is_yes "$ow"; then
                     log "      Skipped"; continue
@@ -894,7 +906,7 @@ restore_one_project() {
             # its own name (and so its restored volumes, PROJECT_*) even if it was not named after its folder.
             local -a up_args=(-f "$compose_file")
             [[ -z "$RESTORE_DIR" ]] && up_args=(-p "$PROJECT" "${up_args[@]}")
-            log "  🚀 Starting: cd $TARGET_DIR && docker compose ${up_args[*]} up -d"
+            log "  🚀 Starting: cd $TARGET_DIR && docker compose$(printf ' %q' "${up_args[@]}") up -d"
             local up_rc=0
             (cd "$TARGET_DIR" && docker_compose "${up_args[@]}" up -d) || up_rc=$?
             echo >&2
@@ -940,7 +952,7 @@ done
     echo "${C_BOLD}  RESTORE SUMMARY:${C_RESET}"
     echo "  ${C_GREEN}✅ Succeeded:  $SUCCESS${C_RESET}"
     echo "  ${C_RED}❌ Failed:     $FAILED${C_RESET}"
-    [[ $FAILED -gt 0 ]] && echo "     Problematic: ${FAILED_LIST[*]}"
+    [[ $FAILED -gt 0 ]] && echo "     Problematic: $(join_list "${FAILED_LIST[@]}")"
     echo "${C_BOLD}${C_BLUE}═══════════════════════════════════════════════════════════════${C_RESET}"
 } >&2
 

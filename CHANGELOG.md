@@ -22,11 +22,29 @@ The installed version: `docker-backup version` (or the `VERSION` file).
   the backup stayed until the next run. Deletes are now retried like uploads (`S3_UPLOAD_TRIES`), in the rotation,
   `sync-s3.sh --prune` and `drop-project.sh`.
 - tar no longer logs "socket ignored": a socket cannot be archived, and the program recreates it on start.
-- The menu showed the command it runs one word per line.
+- The menu showed the command it runs one word per line. The same slip — a list joined with the scripts' newline
+  `IFS` — split the installer's "Installing: …", the run summary's "Errors: N (project, project)" and the
+  restore's project lists over several lines. Lists are now joined on one line everywhere.
+- The installer printed the package manager's whole output (pages of dpkg); it now shows it only when it fails.
+- aws's "upload: <file> to <url>" after every successful upload and a progress line per chunk on a download no
+  longer fill the log (`verify-restore.sh` from cron wrote hundreds of them into one line). Errors still show,
+  and a download on a terminal still shows its progress.
+- `docker-restore.sh` without a terminal (cron, a pipe) asked "Where to restore from?" and died on `/dev/tty`:
+  `--list` now reads the primary, and a question that needs an answer says which option gives it (`-p`, `-t`,
+  `-y`). "0 days ago" reads "today", "1 backups" reads "1 backup".
+- `status.sh` counted each backup twice (the archive and its `.sha256`), read the latest log lines from
+  `/var/log/docker-backup.log` even when `LOG_FILE` points elsewhere, and its tables were misaligned.
+- `diagnose-s3.sh` ignored `-c` and `--help`; `diagnose-cron.sh` ran its checks on `--help`, printed stray "?"
+  lines, and took itself for a running cron process.
+- `drop-project.sh --help` ended with a stray rule and did not mention `-c`.
+- MariaDB is called MariaDB in the log (it said "Mariadb"), PostgreSQL — PostgreSQL. The dry run's database lines
+  carry a timestamp like the rest. `validate-config.sh` lists a folder once when the log and the lock share it.
+- The boxes around the installer's, the updater's, the uninstaller's and `status.sh`'s titles were one column
+  too wide: an emoji takes two.
 
 ### Changed
 - Menus and lists get wider when a line needs it (a long endpoint), up to the terminal's width; the storage list
-  no longer repeats the storage's name after its tag.
+  no longer repeats the storage's name after its tag (in whiptail, where the tag is shown).
 - The menu and the installer look the same on every distribution: classic blue whiptail. Ubuntu's own palette
   made them magenta. A palette of your own (`NEWT_COLORS`, `NEWT_COLORS_FILE`) is kept.
 
