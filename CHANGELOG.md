@@ -10,7 +10,23 @@ The installed version: `docker-backup version` (or the `VERSION` file).
 
 ## [Unreleased]
 
+### Fixed
+- **`logs.sh --since` failed on Debian and Ubuntu** ("awk: … must contain complete functions or rules"): it was
+  written for gawk, and they ship mawk. It now compares the log's timestamps as text in plain awk (no `date` call
+  per line), and a line without a timestamp (aws's own error text) goes with the line before it. `--since today`
+  means from midnight: it used to mean "from now" and showed nothing.
+- **`logs.sh --errors` showed lines that are not errors:** "Auto-dump: 2 succeeded, 0 failed" and tar's "socket
+  ignored" for a path with "error" in it. It now matches our ❌/⚠ lines and what aws prints on a failure. No
+  match is no longer an error exit.
+- **Deleting old backups was not retried** on a storage's transient error (`OperationAborted` on `DeleteObject`):
+  the backup stayed until the next run. Deletes are now retried like uploads (`S3_UPLOAD_TRIES`), in the rotation,
+  `sync-s3.sh --prune` and `drop-project.sh`.
+- tar no longer logs "socket ignored": a socket cannot be archived, and the program recreates it on start.
+- The menu showed the command it runs one word per line.
+
 ### Changed
+- Menus and lists get wider when a line needs it (a long endpoint), up to the terminal's width; the storage list
+  no longer repeats the storage's name after its tag.
 - The menu and the installer look the same on every distribution: classic blue whiptail. Ubuntu's own palette
   made them magenta. A palette of your own (`NEWT_COLORS`, `NEWT_COLORS_FILE`) is kept.
 

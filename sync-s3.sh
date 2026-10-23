@@ -397,7 +397,7 @@ sync_pair() {  # $1 = source role, $2 = destination role
         log_step "Deleting extra objects in the destination (${DST_LABEL}): ${n_prune}..."
         _aws_setup "$DST_ROLE"
         for key in "${TO_PRUNE[@]}"; do
-            if rm_raw="$(aws "${S3_OPTS[@]}" s3 rm "s3://${DST_BUCKET}/${key}" 2>&1)"; then
+            if rm_raw="$(aws_rm "s3://${DST_BUCKET}/${key}" 2>&1)"; then
                 pruned=$((pruned + 1))
                 log_ok "  ✗ deleted ${key}"
             else

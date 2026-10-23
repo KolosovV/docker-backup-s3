@@ -73,7 +73,7 @@ drop() {
     [[ "$YES" == "true" ]] || return 0
     _aws_setup "$role"
     while IFS=$'\t' read -r key size; do
-        aws_q s3 rm "s3://${bucket}/${key}" >/dev/null || { failed=$((failed + 1)); log_warn "  not deleted: $key"; }
+        aws_rm "s3://${bucket}/${key}" || { failed=$((failed + 1)); log_warn "  not deleted: $key"; }
     done <<< "$keys"
     if (( failed == 0 )); then
         log_ok "  ${label}: deleted ${n}"

@@ -117,6 +117,31 @@ echo 'An error occurred (AccessDenied) when calling the PutObject operation: Acc
 echo 1 > "$W/fails"; : > "$W/aws.calls"
 aws_upload "$W/up.bin" s3://b/p/k.tar.gz 2> "$W/up.err"; rc=$?
 check "AccessDenied is not retried" test "$rc:$(cps)" == "1:1"
+
+# aws_rm: the same fake, "s3 rm" fails while $W/fails is above 0
+aws() {
+    echo "$1 $2 ${*: -1}" >> "$W/aws.calls"
+    if [[ "$1 $2" == "s3 rm" ]]; then
+        local left; left="$(cat "$W/fails")"
+        if (( left > 0 )); then echo $((left - 1)) > "$W/fails"; cat "$W/msg" >&2; return 1; fi
+        echo "delete: ${*: -1}"
+    fi
+    return 0
+}
+rms() { grep -c '^s3 rm' "$W/aws.calls"; }
+echo 'delete failed: s3://b/p/old.tar.gz An error occurred (OperationAborted) when calling the DeleteObject operation: A conflicting conditional operation is currently in progress against this resource. Try again.' > "$W/msg"
+echo 1 > "$W/fails"; : > "$W/aws.calls"
+aws_rm s3://b/p/old.tar.gz > "$W/rm.out" 2> "$W/rm.err"; rc=$?
+check "aws_rm: OperationAborted once, then deleted" test "$rc:$(rms)" == "0:2"
+check "aws_rm: quiet on success" test ! -s "$W/rm.out" -a ! -s "$W/rm.err"
+echo 9 > "$W/fails"; : > "$W/aws.calls"
+aws_rm s3://b/p/old.tar.gz 2> "$W/rm.err"; rc=$?
+check "aws_rm: always busy — fails after 3 attempts" test "$rc:$(rms)" == "1:3"
+check "aws_rm: and says why" grep -q 'OperationAborted' "$W/rm.err"
+echo 'An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied' > "$W/msg"
+echo 1 > "$W/fails"; : > "$W/aws.calls"
+aws_rm s3://b/p/old.tar.gz 2>/dev/null; rc=$?
+check "aws_rm: AccessDenied is not retried" test "$rc:$(rms)" == "1:1"
 unset -f aws
 
 check "transient: SlowDown" s3_transient "An error occurred (SlowDown) when calling the PutObject operation"
@@ -142,6 +167,27 @@ check "it says so" grep -q 'SECONDARY_S3_REGION was empty' <<< "$out"
 check "and keeps a copy" bash -c 'ls "$1".bak.* >/dev/null 2>&1' _ "$W/reg.conf"
 out="$(_s3_region_fill "$W/reg.conf")"
 check "run again: nothing to do" test -z "$out"
+
+section "logs.sh filters (plain awk)"
+y="$(date -d yesterday +%Y-%m-%d)"; t="$(date +%Y-%m-%d)"
+cat > "$W/b.log" <<EOF
+[$y 22:00:01] 🚀 Starting Docker backup. Timestamp: old
+delete failed: s3://b/old An error occurred (OperationAborted) when calling the DeleteObject operation
+[$y 22:00:02] ⚠ Could not delete backups/old
+[$t 00:00:01] 🚀 Starting Docker backup. Timestamp: new
+[$t 00:01:00]   📊 Auto-dump: 2 succeeded, 0 failed
+tar: ./private/error: socket ignored
+upload failed: x to s3://b/new An error occurred (UploadPart)
+[$t 00:02:00] ❌   Upload to secondary S3 failed
+EOF
+printf 'LOG_FILE="%s"\n' "$W/b.log" > "$W/logs.conf"
+out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -e -s today 2>&1)"; rc=$?
+check "-e -s today runs" test "$rc" -eq 0
+check "today's error and the aws text under it" grep -q 'upload failed: x' <<< "$out"
+check "not yesterday's" bash -c '! grep -q "backups/old" <<< "$1"' _ "$out"
+check "\"0 failed\" and \"socket ignored\" are not errors" bash -c '! grep -qE "0 failed|socket ignored" <<< "$1"' _ "$out"
+out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -e -p nothing-like-this 2>&1)"; rc=$?
+check "no matches is not a failure" test "$rc" -eq 0
 
 section "helpers"
 check "plural 1" test "$(plural 1 project projects)" == project

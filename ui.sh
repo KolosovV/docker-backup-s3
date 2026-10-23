@@ -59,17 +59,30 @@ _ui_clean() {
     _ui_nl "$1" | sed -e 's/\x1b\[[0-9;]*m//g' -e '1s/^[[:space:]]*//'
 }
 
-# Dialog size: enough for the text, no more than the terminal. usage: _ui_size <text> [list rows]
+# Dialog size: enough for the text, no more than the terminal. usage: _ui_size <text> [list rows] [width needed]
+# 76 columns, or wider when a list line needs it (a long endpoint), up to the terminal's width.
 _ui_size() {
-    local text="$1" rows="${2:-0}" lines cols
+    local text="$1" rows="${2:-0}" need="${3:-0}" lines cols
     lines="$(tput lines 2>/dev/null <"$UI_TTY" || echo 24)"; cols="$(tput cols 2>/dev/null <"$UI_TTY" || echo 80)"
-    UI_W=$(( cols - 4 < 76 ? cols - 4 : 76 ))
+    UI_W=$(( need > 76 ? need : 76 ))
+    (( UI_W > cols - 4 )) && UI_W=$(( cols - 4 ))
     local n; n="$(printf '%s\n' "$text" | fold -w $(( UI_W - 4 )) | wc -l)"
     UI_H=$(( n + rows + 8 ))
     (( UI_H > lines - 2 )) && UI_H=$(( lines - 2 ))
     UI_LIST=$(( rows < UI_H - n - 7 ? rows : UI_H - n - 7 ))
     (( UI_LIST < 1 )) && UI_LIST=1
     return 0
+}
+
+# _ui_list_width <fields per entry> <tag> <item> […] — the dialog width the longest entry needs: tag, item,
+# and whiptail's frame, margins and gap (12)
+_ui_list_width() {
+    local per="$1" w=0 l; shift
+    while (( $# >= 2 )); do
+        l=$(( ${#1} + ${#2} + 12 )); (( l > w )) && w=$l
+        shift "$(( $# < per ? $# : per ))"
+    done
+    printf '%s' "$w"
 }
 
 # Text of the next dialog: pending notes, then the prompt itself
@@ -179,7 +192,7 @@ ui_menu() {
     case "$UI_MODE" in
         none) printf '%s' "${UI_DEFAULT:-$1}"; return 0 ;;
         whiptail)
-            local t; t="$(_ui_text "$text")"; _ui_size "$t" "$n"
+            local t; t="$(_ui_text "$text")"; _ui_size "$t" "$n" "$(_ui_list_width 2 "$@")"
             local -a def=()
             [[ -n "${UI_DEFAULT:-}" ]] && def=(--default-item "$UI_DEFAULT")
             _ui_whiptail ${def[@]+"${def[@]}"} --menu "$t" "$UI_H" "$UI_W" "$UI_LIST" "$@"
@@ -209,7 +222,7 @@ ui_checklist() {
         none)
             while (( $# >= 3 )); do [[ "$3" == "on" ]] && printf '%s\n' "$1"; shift 3; done; return 0 ;;
         whiptail)
-            local t; t="$(_ui_text "$text")"; _ui_size "$t" "$n"
+            local t; t="$(_ui_text "$text")"; _ui_size "$t" "$n" $(( $(_ui_list_width 3 "$@") + 4 ))
             _ui_whiptail --separate-output --checklist "$t" "$UI_H" "$UI_W" "$UI_LIST" "$@"
             return ;;
     esac

@@ -484,6 +484,23 @@ aws_upload() {
     done
 }
 
+# aws_rm <s3://bucket/key> — delete one object; a transient storage error (OperationAborted and the like, see
+# s3_transient) is tried again, like an upload. aws's text of the last failure goes to stderr. Returns aws's code.
+aws_rm() {
+    local url="$1" tries="${S3_UPLOAD_TRIES:-3}" delay="${S3_UPLOAD_RETRY_DELAY:-15}" try=1 out rc
+    while true; do
+        rc=0
+        out="$(aws_q s3 rm "$url" 2>&1 >/dev/null)" || rc=$?
+        (( rc == 0 )) && return 0
+        if (( try >= tries )) || ! s3_transient "$out"; then
+            [[ -n "$out" ]] && printf '%s\n' "$out" >&2
+            return "$rc"
+        fi
+        sleep $(( delay * (3 ** (try - 1)) ))
+        try=$((try + 1))
+    done
+}
+
 # Uploads an archive to a COPY (secondary, tertiary…) and checks its size.
 # Call AFTER a successful upload to the primary S3, before the local archive is deleted.
 # usage: upload_to_copy <role> <local_file> <s3_key> <expected_size_bytes>

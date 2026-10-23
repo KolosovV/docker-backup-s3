@@ -99,7 +99,8 @@ trap ':' INT
 run_tool() {
     local script="$1" rc; shift
     [[ "$UI_MODE" == "whiptail" ]] && clear
-    echo "${C_BOLD}▶ ${script} $*${C_RESET}"
+    # One line, quoted as typed ("$*" would join with IFS — a newline in these scripts)
+    echo "${C_BOLD}▶ ${script}${1+$(printf ' %q' "$@")}${C_RESET}"
     echo
     "${SCRIPT_DIR}/${script}" "$@"; rc=$?
     echo
@@ -392,12 +393,13 @@ load_store() {
     return 0
 }
 
-# One line about a storage for the list
+# One line about a storage. With "short": without its name — the list shows the role as the tag already.
 store_line() {
-    local role="$1" ep bucket
+    local role="$1" ep bucket name
+    name="$(s3_label "$role" title) — "; [[ "${2:-}" == short ]] && name=""
     ep="$(s3_host "$(s3_var "$role" ENDPOINT)")"; bucket="$(s3_var "$role" BUCKET)"
-    if ! s3_enabled "$role"; then printf '%s — disabled' "$(s3_label "$role" title)"; return; fi
-    printf '%s — %s / %s%s' "$(s3_label "$role" title)" "${ep:-no endpoint}" "${bucket:-no bucket}" \
+    if ! s3_enabled "$role"; then printf '%sdisabled' "$name"; return; fi
+    printf '%s%s / %s%s' "$name" "${ep:-no endpoint}" "${bucket:-no bucket}" \
         "$( [[ "$role" != "primary" && "$(s3_var "$role" REQUIRED)" == "true" ]] && echo ', required')"
 }
 
@@ -406,9 +408,9 @@ menu_storages() {
     while true; do
         UI_TITLE="Storage settings"
         role="$(ui_menu "Every archive goes to the primary first, then to each enabled copy." \
-            primary   "$(store_line primary)" \
-            secondary "$(store_line secondary)" \
-            tertiary  "$(store_line tertiary)")" || return 0
+            primary   "$(store_line primary short)" \
+            secondary "$(store_line secondary short)" \
+            tertiary  "$(store_line tertiary short)")" || return 0
         menu_store "$role"
     done
 }

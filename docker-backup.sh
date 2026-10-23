@@ -196,10 +196,14 @@ _aws_setup primary
 # tar_gz <archive> <tar arguments…> — tar | gzip at COMPRESS_LEVEL. A pipe rather than
 # --use-compress-program="gzip -N": tar before 1.27 (RHEL 7) can't pass options to the program.
 # Returns tar's code (0 ok, 1 files changed while being read, ≥2 error); a gzip failure counts as 2.
+# Sockets can't be archived (a program recreates them on start): "socket ignored" is noise in the log, and
+# --errors showed it. GNU tar is told not to say it; a tar without --warning just says it.
+TAR_QUIET=()
+tar --warning=no-file-ignored -cf /dev/null --files-from /dev/null 2>/dev/null && TAR_QUIET=(--warning=no-file-ignored)
 tar_gz() {
     local out="$1"; shift
     local -a st
-    tar -cf - "$@" | gzip -"$COMPRESS_LEVEL" > "$out"
+    tar ${TAR_QUIET[@]+"${TAR_QUIET[@]}"} -cf - "$@" | gzip -"$COMPRESS_LEVEL" > "$out"
     st=("${PIPESTATUS[@]}")
     (( st[1] == 0 )) || return 2
     return "${st[0]}"
@@ -1125,7 +1129,7 @@ cleanup_old_backups() {
         [[ -z "$key" ]] && continue
         if [[ "$decision" == "DELETE" ]]; then
             log "  🗑  Deleting: $key"
-            if aws_q s3 rm "s3://${bucket}/${key}" >/dev/null; then
+            if aws_rm "s3://${bucket}/${key}"; then
                 deleted=$((deleted + 1))
                 kproj="${key#"${BACKUP_PREFIX}/"}"; kproj="${kproj%%/*}"
                 if ! grep -qxF -- "$kproj" <<< "$ROTATION_LIVE_PROJECTS"; then

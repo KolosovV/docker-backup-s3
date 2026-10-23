@@ -144,54 +144,37 @@ colorize() {
 # ==============================================================================
 # Filters (optional)
 # ==============================================================================
-build_filter() {
-    # Returns a pipe command or 'cat'
-    local pipe="cat"
+# An error or a warning: our ❌/⚠/✗ lines and what aws and other tools print when they fail. Not a bare
+# "fail"/"error": "2 succeeded, 0 failed" and a path such as ./private/error are not errors.
+ERRORS_RE='❌|⚠|✗|ERROR|WARN|[Ff]ailed:|An error occurred|[Ff]atal error|Traceback|No space left'
 
-    # Errors only
-    if [[ "$ERRORS_ONLY" == "true" ]]; then
-        pipe="grep -iE '❌|FAIL|ERROR|⚠|WARN'"
-    fi
+# --since: the log's timestamps ([YYYY-MM-DD HH:MM:SS]) sort as text, so they are compared as text —
+# plain POSIX awk (mawk on Debian/Ubuntu, busybox), no date call per line. A line without a timestamp
+# (aws's own error text, tar) belongs to the timestamped line before it.
+SINCE_TS=""
+if [[ -n "$SINCE" ]]; then
+    # date -d today is this very moment; "since today" means from midnight
+    case "$SINCE" in today|yesterday) SINCE="$SINCE 00:00" ;; esac
+    SINCE_TS="$(date -d "$SINCE" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" || {
+        echo "${C_RED}❌ Cannot parse the time: '$SINCE'${C_RESET}" >&2
+        echo "   Examples: '2 hours ago', '2026-05-08', 'today', '1 day ago'" >&2
+        exit 1
+    }
+fi
 
-    # Project filter
-    if [[ -n "$PROJECT_FILTER" ]]; then
-        pipe="$pipe | grep -F '$PROJECT_FILTER'"
-    fi
+since_filter() {
+    awk -v cutoff="$SINCE_TS" -v today="$(date +%Y-%m-%d)" '
+        /^\[[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\]/ { inside = (substr($0, 2, 19) >= cutoff) }
+        /^\[[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\]/ { inside = ((today " " substr($0, 2, 8)) >= cutoff) }
+        inside
+    '
+}
 
-    # Time filter (since)
-    if [[ -n "$SINCE" ]]; then
-        local since_epoch
-        since_epoch=$(date -d "$SINCE" +%s 2>/dev/null) || {
-            echo "${C_RED}❌ Cannot parse the time: '$SINCE'${C_RESET}" >&2
-            echo "   Examples: '2 hours ago', '2026-05-08', 'today', '1 day ago'" >&2
-            exit 1
-        }
-        # Take the timestamp from the start of the line and compare
-        # Format: [YYYY-MM-DD HH:MM:SS] or [HH:MM:SS]
-        # Use awk for reliable parsing
-        pipe="$pipe | awk -v cutoff=$since_epoch '
-            BEGIN { today = strftime(\"%Y-%m-%d\", systime()) }
-            {
-                # Full date
-                if (match(\$0, /^\[([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}:[0-9]{2}:[0-9]{2})\]/, m)) {
-                    cmd = \"date -d \\\"\" m[1] \" \" m[2] \"\\\" +%s\"
-                    cmd | getline ts
-                    close(cmd)
-                    if (ts >= cutoff) print
-                }
-                # Time only — take today's date
-                else if (match(\$0, /^\[([0-9]{2}:[0-9]{2}:[0-9]{2})\]/, m)) {
-                    cmd = \"date -d \\\"\" today \" \" m[1] \"\\\" +%s\"
-                    cmd | getline ts
-                    close(cmd)
-                    if (ts >= cutoff) print
-                }
-                else { print }
-            }
-        '"
-    fi
-
-    echo "$pipe"
+# filter_lines < log — the chosen filters; no matches is not an error
+filter_lines() {
+    if [[ -n "$SINCE_TS" ]]; then since_filter; else cat; fi \
+        | if [[ "$ERRORS_ONLY" == "true" ]]; then grep -E -- "$ERRORS_RE" || true; else cat; fi \
+        | if [[ -n "$PROJECT_FILTER" ]]; then grep -F -- "$PROJECT_FILTER" || true; else cat; fi
 }
 
 # ==============================================================================
@@ -259,21 +242,13 @@ desc="last $N_LINES lines"
 echo "${C_BOLD}${C_CYAN}━━━ docker-backup logs ($desc) ━━━${C_RESET}"
 echo
 
-filter_cmd=$(build_filter)
-
 for log in "${existing_logs[@]}"; do
     echo "${C_BOLD}${log}:${C_RESET}"
     echo "${C_DIM}─────────────────────────────────────────────────────${C_RESET}"
-
     if [[ "$N_LINES" == "0" ]]; then
-        eval "cat \"$log\" | $filter_cmd" | colorize
+        filter_lines < "$log" | colorize
     else
-        # Filter first, then take the last N
-        if [[ "$filter_cmd" == "cat" ]]; then
-            tail -n "$N_LINES" "$log" | colorize
-        else
-            eval "cat \"$log\" | $filter_cmd | tail -n $N_LINES" | colorize
-        fi
+        filter_lines < "$log" | tail -n "$N_LINES" | colorize
     fi
     echo
 done
