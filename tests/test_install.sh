@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh and update.sh must keep every value of an existing backup.conf — the old S3_* names become
 # PRIMARY_S3_*, and nothing else changes. (Encryption silently switched off after a reinstall is the case.)
-# install.sh changes the system (/usr/local/bin/docker-backup, logrotate): it runs only in a container or in CI.
+# install.sh changes the system (/usr/local/bin/docker-backup-s3, logrotate): it runs only in a container or in CI.
 if [[ ! -f /.dockerenv && -z "${CI:-}" ]]; then
     echo "   SKIP: install.sh changes the system — runs only in a container or in CI"
     exit 0
@@ -46,9 +46,12 @@ section "a fresh clone with the old config copied in (install.sh in place)"
 T="$W/opt/docker-backup-s3"
 mkdir -p "$T"; cp -a "$REPO/." "$T/"; rm -rf "$T/.git"
 old_conf "$T/backup.conf"; chmod 600 "$T/backup.conf"
+mkdir -p /usr/local/bin; ln -sfn "$T/menu.sh" /usr/local/bin/docker-backup   # the command's name before 1.5.1
 if bash "$T/install.sh" -y --skip-deps --no-cron --skip-validate --target "$T" > "$W/install.log" 2>&1; then ok "install.sh exit 0"
 else bad "install.sh failed"; tail -n 20 "$W/install.log"; fi
 same_values "$T/backup.conf" "install"
+check "the command is docker-backup-s3" test "$(readlink /usr/local/bin/docker-backup-s3)" == "$T/menu.sh"
+check "the old name docker-backup is gone" test ! -e /usr/local/bin/docker-backup
 
 section "update.sh over an installation with the old config"
 U="$W/opt/upd"
@@ -123,5 +126,5 @@ check "it says to copy it off the server" grep -q 'copy it off the server' "$W/w
 check "ENCRYPT_BACKUPS=true written" test "$(val "$c" ENCRYPT_BACKUPS)" == true
 
 rm -f "$PASS_FILE"; $had_pass && cp -p "$W/pass.keep" "$PASS_FILE"
-rm -f /usr/local/bin/docker-backup /etc/logrotate.d/docker-backup
+rm -f /usr/local/bin/docker-backup-s3 /etc/logrotate.d/docker-backup
 finish

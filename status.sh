@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # status.sh
-# A quick one-screen overview of the docker-backup system state.
+# A quick one-screen overview of the docker-backup-s3 system state.
 #
 # Usage: sudo ./status.sh
 # ==============================================================================
@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
             cat <<EOF
 Usage: $0 [options]
 
-A quick status overview of the docker-backup system.
+A quick status overview of the docker-backup-s3 system.
 
   -c, --config FILE config file (default: backup.conf next to the script)
   -h, --help        this help
@@ -433,14 +433,14 @@ if [[ "$_lock_pid" =~ ^[0-9]+$ ]]; then
     fi
 fi
 
-# Active docker-backup processes (excluding the current status.sh process)
+# Active docker-backup-s3 processes (excluding the current status.sh process)
 # pgrep returns exit 1 if nothing is found — hence the || true
 set +e +o pipefail
 active_procs=$(pgrep -f "docker-backup\.sh" 2>/dev/null | wc -l)
 set -e -o pipefail
 active_procs="${active_procs:-0}"
 if (( active_procs > 0 )); then
-    echo "  $(status_dot warn) Active docker-backup processes: $active_procs"
+    echo "  $(status_dot warn) Active docker-backup-s3 processes: $active_procs"
 fi
 
 echo

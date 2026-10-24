@@ -1,7 +1,7 @@
 name: CI
 
 # Every push and pull request: ShellCheck, the tests, the integration test and a real VM with systemd (minutes).
-# The heavy part — every distribution, systemd as init in containers, aarch64 under QEMU (about two hours of
+# The heavy part — every distribution, systemd as init in containers, aarch64 under QEMU, real database servers (about two hours of
 # runner time) — runs for the current release tag only (the one matching VERSION on main; re-pushed old tags
 # get the light part), monthly, and by hand.
 on:
@@ -17,7 +17,7 @@ on:
         description: 'Heavy suites to run'
         type: choice
         default: all
-        options: [all, distros, systemd, arm64, none]
+        options: [all, distros, systemd, arm64, databases, none]
 
 permissions:
   contents: read
@@ -37,7 +37,7 @@ jobs:
       - name: ShellCheck (warnings and errors)
         run: |
           shellcheck --version
-          shellcheck -x -P SCRIPTDIR -S warning *.sh tests/*.sh tests/*/*.sh
+          shellcheck -x -P SCRIPTDIR -S warning ./*.sh tests/*.sh tests/*/*.sh
       - name: Which heavy suites run
         id: heavy
         env:
@@ -47,10 +47,10 @@ jobs:
         run: |
           suites=""
           case "$EVENT" in
-            schedule) suites="distros systemd arm64" ;;
+            schedule) suites="distros systemd arm64 databases" ;;
             workflow_dispatch)
               case "$SUITE" in
-                all) suites="distros systemd arm64" ;;
+                all) suites="distros systemd arm64 databases" ;;
                 none) ;;
                 *) suites="$SUITE" ;;
               esac ;;
@@ -58,7 +58,7 @@ jobs:
               if [[ "$REF" == refs/tags/* ]]; then
                 git fetch -q --depth=1 origin main
                 current="v$(git show FETCH_HEAD:VERSION | tr -d '[:space:]')"
-                if [[ "${REF#refs/tags/}" == "$current" ]]; then suites="distros systemd arm64"
+                if [[ "${REF#refs/tags/}" == "$current" ]]; then suites="distros systemd arm64 databases"
                 else echo "${REF#refs/tags/} is not the current release ($current): light part only"; fi
               fi ;;
           esac
@@ -174,3 +174,15 @@ jobs:
           platforms: arm64
       - name: ${{ matrix.image }} on aarch64
         run: DBT_PLATFORM=linux/arm64 tests/distros/run.sh "${{ matrix.image }}"
+
+  databases:
+    # Dumps of real Postgres, MySQL, MariaDB, Redis, Valkey, KeyDB and MongoDB servers, several versions and ways
+    # of passing the password; while they run, no password may appear on any process's command line
+    needs: shellcheck
+    if: contains(needs.shellcheck.outputs.heavy, 'databases')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Database dumps
+        run: tests/databases/run.sh

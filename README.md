@@ -19,7 +19,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="#the-docker-backup-command-menu">The menu</a> ·
+  <a href="#the-docker-backup-s3-command-menu">The menu</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#multiple-storages-primary--secondary--tertiary">Multiple storages</a> ·
   <a href="#restoring-from-a-backup">Restore</a> ·
@@ -36,10 +36,15 @@ The archive goes to the **primary** storage first, then to an optional **seconda
 for example, at other providers — and each upload is checked by size and `sha256`. Endpoints, regions, keys
 and buckets are set by you, so any S3-compatible storage works.
 
+> 🔒 **Your keys and passwords stay with you.** No server of ours, no account, no telemetry: the scripts talk
+> only to your storages and the notification channels you set. S3 keys, tokens and database passwords are
+> never put on a command line, in the log or in a notification; database passwords are not even copied out
+> of their containers. [Where everything lives →](#where-your-keys-and-passwords-live)
+
 ```bash
 sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-backup-s3
 sudo /opt/docker-backup-s3/install.sh      # dependencies, storages, notifications, schedule — in dialogs
-sudo docker-backup                      # the menu: status, backup, restore, checks, storages
+sudo docker-backup-s3                      # the menu: status, backup, restore, checks, storages
 ```
 
 ## Features
@@ -54,6 +59,7 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 - 🎯 **Single-project backup** with `-p NAME` for urgent jobs
 - 🚦 **Bandwidth limit** for S3 uploads
 - 🔐 **GPG encryption** of archives (optional)
+- 🔒 **Secrets stay on your server** — no telemetry; keys and passwords never go on a command line, in the log or in a notification ([details](#where-your-keys-and-passwords-live))
 - 🔍 **Integrity check** — size via S3 head-object plus a `sha256` manifest next to the archive (in every storage)
 - 🔁 **Upload retries** — a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection) is retried, and the failed upload's parts are aborted
 - ✅ **Completeness control** — if a volume or bind mount didn't make it into the archive, the project is marked as failed, not as a "success"
@@ -66,7 +72,7 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 - 🔬 **Partial restore** — `--contents`, `--extract-to`, `--only-volume`: get a single dump or volume without touching the running project
 
 ### Management
-- 🧭 **`docker-backup`** — one command with a menu for everything below (whiptail; plain prompts without it), plus subcommands for scripts
+- 🧭 **`docker-backup-s3`** — one command with a menu for everything below (whiptail; plain prompts without it), plus subcommands for scripts
 - ⚙️ **`install.sh`** — installation from scratch with one command, supports in-place; its questions are whiptail dialogs too
 - 🔄 **`update.sh`** — update with a backup copy and `--rollback`
 - 🗑️ **`uninstall.sh`** — safe removal (backups in S3 are protected)
@@ -77,7 +83,7 @@ sudo docker-backup                      # the menu: status, backup, restore, che
 ## Contents
 
 - [Quick start](#quick-start)
-- [The docker-backup command (menu)](#the-docker-backup-command-menu)
+- [The docker-backup-s3 command (menu)](#the-docker-backup-s3-command-menu)
 - [File structure](#file-structure)
 - [Installation](#installation)
 - [Updating](#updating)
@@ -114,7 +120,7 @@ sudo git clone https://github.com/KolosovV/docker-backup-s3.git /opt/docker-back
 sudo /opt/docker-backup-s3/install.sh
 
 # 3. Everything else — from the menu (status, backup, restore, checks, schedule, storages)
-sudo docker-backup
+sudo docker-backup-s3
 
 # …or the same with the scripts directly
 sudo /opt/docker-backup-s3/validate-config.sh        # settings check
@@ -127,14 +133,15 @@ If the installer set up scheduled runs (cron or a systemd timer), from here on e
 
 ---
 
-## The docker-backup command (menu)
+## The docker-backup-s3 command (menu)
 
-The installer links `/usr/local/bin/docker-backup` → `menu.sh`. Without arguments it opens a menu:
+The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arguments it opens a menu:
 
 | Item | What it does |
 |---|---|
 | Status overview | `status.sh` |
 | Back up now | all projects or the ones you tick in a list; a dry run of either |
+| Projects | which projects not to back up (`EXCLUDE_PROJECTS`), and which to back up without database dumps (`DB_DUMP_EXCLUDE_PROJECTS`): ticked in a list of the projects on this host |
 | Restore | pick the storage, the project and the backup from lists, then: restore in place (with or without starting), into another folder, one named volume, unpack only, or show the contents |
 | Synchronize storages | the plan, all copies, one copy, with `--prune`, or restoring the primary from a copy |
 | Checks and diagnostics | `validate-config.sh`, quick/full restore verification (of any storage, all projects or one), `diagnose-s3.sh`, `diagnose-cron.sh` |
@@ -152,10 +159,10 @@ The menu uses `whiptail` (`install.sh` installs it: the `whiptail`, `newt` or `l
 the subcommands, they pass their arguments to the script as is:
 
 ```bash
-sudo docker-backup backup -p myapp          # = docker-backup.sh -p myapp
-sudo docker-backup restore --list           # = docker-restore.sh --list
-sudo docker-backup sync --to tertiary       # = sync-s3.sh --to tertiary
-sudo docker-backup help                     # all subcommands
+sudo docker-backup-s3 backup -p myapp          # = docker-backup.sh -p myapp
+sudo docker-backup-s3 restore --list           # = docker-restore.sh --list
+sudo docker-backup-s3 sync --to tertiary       # = sync-s3.sh --to tertiary
+sudo docker-backup-s3 help                     # all subcommands
 ```
 
 `install.sh` asks its questions in the same dialogs; with `-y` it asks nothing, as before.
@@ -174,7 +181,7 @@ docker-backup.sh                 # the main backup script
 docker-restore.sh                # the restore script
 lib.sh                           # shared library (sourced by the scripts)
 ui.sh                            # dialogs (whiptail / plain prompts) and config helpers for install.sh and the menu
-menu.sh                          # the docker-backup command: the menu and subcommands
+menu.sh                          # the docker-backup-s3 command: the menu and subcommands
 validate-config.sh               # configuration check
 verify-restore.sh                # automatic backup restore verification
 setup-cron.sh                    # interactive setup of scheduled runs
@@ -188,7 +195,7 @@ backup.conf.example              # settings template without secrets
 pre-backup-hook.example.sh       # hook template for non-standard databases
 README.md                        # this documentation
 CHANGELOG.md                     # release notes
-VERSION                          # the installed version (docker-backup version)
+VERSION                          # the installed version (docker-backup-s3 version)
 LICENSE                          # MIT
 ```
 
@@ -273,7 +280,7 @@ The installer does everything itself:
    - Telegram token and chat_id, with a real check via a test message
    - Webhook URL (optional), with a test message
    - Email: recipients, SMTP server, security, login, sender (optional), with a test email
-7. Optionally sets up logrotate; links the `docker-backup` command
+7. Optionally sets up logrotate; links the `docker-backup-s3` command
 8. Runs `validate-config.sh`
 9. Optionally runs `setup-cron.sh` for scheduled runs
 
@@ -481,12 +488,14 @@ Everything else has sensible defaults.
 | `GFS_DAILY`, `GFS_WEEKLY`, `GFS_MONTHLY` | `7`, `4`, `6` | how many daily, weekly and monthly backups GFS keeps |
 | `CHECKSUM_MANIFEST` | `true` | a `.sha256` file next to every archive |
 | `SCAN_DIRS` | `/opt /home /root /srv` | folders to look for compose projects in (not exclusions) |
+| `EXCLUDE_PROJECTS` | empty | projects not to back up: names or globs (`test-*`), space- or comma-separated. Their backups already in the storages are kept (rotation treats them as live projects); `-p NAME` still backs one up |
+| `DB_DUMP_EXCLUDE_PROJECTS` | empty | projects backed up without database dumps (volumes, bind mounts and the folder only) |
 | `BACKUP_MODE` | `hot` | hot/pause/stop |
 | `BACKUP_VOLUMES` | `true` | back up named volumes |
 | `BACKUP_BIND_MOUNTS` | `true` | back up bind mounts |
 | `BACKUP_PROJECT_DIR` | `true` | back up the whole project folder |
 | `BACKUP_IMAGES` | `false` | save docker images |
-| `BACKUP_STANDALONE` | `true` | back up containers started without compose (one extra archive); a single container is left out with the label `docker-backup.skip=true` |
+| `BACKUP_STANDALONE` | `true` | back up containers started without compose (one extra archive); a single container is left out with the label `docker-backup-s3.skip=true` (in a compose project the same label turns off its database dump) |
 | `PARALLEL_JOBS` | `2` | volume backup parallelism |
 | `COMPRESS_LEVEL` | `6` | gzip level for every archive: 1 — fastest, 9 — smallest |
 | `MIN_FREE_SPACE_MB` | `1024` | minimum free space |
@@ -712,13 +721,20 @@ Data consistency with `BACKUP_MODE=hot` is ensured automatically — the script 
 When a backup runs, for each project the script:
 1. Goes through all running containers of the project
 2. Determines the database type from the container image:
-   - `postgres`, `postgis`, `timescale*` → `pg_dumpall`
+   - `postgres`, `postgis`, `timescale*` → `pg_dumpall` (all databases, roles, tablespaces)
    - `mysql`, `percona`, `mariadb` → `mariadb-dump` where the image has it (MariaDB 11 has no `mysqldump`), otherwise
-     `mysqldump`; `--all-databases --single-transaction`
-   - `redis`, `keydb` → `BGSAVE` + copying the RDB
-   - `mongo` → `mongodump --archive --gzip`
-3. Saves the dump into the `db-dumps/` subfolder inside the project
-4. These files automatically end up in the archive (since the whole project folder is archived)
+     `mysqldump`; `--all-databases --single-transaction --routines --triggers --events`
+   - `redis`, `valkey`, `keydb` → `BGSAVE`, waiting for it to finish, then a copy of the RDB file
+   - `mongo` (and `percona-server-mongodb`) → `mongodump --archive --gzip`
+3. Checks that the container really runs that database server and has its dump tool: an exporter,
+   an admin UI or a backup sidecar whose image name matched (`postgres-exporter`, `redis_exporter`,
+   `mongo-express`…) is skipped with a note, not counted as a failure
+4. Saves the dump into the `db-dumps/` subfolder inside the project (`700`, the files `600`; the last
+   `DB_DUMPS_RETENTION_COUNT` dumps of each container are kept there)
+5. These files automatically end up in the archive (since the whole project folder is archived)
+
+When a dump fails, the log says why — the last lines of the tool's own error (`Access denied for user…`,
+`WRONGPASS…`, a timeout) — and the raw volume still goes into the archive.
 
 ### What ends up in S3
 
@@ -744,34 +760,55 @@ Each archive will contain **both an SQL dump** (for a reliable restore) **and th
 
 ### Credentials
 
-They are read from the container's env variables via `docker exec`:
+Nothing to configure: the dump uses the credentials the database container already has. They are read
+**inside the container**, at dump time, from the same variables the image itself uses — or from the file
+the `*_FILE` variant points to (Docker secrets) — and never leave it: they are not copied to the host,
+not put on a command line, not written to the log
+([more](#where-your-keys-and-passwords-live)).
 
-| Database | Variables |
+| Database | Where the credentials come from (the first one set wins) |
 |---|---|
-| Postgres | `POSTGRES_USER` (`postgres` by default) |
-| MySQL | `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD` |
-| MariaDB | `MARIADB_ROOT_PASSWORD`, `MYSQL_ROOT_PASSWORD` |
-| Redis | not needed (BGSAVE inside the container) |
-| MongoDB | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` |
+| PostgreSQL | `POSTGRES_USER` (`postgres` by default) + `POSTGRES_PASSWORD`; Bitnami: `POSTGRESQL_POSTGRES_PASSWORD`, or `POSTGRESQL_USERNAME` + `POSTGRESQL_PASSWORD`. The official image trusts the local socket, so the password matters only with `scram`/`md5` on the socket |
+| MySQL / MariaDB | `MYSQL_ROOT_PASSWORD` / `MARIADB_ROOT_PASSWORD` (mailcow: `DBROOT`) → all databases. With a random or unknown root password: `MYSQL_USER` + `MYSQL_PASSWORD` (`MARIADB_…`) → that user's `MYSQL_DATABASE`. With neither: root without a password. Each account is tried with a login first; the log says which one made the dump |
+| Redis / Valkey / KeyDB | No password, or the one the server really uses: `--requirepass` in the container's command, `requirepass` in the config file given to it, `REDIS_PASSWORD` (`REDISPASS`, `VALKEY_PASSWORD`…) — each is tried with `PING` first. The port comes from `--port` / the config file. The RDB file's folder and name — from the server (`CONFIG GET`) |
+| MongoDB | `MONGO_INITDB_ROOT_USERNAME` + `MONGO_INITDB_ROOT_PASSWORD` (Bitnami: `MONGODB_ROOT_USER` + `MONGODB_ROOT_PASSWORD`); without them — no authentication |
+
+A database whose credentials are not in the container's environment (set by hand, kept in a vault) can't be
+dumped automatically: use a [hook](#custom-hooks), or turn its dump off — its raw volume is still backed up:
+
+- one container: the label `docker-backup-s3.skip=true` on it (`labels:` in the compose file);
+- a whole project: `DB_DUMP_EXCLUDE_PROJECTS` in `backup.conf`, or the menu → **Projects**.
 
 ### Restoring a database from a dump
 
-After a restore, the project folder will have `db-dumps/postgres_*.sql.gz`. Loading it manually:
+After a restore, the project folder has the dumps in `db-dumps/`. Loading one by hand (the passwords are
+read inside the container, as during the backup):
 
 ```bash
 # PostgreSQL
 gunzip -c /opt/myapp/db-dumps/postgres_*.sql.gz \
     | docker exec -i myapp-postgres-1 psql -U postgres
 
-# MySQL
-gunzip -c /opt/myapp/db-dumps/mysql_*.sql.gz \
-    | docker exec -i myapp-mysql-1 mysql -u root -p"$MYSQL_ROOT_PASSWORD"
+# MySQL / MariaDB
+gunzip -c /opt/myapp/db-dumps/mariadb_*.sql.gz \
+    | docker exec -i myapp-db-1 sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -u root'
+#   (MySQL: mysql_*.sql.gz, $MYSQL_ROOT_PASSWORD and the mysql client)
 
-# Redis
+# Redis — stop it first: on shutdown Redis saves its memory over the file you put in
+docker compose stop redis
 gunzip -c /opt/myapp/db-dumps/redis_*.rdb.gz > /tmp/dump.rdb
 docker cp /tmp/dump.rdb myapp-redis-1:/data/dump.rdb
-docker compose restart redis
+docker compose start redis
+
+# MongoDB — mongorestore asks for the password itself (it is not on the command line)
+docker cp /opt/myapp/db-dumps/mongo_myapp-mongo-1_2026-05-12_03-00-00.archive.gz myapp-mongo-1:/tmp/dump.archive.gz
+docker exec -it myapp-mongo-1 mongorestore --archive=/tmp/dump.archive.gz --gzip --drop \
+    -u root --authenticationDatabase admin      # without authentication: drop the -u … part
+docker exec myapp-mongo-1 rm /tmp/dump.archive.gz
 ```
+
+If the Redis server uses AOF (`appendonly yes`), it loads the AOF, not the RDB, on start: turn AOF off for
+that start, or restore the raw volume instead.
 
 ### Custom hooks
 
@@ -807,25 +844,36 @@ Shows the plan without real actions — which projects were found, which volumes
 sudo /opt/docker-backup-s3/docker-backup.sh
 ```
 
-You should see:
+You should see (shortened):
 ```
-🚀 Starting Docker backup. Timestamp: 2026-05-12_10-32-50
-🔍 Scanning compose projects...
-   ✓ From labels: myapp -> /opt/myapp
-📦 Compose projects found: 1
-🔌 Checking access to the primary S3...
-   ✓ Primary S3 is reachable
-📦 Project: myapp  (/opt/myapp)
-   🐘 PostgreSQL: myapp-postgres-1 -> postgres_..._.sql.gz
-   ✓ Postgres dump done: 4.2M
-   💾 Backing up volumes (parallel=2)...
-   📦 Packing the project into a single archive...
-   ☁  Uploading to the primary S3...
-   🔍 Checking the integrity of the uploaded object...
-   ✓ Size in S3 matches: 14647301 bytes
-   ✅ myapp  (size: 14M, time: 2m 15s)
-🧹 Cleanup in primary S3: older than 30 days, keeping the last 3
-✅ Backup finished. Timestamp: 2026-05-12_10-32-50
+[2026-05-12 10:32:50] 🚀 Starting Docker backup. Timestamp: 2026-05-12_10-32-50
+[2026-05-12 10:32:50] ▶ 🔍 Scanning compose projects...
+[2026-05-12 10:32:50] ✓ From labels: myapp -> /opt/myapp
+[2026-05-12 10:32:50] 📦 Compose projects found: 1
+[2026-05-12 10:32:50] 📦 Standalone containers: 0
+[2026-05-12 10:32:51] ▶ 🔌 Checking access to the primary S3...
+[2026-05-12 10:32:52] ✓ Primary S3 is reachable
+[2026-05-12 10:32:52] 📦 Project: myapp  (/opt/myapp)
+[2026-05-12 10:32:52]     🐘 PostgreSQL: myapp-postgres-1 -> postgres_myapp-postgres-1_2026-05-12_10-32-50.sql.gz
+[2026-05-12 10:32:52]       user postgres
+[2026-05-12 10:32:56] ✓     PostgreSQL dump done: 4.2M
+[2026-05-12 10:32:56]   📊 Auto-dump: 1 succeeded, 0 failed
+[2026-05-12 10:32:56]   💾 Backing up volumes (parallel=2)...
+[2026-05-12 10:32:56]     💾 Volume: myapp_pgdata
+[2026-05-12 10:33:40] ✓   Volumes backed up: 1/1
+[2026-05-12 10:33:40]   📂 Backing up the whole project folder: /opt/myapp
+[2026-05-12 10:33:41]   📦 Packing the project into a single archive...
+[2026-05-12 10:33:41]   🔐 Encrypting the archive...
+[2026-05-12 10:33:43]   ☁  Uploading to the primary S3: s3://my-backups/backups/myapp/2026-05-12_10-32-50/myapp__2026-05-12_10-32-50.tar.gz.gpg
+[2026-05-12 10:35:02]   🔍 Checking the integrity of the uploaded object...
+[2026-05-12 10:35:03] ✓ Size in S3 matches: 14647301 bytes
+[2026-05-12 10:35:05] ✅ myapp  (size: 14M, time: 2m 13s)
+[2026-05-12 10:35:05] 🧹 Cleanup in primary S3: older than 30 days, keeping the last 3
+[2026-05-12 10:35:06]   Deleted: 1, kept: 9
+[2026-05-12 10:35:06] ✅ Backup finished. Timestamp: 2026-05-12_10-32-50
+[2026-05-12 10:35:06]     Projects:  1/1
+[2026-05-12 10:35:06]     Uploaded:  14 MB
+[2026-05-12 10:35:06]     Time:      2m 16s
 ```
 
 ---
@@ -988,7 +1036,7 @@ Without the passphrase, encrypted backups are lost for good. **Keep a copy of th
 
 ## Notifications
 
-The easiest way: `sudo docker-backup` → **Notifications**. Each channel is set up there with a test message, and
+The easiest way: `sudo docker-backup-s3` → **Notifications**. Each channel is set up there with a test message, and
 the same wizards run in `install.sh`. By hand, in `backup.conf`:
 
 ### Telegram
@@ -1459,7 +1507,7 @@ sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 - ✅ The cron job
 - ✅ Systemd timer + service
 - ✅ `/etc/logrotate.d/docker-backup`
-- ✅ `/usr/local/bin/docker-backup` (only if it is the link to this installation)
+- ✅ `/usr/local/bin/docker-backup-s3` (only if it is the link to this installation)
 - ✅ The lock file
 - ✅ The temporary folder
 
@@ -1484,6 +1532,65 @@ sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 ---
 
 ## Security
+
+### Where your keys and passwords live
+
+**Everything stays on your server and in your own storages.** docker-backup-s3 has no server of its own,
+no account, no telemetry, no update checks and no "phone home": it is a set of Bash scripts that talk
+only to the addresses you put into `backup.conf`.
+
+**What leaves the server, and where to**
+
+| Where to | What | When |
+|---|---|---|
+| Your S3 storages (the endpoints you set) | The backup archives (encrypted with your passphrase if `ENCRYPT_BACKUPS=true`), their `.sha256` manifests | Backup, rotation, sync, restore, checks |
+| Your Telegram bot, webhook or SMTP server — only the ones you set | The text of a notification: project names, sizes, times, error reasons. Never a key, a password or file contents | After a run, when a notification is due |
+| `awscli.amazonaws.com`, your distribution's package mirrors | Nothing of yours: `install.sh` downloads aws-cli and packages from there | Installation |
+
+Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` lists every address in the code.
+
+**Where each secret is kept on the server, and who reads it**
+
+| Secret | Where | Who can read it |
+|---|---|---|
+| S3 keys, the Telegram token, the webhook URL, the SMTP password | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
+| The GPG passphrase | `GPG_PASSPHRASE_FILE` (`/root/.docker-backup-passphrase`) | root only (`600`); gpg reads it from the file, never from an argument |
+| Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
+| Database dumps | `<project>/db-dumps/` | root only: the folder is `700`, the dumps are `600` |
+| An archive being built, downloaded or checked | `WORK_DIR` (`/var/tmp/docker-backup`) | root only: each run works in its own `700` folder, removed afterwards |
+
+**Never on a command line.** Any user of a Linux host can see every process's command line (`ps aux`),
+so no secret is ever passed as an argument:
+
+- S3 keys go to `aws` through its environment (readable by root only), not as options.
+- The Telegram token and the webhook URL (Discord and Slack put their secret in it) go to `curl` as a config
+  on a pipe (`curl -K <(…)`); the SMTP password — in a temporary `600` config file, removed right after.
+- Database passwords are read and used **inside the database container**, by a short `sh` script run with
+  `docker exec`: from the same variables the image uses (`POSTGRES_PASSWORD`, `MYSQL_ROOT_PASSWORD`,
+  `MONGO_INITDB_ROOT_PASSWORD`…) or the files their `*_FILE` twins point to (Docker secrets), and handed to
+  the dump tool in its environment (`PGPASSWORD`, `MYSQL_PWD`, `REDISCLI_AUTH`) or on its stdin (`mongodump`).
+  A Redis password given only as `redis-server --requirepass …` is taken from the container's settings and
+  passed to `docker exec` through the environment (`-e NAME` without a value), not as an argument.
+- Hooks (`pre-backup-hook.sh`) run without the S3 keys in their environment.
+
+**Never in the log or in a notification.** Messages say which account a dump used (`user app`) and why
+something failed (`Access denied`, `WRONGPASS`), never a password. `validate-config.sh` shows the first and
+last four characters of an access key and only the length of a secret key.
+
+**Keep in mind**
+
+- **The archive contains your project as it is**: its `.env`, its compose files, the database dumps, and
+  `docker inspect` of each container — with the containers' environment, passwords included (the restore
+  needs it). That is what a backup is; so the storage keys are as sensitive as the server itself.
+  Turn on [GPG encryption](#gpg-encryption): then the storage only ever sees ciphertext, and a leaked
+  storage key does not leak the data.
+- **Restore servers** should get a read-only key (`<ROLE>_S3_RESTORE_ACCESS_KEY`): it can read backups,
+  but cannot delete them.
+- The **test** of a channel or a storage in the menu sends exactly what a real run would, to the same place.
+
+The tests check this: [`tests/databases/run.sh`](tests/databases/run.sh) watches the command line of every
+process on the host while it dumps real Postgres, MySQL, MariaDB, Redis, Valkey, KeyDB and MongoDB servers,
+and fails if any password shows up there or in the log.
 
 ### Recommendations
 
@@ -1665,7 +1772,9 @@ They need only bash, jq, python3 and the usual coreutils: no Docker, no S3 and n
 replaced by a stub that records what it was given. `test_repo` checks that every script parses, has LF line endings and
 the executable bit, and that `VERSION`, the changelog and the badge agree. `test_core` covers paths, archiving,
 restore name matching, upload retries (a fake aws that fails with OperationAborted), DB dump recognition and settings
-given twice. `test_notify` covers every notification channel and format, `test_menu` drives the menu's notification
+given twice. `test_dbdump` runs the database dump scripts against a `docker` stub and fake database tools (in the
+system's own `sh`: dash, busybox): which account and password each one picks, the skips, the reasons in the log, and
+that no password reaches the log or a command line. `test_notify` covers every notification channel and format, `test_menu` drives the menu's notification
 section end to end from a file of answers, and `test_install` checks that install, update, uninstall and a reinstall
 keep every value of a config, and that the installer's wizard asks about encryption. `test_menu` and `test_install`
 need root (they use `sudo` or skip themselves), and `test_install` runs only in a container or in CI.
@@ -1696,6 +1805,21 @@ tests/distros/run.sh alpine:3.20        # one
 
 Another architecture runs under QEMU: `DBT_PLATFORM=linux/arm64 tests/distros/run.sh debian:12`.
 
+The database test dumps real servers: PostgreSQL 13, 16 (`scram` on the socket, the password in a `*_FILE`
+secret) and 17; MySQL 8.0, 8.4 (a random root password: the app user's database) and 9; MariaDB 10.11 (the root
+password in a secret, with quotes in it) and 11.4 (the app user; no password at all); Redis 6 and 7 (no password,
+`--requirepass` on the command line, a config file with its own port and RDB name, the password in a variable),
+Valkey 8, KeyDB; MongoDB 4.4, 7 and 8 (the password in a secret). Each dump must contain the marker written
+before it, and one of each kind is loaded into a fresh server. Two exporters whose image names say
+`postgres` and `redis` must be skipped, and a wrong password must fail with the reason in the log. All the
+while it watches the command line of every process on the host: a password showing up there, or in the log,
+fails the test.
+
+```bash
+tests/databases/run.sh              # all (pulls about 20 images)
+tests/databases/run.sh 'redis*'     # some
+```
+
 The systemd test checks scheduling on a real init. It runs `install.sh` as a user would, then checks that the
 cron service is active and enabled at boot and has our job. It switches to the systemd timer and checks that it
 is enabled and has a next run. It starts the service itself, which must make a real backup, then sets cron to
@@ -1710,7 +1834,7 @@ tests/systemd/run.sh rockylinux:9       # systemd in a container (privileged)
 
 On every push GitHub Actions runs ShellCheck (warnings and errors), the tests, the integration test and the
 systemd test on its own VM. The tag of the current release (the one matching `VERSION` on main), a monthly run and
-manual runs also run the distro test for each distribution, the systemd test in each distribution's container, and
+manual runs also run the distro test for each distribution, the systemd test in each distribution's container, the database test and
 aarch64: see `.github/workflows/ci.yml`.
 
 ---
@@ -1718,7 +1842,7 @@ aarch64: see `.github/workflows/ci.yml`.
 ## Versioning
 
 The project follows [Semantic Versioning](https://semver.org/); every release is a git tag `vX.Y.Z`
-with notes in [CHANGELOG.md](CHANGELOG.md). The installed version: `docker-backup version`.
+with notes in [CHANGELOG.md](CHANGELOG.md). The installed version: `docker-backup-s3 version`.
 `update.sh` shows which version it updates from and to.
 
 ## License

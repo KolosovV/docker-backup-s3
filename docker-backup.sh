@@ -230,7 +230,11 @@ CURRENT_PROJECT=""
 RUN_STARTED=false
 RUN_DONE=false
 
+# Everything this run writes is the projects' data: .env files, docker inspect with the containers'
+# environment (their passwords too), database dumps. Only root reads it: files 600, folders 700.
+umask 077
 mkdir -p "$BACKUP_ROOT"
+chmod 700 "$BACKUP_ROOT"
 
 log "${C_BOLD}${C_BLUE}===================================================================${C_RESET}"
 log "${C_BOLD}🚀 Starting Docker backup. Timestamp: ${TIMESTAMP}${C_RESET}"
@@ -294,15 +298,15 @@ if [[ -n "${SCAN_DIRS:-}" ]]; then
     done
 fi
 
-# 1c) Standalone containers (BACKUP_STANDALONE=false — none; the label docker-backup.skip=true — not this one)
+# 1c) Standalone containers (BACKUP_STANDALONE=false — none; the label docker-backup-s3.skip=true — not this one)
 STANDALONE_CONTAINERS=()
 if [[ "${BACKUP_STANDALONE:-true}" == "true" ]]; then
     while IFS= read -r cid; do
         [[ -z "$cid" ]] && continue
-        labels="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "docker-backup.skip" }}' "$cid" 2>/dev/null || true)"
+        labels="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "docker-backup-s3.skip" }}' "$cid" 2>/dev/null || true)"
         [[ -n "${labels%%|*}" ]] && continue
         if [[ "${labels#*|}" == "true" ]]; then
-            log "  ⊘ Skipped (label docker-backup.skip=true): $(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
+            log "  ⊘ Skipped (label docker-backup-s3.skip=true): $(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##')"
             continue
         fi
         STANDALONE_CONTAINERS+=("$cid")
@@ -373,6 +377,26 @@ if [[ "$LIST_ONLY" == "true" ]]; then
     exit 0
 fi
 
+# --- EXCLUDE_PROJECTS: left out of this run (after --list: the menu offers every project found) ---
+# Asked for by name with -p — backed up anyway. Their backups stay in the storages: rotation counts them as
+# live projects (EXCLUDED goes into ROTATION_LIVE_PROJECTS), so their last copies are never deleted.
+declare -A EXCLUDED=()
+if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
+    for proj in "${!PROJECTS[@]}"; do
+        in_project_list "$proj" "$EXCLUDE_PROJECTS" || continue
+        if [[ -n "$PROJECT_FILTER" ]]; then
+            log_info "$proj is in EXCLUDE_PROJECTS, but asked for with -p: backing it up"
+            continue
+        fi
+        EXCLUDED["$proj"]="${PROJECTS[$proj]}"
+        unset 'PROJECTS[$proj]'
+    done
+    if (( ${#EXCLUDED[@]} )); then
+        mapfile -t _excluded < <(printf '%s\n' "${!EXCLUDED[@]}" | sort)
+        log "⊘ Left out (EXCLUDE_PROJECTS): $(join_list "${_excluded[@]}")"
+    fi
+fi
+
 # ==============================================================================
 # DRY-RUN: show the plan and exit
 # ==============================================================================
@@ -424,7 +448,9 @@ if [[ "$DRY_RUN" == "true" ]]; then
         fi
 
         # Database auto-dump
-        if [[ "${AUTO_DUMP_DATABASES:-true}" == "true" ]]; then
+        if [[ "${AUTO_DUMP_DATABASES:-true}" == "true" ]] && in_project_list "$proj" "${DB_DUMP_EXCLUDE_PROJECTS:-}"; then
+            log "   ${C_DIM}Database dumps: off for this project (DB_DUMP_EXCLUDE_PROJECTS)${C_RESET}"
+        elif [[ "${AUTO_DUMP_DATABASES:-true}" == "true" ]]; then
             local_dbs=()
             while IFS= read -r cid; do
                 [[ -z "$cid" ]] && continue
@@ -433,7 +459,9 @@ if [[ "$DRY_RUN" == "true" ]]; then
                 cstate=$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null || true)
                 dtype=$(detect_db_type "$cimg")
                 if [[ -n "$dtype" ]]; then
-                    if [[ "$cstate" == "running" ]]; then
+                    if db_dump_skipped "$cid"; then
+                        local_dbs+=("     ${C_DIM}🗄  $dtype: $cname (label docker-backup-s3.skip=true, no dump)${C_RESET}")
+                    elif [[ "$cstate" == "running" ]]; then
                         local_dbs+=("     ${C_MAGENTA}🗄${C_RESET}  $dtype: $cname (image: $cimg)")
                     else
                         local_dbs+=("     ${C_DIM}🗄  $dtype: $cname (state=$cstate, dump skipped)${C_RESET}")
@@ -1192,7 +1220,8 @@ elif (( TOTAL_SUCCESS == 0 )); then
     log_warn "🧹 Rotation skipped: not a single successful backup in this run"
 else
     # Live projects — for rotation: for them it protects the last copies, for the rest it doesn't (plan_rotation).
-    ROTATION_LIVE_PROJECTS="$(printf '%s\n' "${!PROJECTS[@]}" "_standalone_${HOSTNAME}")"
+    # Left out by EXCLUDE_PROJECTS counts as live: the project is still here, only not backed up.
+    ROTATION_LIVE_PROJECTS="$(printf '%s\n' "${!PROJECTS[@]}" ${EXCLUDED[@]+"${!EXCLUDED[@]}"} "_standalone_${HOSTNAME}")"
     export ROTATION_LIVE_PROJECTS
     for role in primary ${S3_COPIES[@]+"${S3_COPIES[@]}"}; do
         cleanup_old_backups "$role" || log_warn "Rotation ($(s3_label "$role")) finished with an error"

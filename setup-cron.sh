@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # setup-cron.sh
-# Interactive setup of scheduled docker-backup runs via cron or a systemd timer
+# Interactive setup of scheduled docker-backup-s3 runs via cron or a systemd timer
 #
 # Run as root: sudo ./setup-cron.sh
 # ==============================================================================
@@ -186,7 +186,7 @@ remove_cron() {
     local cron_line
     cron_line="$(get_cron_line)"
     if [[ -z "$cron_line" ]]; then
-        log_info "No cron job for docker-backup found"
+        log_info "No cron job for docker-backup-s3 found"
         return 0
     fi
 
@@ -203,7 +203,7 @@ remove_cron() {
 remove_systemd() {
     # By the unit file: without systemd as init (containers) some systemctl versions still answer 0 here
     if [[ ! -f /etc/systemd/system/docker-backup.timer ]]; then
-        log_info "No systemd timer for docker-backup found"
+        log_info "No systemd timer for docker-backup-s3 found"
         return 0
     fi
 
@@ -522,7 +522,7 @@ EOF
 # MAIN FLOW
 # ==============================================================================
 log "${C_BOLD}${C_BLUE}═══════════════════════════════════════════════════════════════${C_RESET}"
-log "${C_BOLD}🛠  Setting up scheduled docker-backup runs${C_RESET}"
+log "${C_BOLD}🛠  Setting up scheduled docker-backup-s3 runs${C_RESET}"
 log "${C_BOLD}${C_BLUE}═══════════════════════════════════════════════════════════════${C_RESET}"
 echo
 

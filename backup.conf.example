@@ -208,6 +208,17 @@ CHECKSUM_MANIFEST="true"
 # Directories to scan for compose files (space-separated)
 SCAN_DIRS="/opt /home /root /srv"
 
+# --- Projects to leave out ---
+# Compose project names (as in `docker-backup.sh --list`), space- or comma-separated; globs work (test-*).
+# EXCLUDE_PROJECTS — not backed up at all. Their backups already in the storages stay: rotation keeps
+#   their last copies as for any project, it does not delete them as "gone from the server".
+#   `docker-backup.sh -p NAME` still backs one up when asked by name.
+# DB_DUMP_EXCLUDE_PROJECTS — backed up as usual (volumes, bind mounts, the folder), but without database dumps.
+# One container: the label docker-backup-s3.skip=true — see BACKUP_STANDALONE below.
+# The menu sets both: sudo docker-backup-s3 → Projects.
+EXCLUDE_PROJECTS=""
+DB_DUMP_EXCLUDE_PROJECTS=""
+
 # --- Backup behavior ---
 # stop  = docker compose stop -> backup -> docker compose start (database consistency, with downtime)
 # pause = docker pause -> backup -> docker unpause (fast, but does NOT guarantee database consistency)
@@ -221,7 +232,9 @@ BACKUP_BIND_MOUNTS="true" # bind mounts (host paths)
 BACKUP_PROJECT_DIR="true" # the whole folder with docker-compose.yml
 BACKUP_IMAGES="false"     # docker save of the images (A LOT of space)
 # Containers started without compose ("standalone") go into one extra archive. false — leave them out.
-# To leave out just one: start it with the label docker-backup.skip=true (docker run --label docker-backup.skip=true …).
+# The label docker-backup-s3.skip=true on a container (docker run --label …, or labels: in compose):
+#   a standalone container is left out; in a compose project its database is not dumped (its volumes
+#   still go into the project's archive: they belong to the project).
 BACKUP_STANDALONE="true"
 
 # --- Compression ---

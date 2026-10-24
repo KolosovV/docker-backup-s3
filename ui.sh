@@ -343,14 +343,17 @@ _s3_probe() {
     local -a cmd=(aws --endpoint-url "$endpoint" "$@" --cli-connect-timeout 10 --cli-read-timeout 20
                   s3api head-bucket --bucket "$bucket")
     command -v timeout >/dev/null 2>&1 && cmd=(timeout 60 "${cmd[@]}")
-    # shellcheck disable=SC2069 # on purpose: only stderr goes to the caller
-    env -u AWS_PROFILE -u AWS_SESSION_TOKEN -u AWS_CA_BUNDLE \
-        AWS_ACCESS_KEY_ID="$access" AWS_SECRET_ACCESS_KEY="$secret" \
-        AWS_DEFAULT_REGION="${region:-us-east-1}" AWS_S3_ADDRESSING_STYLE="$addressing" \
-        AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_MAX_ATTEMPTS=2 \
-        AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}" \
-        AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}" \
+    # Exported in a subshell, not `env KEY=value …`: the keys would be on env's command line (ps).
+    (
+        unset AWS_PROFILE AWS_SESSION_TOKEN AWS_CA_BUNDLE
+        export AWS_ACCESS_KEY_ID="$access" AWS_SECRET_ACCESS_KEY="$secret" \
+            AWS_DEFAULT_REGION="${region:-us-east-1}" AWS_S3_ADDRESSING_STYLE="$addressing" \
+            AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_MAX_ATTEMPTS=2 \
+            AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}" \
+            AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
+        # shellcheck disable=SC2069 # on purpose: only stderr goes to the caller
         "${cmd[@]}" 2>&1 >/dev/null
+    )
 }
 
 # The last meaningful line of aws output (without urllib3 SSL warnings)
@@ -537,13 +540,18 @@ _nt_clear() {
 
 # notify_probe <channel> — a test message with the NT settings. 0 if delivered; the error on stdout.
 notify_probe() {
-    local ch="$1" lib="${NOTIFY_LIB:-${SCRIPT_DIR:-.}/lib.sh}" k
-    local -a envs=("NOTIFY_NAME=${NOTIFY_NAME:-}")
-    for k in "${NT_KEYS[@]}"; do envs+=("$k=${NT[$k]:-}"); done
+    local ch="$1" lib="${NOTIFY_LIB:-${SCRIPT_DIR:-.}/lib.sh}"
     command -v curl >/dev/null 2>&1 || { echo "curl is not installed"; return 1; }
-    # shellcheck disable=SC2016 # $1/$2 belong to the inner bash
-    env "${envs[@]}" bash -c 'source "$1" >/dev/null 2>&1 || { echo "cannot load $1"; exit 1; }
-        notify_test "$2" 2>&1 >/dev/null' "${0##*/}" "$lib" "$ch"   # $0 = the caller: "Sent by docker-backup"
+    # The settings go to the inner bash exported, not as `env KEY=value` arguments: the token and the
+    # SMTP password would be on its command line, seen by any user of the host in ps.
+    (
+        local k
+        export NOTIFY_NAME="${NOTIFY_NAME:-}"
+        for k in "${NT_KEYS[@]}"; do export "$k=${NT[$k]:-}"; done
+        # shellcheck disable=SC2016 # $1/$2 belong to the inner bash
+        bash -c 'source "$1" >/dev/null 2>&1 || { echo "cannot load $1"; exit 1; }
+            notify_test "$2" 2>&1 >/dev/null' "${0##*/}" "$lib" "$ch"   # $0 = the caller: "Sent by docker-backup-s3"
+    )
 }
 
 # notify_hint <channel> <error> — a note on what usually causes this error

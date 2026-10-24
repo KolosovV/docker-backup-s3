@@ -38,7 +38,7 @@ for img in "${IMAGES[@]}"; do
     # crond in RHEL-family containers on GitHub still refuses root's jobs now and then (PAM): check.sh skips that.
     printf 'FROM %s\nRUN %s\nRUN systemctl mask systemd-resolved.service systemd-networkd.service systemd-networkd.socket >/dev/null 2>&1; true\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/sbin/init"]\n' "$img" "$setup" \
         | docker build -q -t "$tag" - >/dev/null || { RESULTS+=("FAIL  $img (image build)"); failed=$((failed + 1)); continue; }
-    cid="$(docker run -d --label docker-backup.skip=true --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+    cid="$(docker run -d --label docker-backup-s3.skip=true --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
         --tmpfs /run --tmpfs /run/lock --network host \
         -v /var/run/docker.sock:/var/run/docker.sock -v "$SHARE:$SHARE" -e "DBT_WORK=$SHARE" \
         -v "$TOOLS:/dbt-tools:ro" -v "$REPO:/src:ro" "$tag")"

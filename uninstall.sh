@@ -8,7 +8,7 @@
 #   ✓ the cron job (if any)
 #   ✓ the systemd timer and service (if any)
 #   ✓ logrotate config
-#   ✓ the docker-backup command link
+#   ✓ the docker-backup-s3 command link
 #   ✓ the lock directory (/var/run/docker-backup.lock.d)
 #   ✓ the temporary folder (/var/tmp/docker-backup)
 #
@@ -203,12 +203,12 @@ else
     log_skip "No logrotate config found"
 fi
 
-# The docker-backup command — only our symlink into this installation
-if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
+# The docker-backup-s3 command — only our symlink into this installation
+if [[ -L /usr/local/bin/docker-backup-s3 && "$(readlink /usr/local/bin/docker-backup-s3)" == "$TARGET_DIR/menu.sh" ]]; then
     FOUND_CMD="true"
-    log_ok "Command: /usr/local/bin/docker-backup → $TARGET_DIR/menu.sh"
+    log_ok "Command: /usr/local/bin/docker-backup-s3 → $TARGET_DIR/menu.sh"
 else
-    log_skip "No docker-backup command link found"
+    log_skip "No docker-backup-s3 command link found"
 fi
 
 # Logs
@@ -332,7 +332,7 @@ log_step "Removal plan"
 [[ "$FOUND_CRON" == "true" ]]      && echo "  • Cron job"
 [[ "$FOUND_SYSTEMD" == "true" ]]   && echo "  • Systemd timer + service"
 [[ "$FOUND_LOGROTATE" == "true" ]] && echo "  • /etc/logrotate.d/docker-backup"
-[[ "$FOUND_CMD" == "true" ]]       && echo "  • /usr/local/bin/docker-backup (the command link)"
+[[ "$FOUND_CMD" == "true" ]]       && echo "  • /usr/local/bin/docker-backup-s3 (the command link)"
 [[ "$FOUND_LOCK" == "true" ]]      && echo "  • $LOCK_DIR"
 [[ "$FOUND_WORK_DIR" == "true" ]]  && echo "  • /var/tmp/docker-backup"
 
@@ -392,7 +392,7 @@ fi
 if [[ "$FOUND_CRON" == "true" ]]; then
     log_step "Removing the cron job"
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_dry "crontab without the docker-backup lines"
+        log_dry "crontab without the docker-backup-s3 lines"
     else
         # Remove the lines + our markers (if it was installed via setup-cron.sh). Through a variable
         # with "|| true": when nothing else is left, grep -v exits 1 and the pipe would report a failure.
@@ -434,11 +434,11 @@ if [[ "$FOUND_LOGROTATE" == "true" ]]; then
 fi
 
 # ==============================================================================
-# 8. REMOVAL — THE docker-backup COMMAND
+# 8. REMOVAL — THE docker-backup-s3 COMMAND
 # ==============================================================================
 if [[ "$FOUND_CMD" == "true" ]]; then
-    log_step "Removing the docker-backup command"
-    do_action "rm /usr/local/bin/docker-backup" rm -f /usr/local/bin/docker-backup
+    log_step "Removing the docker-backup-s3 command"
+    do_action "rm /usr/local/bin/docker-backup-s3" rm -f /usr/local/bin/docker-backup-s3
 fi
 
 # ==============================================================================

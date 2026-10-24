@@ -80,7 +80,7 @@ show_tail() { echo "---- last lines of $1:"; tail -n 25 "$IT/$1.out"; echo "----
 
 # ------------------------------------------------------------------------------
 step "S3 (Versity Gateway) and the webhook receiver"
-docker run -d --name "$S3C" --label docker-backup.skip=true -p "127.0.0.1:${S3PORT}:7070" \
+docker run -d --name "$S3C" --label docker-backup-s3.skip=true -p "127.0.0.1:${S3PORT}:7070" \
     -e ROOT_ACCESS_KEY=itkey -e ROOT_SECRET_KEY=itsecret \
     versity/versitygw:v1.8.0 --port=:7070 posix /tmp >/dev/null || die "cannot start versitygw"
 for _ in $(seq 1 30); do s3 s3 ls >/dev/null 2>&1 && break; sleep 1; done
@@ -203,6 +203,18 @@ check "the containers run again after the backup" test "$(docker ps -q --filter 
 step "The plan shows the exclusion"
 run plan docker-backup.sh -c "$CONF" -p "$PROJ" --dry-run
 check "the dry-run plan names the excluded folder" grep -q "$EXT (without $EXT/rebuildable)" "$IT/plan.out"
+
+step "Projects left out: EXCLUDE_PROJECTS, DB_DUMP_EXCLUDE_PROJECTS"
+{ cat "$CONF"; echo "EXCLUDE_PROJECTS=\"nothing-like-it ${PROJ:0:4}*\""; } > "$IT/excl.conf"; chmod 600 "$IT/excl.conf"
+run excl docker-backup.sh -c "$IT/excl.conf" --dry-run
+check "the project is left out, by a glob" grep -q "Left out (EXCLUDE_PROJECTS): $PROJ" "$IT/excl.out"
+check "and is not in the plan" bash -c "! grep -q '📦 $PROJ' '$IT/excl.out'"
+check "--list still shows it (the menu offers it)" grep -qx "$PROJ" <<< "$("$REPO/docker-backup.sh" -c "$IT/excl.conf" --list 2>/dev/null)"
+run excl-p docker-backup.sh -c "$IT/excl.conf" -p "$PROJ" --dry-run
+check "asked for with -p: backed up anyway" grep -q "$PROJ is in EXCLUDE_PROJECTS, but asked for with -p" "$IT/excl-p.out"
+{ cat "$CONF"; echo "DB_DUMP_EXCLUDE_PROJECTS=\"$PROJ\""; } > "$IT/nodb.conf"; chmod 600 "$IT/nodb.conf"
+run nodb docker-backup.sh -c "$IT/nodb.conf" -p "$PROJ" --dry-run
+check "DB_DUMP_EXCLUDE_PROJECTS: the plan has no dumps" grep -q 'Database dumps: off for this project' "$IT/nodb.out"
 
 step "What is inside"
 if run contents docker-restore.sh -c "$CONF" -p "$PROJ" -t "$TS" --contents -y; then ok "--contents exit 0"; else bad "--contents failed"; show_tail contents; fi

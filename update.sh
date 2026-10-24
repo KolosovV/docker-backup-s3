@@ -395,9 +395,19 @@ fi
 chmod +x "$TARGET_DIR"/*.sh 2>/dev/null || true
 log_ok "dos2unix + chmod +x applied"
 
-# The docker-backup command (the menu) — older installations don't have it
-if [[ ! -e /usr/local/bin/docker-backup && -f "$TARGET_DIR/menu.sh" ]]; then
-    ln -sfn "$TARGET_DIR/menu.sh" /usr/local/bin/docker-backup && log_ok "New command: sudo docker-backup (the menu)"
+# The docker-backup-s3 command (the menu). Before 1.5.1 it was called docker-backup: that link is removed
+# (only if it is ours — it points into this installation).
+if [[ ! -e /usr/local/bin/docker-backup-s3 && -f "$TARGET_DIR/menu.sh" ]]; then
+    ln -sfn "$TARGET_DIR/menu.sh" /usr/local/bin/docker-backup-s3 && log_ok "New command: sudo docker-backup-s3 (the menu)"
+fi
+if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
+    rm -f /usr/local/bin/docker-backup && log_ok "The command is now called docker-backup-s3 (docker-backup is removed)"
+fi
+# The label that leaves a container out was renamed too: say which containers still carry the old one
+OLD_LABELLED="$(docker ps -a --filter label=docker-backup.skip --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+if [[ -n "${OLD_LABELLED// /}" ]]; then
+    log_warn "These containers have the old label docker-backup.skip, which no longer works: ${OLD_LABELLED% }"
+    log_warn "  Rename it to docker-backup-s3.skip in their compose file / docker run and recreate them."
 fi
 
 # Storage names in backup.conf — after the new scripts: the old scripts don't understand PRIMARY_S3_*
@@ -425,7 +435,7 @@ echo "╚═══════════════════════�
 echo
 
 echo "${C_BOLD}What's next:${C_RESET}"
-echo "  ${C_CYAN}•${C_RESET} Menu:               sudo docker-backup"
+echo "  ${C_CYAN}•${C_RESET} Menu:               sudo docker-backup-s3"
 echo "  ${C_CYAN}•${C_RESET} Dry run:            sudo $TARGET_DIR/docker-backup.sh --dry-run"
 echo "  ${C_CYAN}•${C_RESET} Current status:     sudo $TARGET_DIR/status.sh"
 [[ "$SKIP_BACKUP" != "true" ]] && \

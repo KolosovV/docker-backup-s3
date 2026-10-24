@@ -18,6 +18,10 @@ for a in "$@"; do
     case "$a" in http*://*) url="$a" ;; @-) cat > "$MOCK_DIR/body.$n" ;; esac
     prev="$a"
 done
+# The URL may come in a config (-K): the Telegram token and webhook URLs are kept off the command line
+if [[ -f "$MOCK_DIR/cfg.$n" ]]; then
+    u="$(sed -n 's/^url = "\(.*\)"$/\1/p' "$MOCK_DIR/cfg.$n")"; [[ -n "$u" ]] && url="$u"
+fi
 echo "$n $url" >> "$MOCK_DIR/calls"
 case "$url" in
     *api.telegram.org*)
@@ -55,6 +59,8 @@ section "telegram"
 reset; notify error "backup with errors" "$BODY"
 check "HTML head line" grep -q '^🔴 <b>Server web-1: backup with errors</b>' "$MOCK_DIR/tg.1"
 check "one call" test "$(calls)" == 1
+check "the bot token is not on curl's command line" bash -c '! grep -q "1:abc" "$1"' _ "$MOCK_DIR/args.1"
+check "it is in the config curl reads" grep -q 'url = "https://api.telegram.org/bot1:abc/sendMessage"' "$MOCK_DIR/cfg.1"
 reset; notify error "long" "$LONG"
 check "a long message goes straight as plain text" test "$(calls)" == 1
 check "cut to ≤ 4000 characters" test "$(wc -m < "$MOCK_DIR/tg.1")" -le 4000
@@ -73,6 +79,7 @@ check "bold head" test "${c%%$'\n'*}" == "🔴 **Server web-1: backup with error
 check "entities decoded" grep -q 'app&db' <<< "$c"
 check "code in backticks" grep -q '`tail -n 80' <<< "$c"
 check "mentions disabled" test "$(jq -c .allowed_mentions "$MOCK_DIR/body.1")" == '{"parse":[]}'
+check "the webhook URL (its secret) is not on curl's command line" bash -c '! grep -q "webhooks/1/abc" "$1"' _ "$MOCK_DIR/args.1"
 reset; notify error "long" "$LONG"
 check "≤ 2000 characters" test "$(jq -r .content "$MOCK_DIR/body.1" | wc -m)" -le 2000
 

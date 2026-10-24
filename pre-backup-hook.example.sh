@@ -49,16 +49,17 @@ cd "$PROJECT_DIR"
 # EXAMPLE 3: Cleaning up temporary files before the backup
 # ============================================================================
 # # Delete old application logs
-# rm -rf "${PROJECT_DIR}/app/storage/logs/*.log"
+# rm -f "${PROJECT_DIR}"/app/storage/logs/*.log
 # # Clear the framework cache
 # docker exec "${COMPOSE_PROJECT}-app-1" php artisan cache:clear
 
 # ============================================================================
 # EXAMPLE 4: Exporting data from an API
 # ============================================================================
+# # The token goes in a curl config on a pipe: as -H "…" it would be on the command line, visible in ps
 # mkdir -p "${PROJECT_DIR}/api-exports"
 # curl -s "http://localhost:8080/api/admin/export" \
-#     -H "Authorization: Bearer ${API_TOKEN}" \
+#     -K <(printf 'header = "Authorization: Bearer %s"\n' "$API_TOKEN") \
 #     -o "${PROJECT_DIR}/api-exports/data_${BACKUP_TIMESTAMP}.json"
 
 echo "[hook] Custom pre-backup hook finished successfully"

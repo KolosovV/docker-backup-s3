@@ -44,7 +44,7 @@ done
 check "aws is v2 ($(aws --version 2>&1 | head -1))" bash -c 'aws --version 2>&1 | grep -q "aws-cli/2\."'
 check "GNU date (date -d)" date -d '24 hours ago' +%s
 check "GNU stat (stat -c)" stat -c %s /etc/os-release
-check "the docker-backup command" "$T/menu.sh" version
+check "the docker-backup-s3 command" "$T/menu.sh" version
 check "backup.conf with mode 600" test "$(stat -c %a "$T/backup.conf")" = 600
 
 echo "-- setup-cron.sh"
@@ -53,7 +53,7 @@ if "$T/setup-cron.sh" -y -m cron -s daily > "$LOGS/cron.log" 2>&1 && crontab -l 
 else
     bad "no cron job"; tail -n 15 "$LOGS/cron.log"
 fi
-if "$T/setup-cron.sh" --remove -y > "$LOGS/cron-remove.log" 2>&1 && ! crontab -l 2>/dev/null | grep -q "docker-backup"; then
+if "$T/setup-cron.sh" --remove -y > "$LOGS/cron-remove.log" 2>&1 && ! crontab -l 2>/dev/null | grep -q "docker-backup-s3"; then
     ok "and removed"
 else
     bad "the cron job was not removed"; tail -n 15 "$LOGS/cron-remove.log"

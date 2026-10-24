@@ -650,7 +650,7 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     log_step "Filling in backup.conf"
     ui_title "Filling in backup.conf"
     ui_note "Now let's set the minimum required settings."
-    ui_note "All other parameters can be edited later in $TARGET_DIR/backup.conf or with: sudo docker-backup"
+    ui_note "All other parameters can be edited later in $TARGET_DIR/backup.conf or with: sudo docker-backup-s3"
 
     # ─── Storages: the primary and the copies ───
     # Answers go to ST["role:FIELD"] (store_wizard, ui.sh); written to backup.conf below, by store_save.
@@ -798,17 +798,21 @@ EOF
 fi
 
 # ==============================================================================
-# 6b. THE docker-backup COMMAND (menu.sh)
+# 6b. THE docker-backup-s3 COMMAND (menu.sh)
 # ==============================================================================
 # A symlink, so the command always runs the installed version. A foreign file with the same name
 # is not overwritten.
-log_step "The docker-backup command"
-CMD_LINK="/usr/local/bin/docker-backup"
+log_step "The docker-backup-s3 command"
+CMD_LINK="/usr/local/bin/docker-backup-s3"
 if [[ -L "$CMD_LINK" || ! -e "$CMD_LINK" ]]; then
     ln -sfn "$TARGET_DIR/menu.sh" "$CMD_LINK"
-    log_ok "$CMD_LINK → $TARGET_DIR/menu.sh  (the menu: sudo docker-backup)"
+    log_ok "$CMD_LINK → $TARGET_DIR/menu.sh  (the menu: sudo docker-backup-s3)"
 else
     log_warn "$CMD_LINK already exists and is not our link — leaving it; the menu: sudo $TARGET_DIR/menu.sh"
+fi
+# Before 1.5.1 the command was called docker-backup: our old link goes
+if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
+    rm -f /usr/local/bin/docker-backup && log_ok "The old command name docker-backup is removed"
 fi
 
 # ==============================================================================
@@ -863,7 +867,7 @@ echo
 
 echo "${C_BOLD}Next steps:${C_RESET}"
 echo
-echo "  ${C_CYAN}•${C_RESET} ${C_BOLD}Menu for everything below:  sudo docker-backup${C_RESET}"
+echo "  ${C_CYAN}•${C_RESET} ${C_BOLD}Menu for everything below:  sudo docker-backup-s3${C_RESET}"
 if [[ "${EXISTING_CONF:-false}" != "true" && "$NON_INTERACTIVE" == "true" ]]; then
     echo "  ${C_YELLOW}•${C_RESET} ${C_BOLD}First, fill in the S3 keys, the region and the bucket:${C_RESET}"
     echo "       sudo nano $TARGET_DIR/backup.conf"

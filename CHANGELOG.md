@@ -10,7 +10,70 @@ The installed version: `docker-backup version` (or the `VERSION` file).
 
 ## [Unreleased]
 
+### Changed — action needed
+- **The command is `docker-backup-s3`** (it was `docker-backup`): `sudo docker-backup-s3`, `sudo docker-backup-s3 backup -p app`.
+  `update.sh` and `install.sh` link the new name and remove the old one. The scripts' file names, the logs
+  (`/var/log/docker-backup*.log`), `WORK_DIR` and the schedule stay as they are.
+- **The label is `docker-backup-s3.skip=true`** (it was `docker-backup.skip=true`); the old one no longer works.
+  `update.sh` lists the containers that still carry the old label: rename it in their compose file or
+  `docker run`, and recreate them.
+
+### Added
+- **Projects to leave out.** `EXCLUDE_PROJECTS` — not backed up at all; their backups already in the storages stay
+  (rotation keeps their last copies, it does not take them for projects gone from the server), and `-p NAME` still
+  backs one up. `DB_DUMP_EXCLUDE_PROJECTS` — backed up without database dumps. Both take names or globs (`test-*`);
+  the menu has a new section, **Projects**, to tick them in a list. The dry run shows both.
+- The label `docker-backup-s3.skip=true` on a database container in a compose project turns off its dump (before,
+  the label worked only for containers started without compose).
+
+### Security
+- **Database passwords no longer go on a command line.** `docker exec -e PGPASSWORD=…`, `-e MYSQL_PWD=…`,
+  `redis-cli -a …` and `mongodump --password …` put them in the arguments of a process, where any user of the
+  host sees them (`ps aux`) while a dump runs. Now each dump runs a short `sh` script inside the database
+  container that reads the password there, from the image's own variables, and hands it to the tool in its
+  environment or on its stdin. The password is not even copied to the host. A Redis password that exists only
+  as `--requirepass` in the container's command reaches `docker exec` through the environment.
+- The Telegram bot token and the webhook URL (Discord and Slack keep their secret in it) went to `curl` as an
+  argument; the menu's test of a channel passed the token and the SMTP password to `env` as arguments, and the
+  storage check passed the S3 keys the same way. They now go through a curl config on a pipe and the
+  environment.
+- A run's working folder (`WORK_DIR/<time>`: archives with `.env` files, `docker inspect` with the containers'
+  environment, dumps) was readable by every user of the host while the backup ran. It is now `700`, and
+  everything in it `600`.
+- `verify-restore.sh` decrypted into `/tmp/verify-restore-<PID>`: a predictable name that another user could
+  create in advance, and the decrypted data would land in their folder. It now uses a private folder with a
+  random name in `WORK_DIR`.
+- `validate-config.sh` showed the first and last four characters of the S3 secret key; now only its length.
+- README: a new section, [Where your keys and passwords live](README.md#where-your-keys-and-passwords-live) — what
+  leaves the server and where to (only your storages and your notification channels; no telemetry), where each
+  secret is kept and who can read it.
+
 ### Fixed
+- **Database dumps, checked on real servers** (a new test, `tests/databases/run.sh`: 3 Postgres, 3 MySQL, 2 MariaDB,
+  Redis 6 and 7, Valkey, KeyDB, 3 MongoDB):
+  - `*_FILE` secrets (`POSTGRES_PASSWORD_FILE`, `MARIADB_ROOT_PASSWORD_FILE`, `MONGO_INITDB_ROOT_PASSWORD_FILE`…)
+    were not read, and such a database was dumped without a password, or not at all.
+  - MySQL/MariaDB with a random root password (`MYSQL_RANDOM_ROOT_PASSWORD`) failed: the app user's password was
+    tried as root's. Now each account is tried with a login first — root, then the app user (its database), then
+    root without a password — and the log says which one made the dump. Events are dumped too (`--events`).
+  - A Redis password from a config file (`redis-server /etc/redis.conf` with `requirepass`), a port other than
+    6379, Valkey (`valkey/valkey` was not recognised at all) and `valkey-cli` / `keydb-cli` are handled. A password
+    variable the server does not use no longer breaks the dump: no password is tried first. BGSAVE now waits for
+    the save to finish rather than for the save time to change (two saves within one second waited for the whole
+    timeout), and a failed save is reported.
+  - Percona Server for MongoDB was taken for MySQL.
+  - An exporter or an admin UI whose image name matched (`postgres-exporter`, `redis_exporter`, `mongo-express`)
+    counted as a failed dump. It is skipped now, with a note: the container must run the database server.
+  - A failed dump said only "pg_dumpall failed": the tool's own error was thrown away. The log now has the
+    reason (`Access denied for user…`, `WRONGPASS…`, a timeout).
+  - The MongoDB dump was named `.tar.gz` although it is a mongodump archive; it is `.archive.gz` now (old ones
+    are removed with the first new dump), and `verify-restore.sh` checks the archive's magic number.
+  - `verify-restore.sh` stopped the whole check on a Redis dump bigger than 64 KB (a SIGPIPE under `pipefail`),
+    and took a Valkey 9 RDB for a broken one.
+- README: restoring Redis by `docker cp` into a running server lost the restored data — Redis saves its memory
+  over the file on shutdown. The instructions now stop it first; the MySQL instruction no longer puts the password
+  on the command line; MongoDB has one.
+
 - **`logs.sh --since` failed on Debian and Ubuntu** ("awk: … must contain complete functions or rules"): it was
   written for gawk, and they ship mawk. It now compares the log's timestamps as text in plain awk (no `date` call
   per line), and a line without a timestamp (aws's own error text) goes with the line before it. `--since today`

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# menu.sh — the docker-backup command: one entry point for the whole system
+# menu.sh — the docker-backup-s3 command: one entry point for the whole system
 #
-#   sudo docker-backup                 # the menu (whiptail; plain numbered prompts without it)
-#   sudo docker-backup backup -p app   # a subcommand — runs the script with these arguments
-#   sudo docker-backup help            # the list of subcommands
+#   sudo docker-backup-s3                 # the menu (whiptail; plain numbered prompts without it)
+#   sudo docker-backup-s3 backup -p app   # a subcommand — runs the script with these arguments
+#   sudo docker-backup-s3 help            # the list of subcommands
 #
-# install.sh links it as /usr/local/bin/docker-backup. Without a terminal (cron, pipes) there is
+# install.sh links it as /usr/local/bin/docker-backup-s3. Without a terminal (cron, pipes) there is
 # no menu — use the subcommands or the scripts themselves, they work as before.
 # ==============================================================================
 set -uo pipefail
@@ -17,7 +17,7 @@ CONFIG_FILE="${SCRIPT_DIR}/backup.conf"
 
 usage() {
     cat <<EOF
-Usage: docker-backup [-c FILE] [command [arguments]]
+Usage: docker-backup-s3 [-c FILE] [command [arguments]]
 
 Without a command — the interactive menu.
 
@@ -75,7 +75,7 @@ fi
 # ==============================================================================
 # THE MENU
 # ==============================================================================
-[[ "$EUID" -eq 0 ]] || { echo "❌ The menu needs root: sudo docker-backup" >&2; exit 1; }
+[[ "$EUID" -eq 0 ]] || { echo "❌ The menu needs root: sudo docker-backup-s3" >&2; exit 1; }
 [[ -f "$CONFIG_FILE" ]] || { echo "❌ Config not found: $CONFIG_FILE — run install.sh first" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
@@ -518,6 +518,49 @@ notify_when() {
     esac
 }
 
+# ==============================================================================
+# PROJECTS: which to leave out, where not to dump databases
+# ==============================================================================
+# pick_projects <var> <text> — a checklist of the projects on this host, the ones in <var> ticked; saves <var>.
+# Entries the list can't show (a glob like test-*, a project not on this host now) are kept as they are.
+pick_projects() {
+    local var="$1" text="$2" list p picked keep=""
+    local -a items=() pats=()
+    list="$("${SCRIPT_DIR}/docker-backup.sh" -c "$CONFIG_FILE" --list 2>/dev/null)"
+    if [[ -z "$list" ]]; then ui_msg "No compose projects found on this host."; return 0; fi
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        if in_project_list "$p" "${!var:-}"; then items+=("$p" "" on); else items+=("$p" "" off); fi
+    done <<< "$list"
+    mapfile -t pats < <(split_words "${!var//,/ }")
+    for p in ${pats[@]+"${pats[@]}"}; do grep -qxF -- "$p" <<< "$list" || keep+="${keep:+ }$p"; done
+    [[ -n "$keep" ]] && text+=$'\n'"Kept as written (not a project here now): ${keep}"
+    picked="$(ui_checklist "$text" "${items[@]}")" || return 0
+    picked="$(printf '%s\n' "$picked" | grep -v '^$' | paste -sd' ' -)"
+    picked="${keep}${keep:+${picked:+ }}${picked}"
+    backup_conf_once; conf_set "$var" "$picked" --allow-empty; reload_conf
+}
+
+# "a, b" or "none"
+projects_line() {
+    local v="${1//,/ }"; v="$(trim "$v")"
+    if [[ -z "$v" ]]; then printf 'none'; else printf '%s' "${v// /, }"; fi
+}
+
+menu_projects() {
+    local choice
+    while true; do
+        UI_TITLE="Projects"
+        choice="$(ui_menu "Every compose project on this host is backed up with its databases, unless it is listed here." \
+            exclude "Not backed up: $(projects_line "${EXCLUDE_PROJECTS:-}")" \
+            nodb    "Backed up without database dumps: $(projects_line "${DB_DUMP_EXCLUDE_PROJECTS:-}")")" || return 0
+        case "$choice" in
+            exclude) pick_projects EXCLUDE_PROJECTS "Projects NOT to back up (Space to tick). Their backups already in the storages are kept." ;;
+            nodb)    pick_projects DB_DUMP_EXCLUDE_PROJECTS "Projects to back up WITHOUT database dumps: volumes, bind mounts and the folder only." ;;
+        esac
+    done
+}
+
 menu_notify() {
     local choice v ch err out
     while true; do
@@ -610,6 +653,7 @@ while true; do
     choice="$(ui_menu "Storages: $(storages_summary)" \
         status   "Status overview" \
         backup   "Back up now…" \
+        projects "Projects: what to leave out…" \
         restore  "Restore…" \
         sync     "Synchronize storages…" \
         checks   "Checks and diagnostics…" \
@@ -622,6 +666,7 @@ while true; do
     case "$choice" in
         status)   run_tool status.sh -c "$CONFIG_FILE" ;;
         backup)   menu_backup ;;
+        projects) menu_projects ;;
         restore)  menu_restore ;;
         sync)     menu_sync ;;
         checks)   menu_checks ;;

@@ -52,7 +52,7 @@ check "cron service is enabled at boot" systemctl is-enabled --quiet "$CU"
 check "our job is in root's crontab" bash -c "crontab -l | grep -q '$T/docker-backup.sh'"
 
 step "S3 and a project to back up"
-docker run -d --name "$S3C" --label docker-backup.skip=true -p "127.0.0.1:${S3PORT}:7070" -e ROOT_ACCESS_KEY=sdkey -e ROOT_SECRET_KEY=sdsecret \
+docker run -d --name "$S3C" --label docker-backup-s3.skip=true -p "127.0.0.1:${S3PORT}:7070" -e ROOT_ACCESS_KEY=sdkey -e ROOT_SECRET_KEY=sdsecret \
     versity/versitygw:v1.8.0 --port=:7070 posix /tmp >/dev/null || die "cannot start versitygw"
 for _ in $(seq 1 30); do s3 s3 ls >/dev/null 2>&1 && break; sleep 1; done
 s3 s3 mb s3://sdbucket >/dev/null || die "cannot create the bucket"
@@ -87,7 +87,7 @@ ok "S3 up, project up, config filled in"
 step "systemd timer"
 if "$T/setup-cron.sh" -y -m systemd -s daily > "$IT/timer.log" 2>&1; then ok "setup-cron.sh -m systemd exit 0"
 else bad "setup-cron.sh -m systemd failed"; tail -n 20 "$IT/timer.log"; fi
-check "the cron job was replaced (gone)" bash -c "! crontab -l 2>/dev/null | grep -q docker-backup"
+check "the cron job was replaced (gone)" bash -c "! crontab -l 2>/dev/null | grep -q docker-backup-s3"
 check "the timer is enabled" systemctl is-enabled --quiet docker-backup.timer
 check "the timer is active" systemctl is-active --quiet docker-backup.timer
 next="$(systemctl show -p NextElapseUSecRealtime --value docker-backup.timer 2>/dev/null)"
@@ -108,7 +108,7 @@ grep -q "Result=success" <(systemctl show -p Result docker-backup.service) || ta
 check "a new backup in S3 ($before → $(backups))" test "$(backups)" -gt "$before"
 check "the service wrote its log" grep -q "$PROJ" /var/log/docker-backup-cron.log
 grep -q "$PROJ" /var/log/docker-backup-cron.log || { ls -la /var/log/docker-backup*; tail -n 5 /var/log/docker-backup-cron.log; journalctl -u docker-backup.service --no-pager -n 15; }
-check "the S3 container was left out by its label" grep -q "Skipped (label docker-backup.skip=true): $S3C" /var/log/docker-backup-cron.log
+check "the S3 container was left out by its label" grep -q "Skipped (label docker-backup-s3.skip=true): $S3C" /var/log/docker-backup-cron.log
 
 step "cron runs a real backup on its own"
 if "$T/setup-cron.sh" -y -m cron -s '* * * * *' > "$IT/cron.log" 2>&1; then ok "setup-cron.sh -m cron exit 0"
@@ -119,7 +119,7 @@ before="$(backups)"
 for _ in $(seq 1 36); do (( $(backups) > before )) && break; sleep 5; done
 if (( $(backups) > before )); then ok "cron started a backup by itself ($before → $(backups))"
 elif journalctl -u "$CU" --no-pager 2>/dev/null | grep -q 'FAILED to authorize user with PAM'; then
-    # The environment, not docker-backup: this crond refuses ANY job of root. Seen now and then in GitHub's
+    # The environment, not docker-backup-s3: this crond refuses ANY job of root. Seen now and then in GitHub's
     # containers of the RHEL family; the same images pass elsewhere, and the real VM test covers cron firing.
     # Our job being in the crontab is checked above.
     echo "  SKIP cron firing: crond in this container refuses every root job (PAM) — a limit of the container"
@@ -135,12 +135,12 @@ step "removal"
 "$T/setup-cron.sh" --remove -y > "$IT/remove.log" 2>&1
 # A run cron started just before is still going: uninstall.sh rightly refuses to remove during a backup
 for _ in $(seq 1 60); do pgrep -f "$T/docker-backup.sh" >/dev/null || break; sleep 2; done
-check "no cron job left" bash -c '! crontab -l 2>/dev/null | grep -q docker-backup'
+check "no cron job left" bash -c '! crontab -l 2>/dev/null | grep -q docker-backup-s3'
 check "no timer left" test ! -e /etc/systemd/system/docker-backup.timer
 if bash "$T/uninstall.sh" -y > "$IT/uninstall.log" 2>&1; then ok "uninstall.sh exit 0"; else bad "uninstall.sh failed"; tail -n 20 "$IT/uninstall.log"; fi
 check "the installation is gone" test ! -e "$T/docker-backup.sh"
 [[ -e "$T/docker-backup.sh" ]] && tail -n 25 "$IT/uninstall.log"
-check "the docker-backup command is gone" test ! -e /usr/local/bin/docker-backup
+check "the docker-backup-s3 command is gone" test ! -e /usr/local/bin/docker-backup-s3
 
 echo
 echo "${PASSES} passed, ${FAILS} failed"

@@ -5,7 +5,7 @@
 #
 # What it does:
 #   1. Takes the latest backup of the given project (or of all)
-#   2. Downloads it into /tmp/verify-restore-XXX
+#   2. Downloads it into a private temporary folder in WORK_DIR
 #   3. Unpacks it, decrypts if needed
 #   4. Checks tar integrity and file sizes
 #   5. Checks that database dumps are valid (headers, gzip integrity)
@@ -79,8 +79,12 @@ _aws_setup "$FROM_ROLE" read
 SRC_BUCKET="$S3_CUR_BUCKET"
 
 # --- Working folder ---
-VERIFY_DIR="/tmp/verify-restore-$$"
-mkdir -p "$VERIFY_DIR"
+# A private folder (700, unpredictable name) in WORK_DIR: the archives are decrypted here. A fixed
+# /tmp/verify-restore-PID could be created in advance by another user of the host, and the data would land in it.
+WORK_DIR="${WORK_DIR:-/var/tmp/docker-backup}"
+umask 077
+mkdir -p "$WORK_DIR" || fail "Cannot create WORK_DIR $WORK_DIR"
+VERIFY_DIR="$(mktemp -d "${WORK_DIR}/verify.XXXXXX")" || fail "Cannot create a temporary folder in $WORK_DIR"
 trap 'rm -rf "$VERIFY_DIR"' EXIT
 
 # --- Global statistics ---
@@ -395,13 +399,14 @@ verify_project() {
                 [[ -f "$d" ]] || continue
                 local name; name=$(basename "$d")
                 if gunzip -t "$d" 2>/dev/null; then
-                    # RDB starts with the "REDIS" magic
-                    local magic; magic=$(gunzip -c "$d" 2>/dev/null | head -c 5)
-                    if [[ "$magic" == "REDIS" ]]; then
+                    # RDB starts with the "REDIS" magic ("VALKEY" in Valkey 9+). `|| true`: on a big file
+                    # gunzip gets SIGPIPE from head, and under pipefail + set -e that ended the whole check.
+                    local magic; magic=$(gunzip -c "$d" 2>/dev/null | head -c 6 || true)
+                    if [[ "$magic" == REDIS* || "$magic" == VALKEY ]]; then
                         local size; size=$(stat -c %s "$d")
                         log_ok "    $name (Redis RDB, $size bytes)"
                     else
-                        log_warn "    $name — gzip is intact, but the magic is not REDIS"
+                        log_warn "    $name — gzip is intact, but it is not an RDB file (no REDIS/VALKEY magic)"
                     fi
                 else
                     log_err "    $name — corrupted gzip"
@@ -409,12 +414,18 @@ verify_project() {
                 fi
             done
 
-            # Mongo dumps
-            for d in "$dumps_dir"/mongo_*.tar.gz; do
+            # Mongo dumps: a mongodump archive (.tar.gz before 1.5.1 — the same thing under a wrong name)
+            for d in "$dumps_dir"/mongo_*.archive.gz "$dumps_dir"/mongo_*.tar.gz; do
                 [[ -f "$d" ]] || continue
                 local name; name=$(basename "$d")
                 if gunzip -t "$d" 2>/dev/null; then
-                    log_ok "    $name (MongoDB)"
+                    # The archive starts with the magic number 0x8199e26d (little-endian)
+                    local magic; magic=$(gunzip -c "$d" 2>/dev/null | od -An -tx1 -N4 | tr -d ' \n' || true)
+                    if [[ "$magic" == 6de29981 ]]; then
+                        log_ok "    $name (MongoDB archive)"
+                    else
+                        log_warn "    $name — gzip is intact, but it is not a mongodump archive"
+                    fi
                 else
                     log_err "    $name — corrupted gzip"
                     dump_failed=$((dump_failed + 1))

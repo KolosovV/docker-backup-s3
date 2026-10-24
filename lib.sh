@@ -91,6 +91,19 @@ split_words() {
     return 0
 }
 
+# in_project_list <project> <list> — 0 if the list (names or globs like test-*, spaces or commas) has it.
+# For EXCLUDE_PROJECTS and DB_DUMP_EXCLUDE_PROJECTS.
+in_project_list() {
+    local name="$1" pat
+    local -a pats=()
+    mapfile -t pats < <(split_words "${2//,/ }")
+    for pat in ${pats[@]+"${pats[@]}"}; do
+        # shellcheck disable=SC2053 # a glob on purpose
+        [[ "$name" == $pat ]] && return 0
+    done
+    return 1
+}
+
 # ==============================================================================
 # CHECKSUMS
 # An object's size in S3 only proves the upload wasn't cut short. A hash catches
@@ -688,19 +701,28 @@ _cut_lines() {
     printf '%s\n…' "$out"
 }
 
+# curl_url_cfg <url> — the URL as a curl config line, for `curl -K <(curl_url_cfg "$url")`. The Telegram
+# bot token and a webhook URL (Discord/Slack put their secret in it) stay off the command line, where any
+# user of the host would see them in ps.
+curl_url_cfg() {
+    local u="${1//\\/\\\\}"
+    u="${u//\"/\\\"}"
+    printf 'url = "%s"\n' "$u"
+}
+
 # Telegram: HTML; if the markup is rejected — as plain text, so the alert isn't lost over a tag.
 # A message is at most 4096 characters: a longer one goes as plain text, cut on a line.
 _notify_telegram() {
     local full="$1" api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" resp
     if (( ${#full} <= 4000 )); then
-        resp="$(curl -s -m 10 -X POST "$api" \
+        resp="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text=${full}" \
             --data-urlencode "parse_mode=HTML" \
             --data-urlencode "disable_web_page_preview=true" 2>/dev/null || true)"
         [[ "$resp" == *'"ok":true'* ]] && return 0
     fi
-    resp="$(curl -s -m 10 -X POST "$api" \
+    resp="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
         --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=$(_cut_lines "$(html_plain "$full")" 4000)" 2>/dev/null || true)"
     [[ "$resp" == *'"ok":true'* ]] && return 0
@@ -745,7 +767,7 @@ _notify_webhook() {
             NOTIFY_ERR="NOTIFY_WEBHOOK_FORMAT must be auto, discord, slack or json"; return 1 ;;
     esac
     code="$(printf '%s' "$payload" | curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST \
-        -H 'Content-Type: application/json' --data-binary @- "$NOTIFY_WEBHOOK_URL" 2>/dev/null)" || true
+        -H 'Content-Type: application/json' --data-binary @- -K <(curl_url_cfg "$NOTIFY_WEBHOOK_URL") 2>/dev/null)" || true
     [[ "$code" == 2?? ]] && return 0
     if [[ -z "$code" || "$code" == "000" ]]; then NOTIFY_ERR="no response from the webhook URL"
     else NOTIFY_ERR="the webhook replied HTTP ${code}"; fi
@@ -917,19 +939,230 @@ detect_db_type() {
     local image="${1,,}"  # to lowercase
     case "$image" in
         *postgres*|*postgis*|*timescale*) echo "postgres" ;;
+        *mongo*) echo "mongo" ;;   # before percona: percona-server-mongodb is Mongo
         *mariadb*) echo "mariadb" ;;
         *mysql*|*percona*) echo "mysql" ;;
-        *redis*|*keydb*) echo "redis" ;;
-        *mongo*) echo "mongo" ;;
+        *redis*|*keydb*|*valkey*) echo "redis" ;;
         *) echo "" ;;
     esac
 }
 
-# Value of an env variable from the container
-# usage: container_env <container> <var_name>
-container_env() {
-    local container="$1" var="$2"
-    docker exec "$container" sh -c "echo \"\${$var:-}\"" 2>/dev/null || echo ""
+# How database passwords are handled: they are read INSIDE the database container, by a small sh
+# script, from the same variables the image itself uses (or the files their *_FILE twins point to —
+# Docker secrets). They never come to this host's shell, never go on a command line (any user of the
+# host sees command lines in ps), never into the log or the archive name. The one exception: a Redis
+# password given as `redis-server --requirepass X` lives only in the container's Cmd (Redis hides it
+# from its own process title), so it is read with docker inspect and handed to docker exec through the
+# environment (-e NAME without a value), not as an argument.
+#
+# The scripts below run as `sh -c "$_DB_SH_LIB$script"`: busybox, dash and bash all understand them.
+# They report through stderr: a line "@note …" is logged always, anything else only when the dump
+# fails (the last lines — the reason). Exit code 3 means "not a database server" (an exporter, an admin
+# UI, a backup sidecar whose image name matched): skipped, not counted as a failure.
+_DB_SH_LIB='
+sec() {
+    for _n in "$@"; do
+        eval "_v=\${$_n:-}"
+        if [ -z "$_v" ]; then
+            eval "_f=\${${_n}_FILE:-}"
+            [ -n "$_f" ] && [ -r "$_f" ] && _v=$(cat "$_f")
+        fi
+        [ -n "$_v" ] && { printf "%s" "$_v"; return 0; }
+    done
+    return 1
+}
+has() { command -v "$1" >/dev/null 2>&1; }
+note() { echo "@note $*" >&2; }
+server() {
+    for _b in "$@"; do has "$_b" && return 0; done
+    echo "no database server in the container (none of: $*)" >&2; exit 3
+}
+'
+
+# pg_dumpall = all databases + roles + tablespaces. The official image trusts the local socket, so the
+# password is usually not needed; with scram on the socket or a custom pg_hba it is. Bitnami images
+# keep the socket in /tmp and use their own variable names.
+_PG_DUMP_SH='server postgres
+has pg_dumpall || { echo "pg_dumpall not found in the container" >&2; exit 4; }
+if p=$(sec POSTGRESQL_POSTGRES_PASSWORD); then u=postgres
+else
+    u=$(sec POSTGRES_USER POSTGRESQL_USERNAME) || u=postgres
+    p=$(sec POSTGRES_PASSWORD POSTGRESQL_PASSWORD) || p=""
+fi
+[ -n "$p" ] && export PGPASSWORD="$p"
+for s in /var/run/postgresql/.s.PGSQL.* /run/postgresql/.s.PGSQL.* /tmp/.s.PGSQL.*; do
+    case "$s" in *.lock) continue ;; esac
+    [ -S "$s" ] && { PGHOST=${s%/*}; PGPORT=${s##*.}; export PGHOST PGPORT; break; }
+done
+note "user $u"
+exec pg_dumpall -U "$u"'
+
+# mariadb-dump where there is one (MariaDB 11 images have no mysqldump at all), otherwise mysqldump.
+# Accounts are tried in order: root with its password; the app user (MYSQL_USER) — when the root password
+# is random or not in the environment, that user's database is dumped; root without a password.
+# The first one that can log in makes the dump. The password goes in MYSQL_PWD, read by both tools.
+_MYSQL_DUMP_SH='server mysqld mariadbd
+if has mariadb-dump; then d=mariadb-dump; elif has mysqldump; then d=mysqldump
+else echo "neither mariadb-dump nor mysqldump in the container" >&2; exit 4; fi
+if has mariadb; then c=mariadb; elif has mysql; then c=mysql
+else echo "no mariadb/mysql client in the container to check the login" >&2; exit 4; fi
+login() { MYSQL_PWD="$2" "$c" -u "$1" -N -e "SELECT 1" >/dev/null 2>"$errf"; }
+errf=$(mktemp 2>/dev/null || echo /dev/null)
+ok=""
+if rp=$(sec MYSQL_ROOT_PASSWORD MARIADB_ROOT_PASSWORD DBROOT); then
+    ru=$(sec MYSQL_ROOT_USER MARIADB_ROOT_USER) || ru=root
+    login "$ru" "$rp" && { ok=root; u=$ru; p=$rp; }
+fi
+if [ -z "$ok" ] && au=$(sec MYSQL_USER MARIADB_USER) && ap=$(sec MYSQL_PASSWORD MARIADB_PASSWORD); then
+    login "$au" "$ap" && { ok=user; u=$au; p=$ap; }
+fi
+if [ -z "$ok" ] && [ -z "${rp:-}" ]; then
+    login root "" && { ok=root; u=root; p=""; }
+fi
+if [ -z "$ok" ]; then
+    echo "no account from the container environment can log in" >&2
+    tail -n 2 "$errf" >&2; rm -f "$errf"; exit 1
+fi
+rm -f "$errf"
+if [ "$ok" = root ]; then
+    set -- --all-databases --events
+    note "user $u, all databases"
+else
+    if db=$(sec MYSQL_DATABASE MARIADB_DATABASE); then set -- --databases "$db" --events; else set -- --all-databases; fi
+    set -- "$@" --no-tablespaces
+    note "no usable root password in the container: user $u, database ${db:-all it can see}"
+fi
+[ -n "$p" ] && export MYSQL_PWD="$p"
+exec "$d" "$@" --single-transaction --quick --routines --triggers -u "$u"'
+
+# BGSAVE, then the RDB file to stdout. $1 — the timeout in seconds, $2 — a config file from the server
+# command line (may be empty). The password: from Cmd (DBB_REDIS_PASS, see above), from the config
+# file, from the usual variables; tried in that order, and none at all first — a wrong guess is an
+# error on a server without a password. REDISCLI_AUTH keeps it off the redis-cli command line.
+_REDIS_DUMP_SH='server redis-server valkey-server keydb-server
+cli=""
+for b in redis-cli valkey-cli keydb-cli; do has "$b" && { cli=$b; break; }; done
+[ -n "$cli" ] || { echo "no redis-cli in the container" >&2; exit 4; }
+conf=${2:-}
+[ -n "$conf" ] && [ ! -r "$conf" ] && conf=""
+cfg() { [ -n "$conf" ] && sed -n "s/^[[:space:]]*$1[[:space:]][[:space:]]*//p" "$conf" | tail -n 1 | sed "s/^\"\(.*\)\"\$/\1/; s/^'"'"'\(.*\)'"'"'\$/\1/"; }
+port=${DBB_REDIS_PORT:-$(cfg port)}; port=${port:-6379}
+r() { "$cli" -p "$port" "$@" 2>&1 | tr -d "\r"; }
+unset REDISCLI_AUTH
+if [ "$(r PING)" != PONG ]; then
+    found=""
+    for pw in "${DBB_REDIS_PASS:-}" "$(cfg requirepass)" "$(sec REDIS_PASSWORD REDISPASS REDIS_PASS REQUIREPASS VALKEY_PASSWORD KEYDB_PASSWORD)"; do
+        [ -n "$pw" ] || continue
+        export REDISCLI_AUTH="$pw"
+        [ "$(r PING)" = PONG ] && { found=1; break; }
+        unset REDISCLI_AUTH
+    done
+    [ -n "$found" ] || { echo "Redis does not answer PING: $(r PING | head -n 1) (no password from the container works)" >&2; exit 1; }
+fi
+before=$(r LASTSAVE)
+reply=$(r BGSAVE SCHEDULE)
+case "$reply" in
+    *started*|*"already in progress"*) wait_for=done ;;
+    *scheduled*) wait_for=lastsave ;;
+    *) echo "BGSAVE: $reply" >&2; exit 1 ;;
+esac
+i=0
+while :; do
+    info=$(r INFO persistence)
+    case "$info" in
+        *rdb_bgsave_in_progress:0*)
+            [ "$wait_for" = done ] && break
+            [ "$(r LASTSAVE)" != "$before" ] && break ;;
+    esac
+    i=$((i + 1))
+    [ "$i" -ge "$1" ] && { echo "BGSAVE did not finish in $1 s" >&2; exit 1; }
+    sleep 1
+done
+case "$(r INFO persistence)" in
+    *rdb_last_bgsave_status:ok*) ;;
+    *) echo "BGSAVE failed: rdb_last_bgsave_status is not ok (no space or no write access to the data folder?)" >&2; exit 1 ;;
+esac
+dir=$(r CONFIG GET dir | sed -n 2p); file=$(r CONFIG GET dbfilename | sed -n 2p)
+[ -n "$dir" ] || dir=$(cfg dir); [ -n "$file" ] || file=$(cfg dbfilename)
+case "$dir" in ""|*ERR*) dir=/data ;; esac
+case "$file" in ""|*ERR*) file=dump.rdb ;; esac
+note "$dir/$file"
+exec cat "$dir/$file"'
+
+# mongodump of everything, as an archive gzipped by mongodump itself. The password goes in on stdin:
+# without --password, mongodump reads it from there when stdin is not a terminal.
+_MONGO_DUMP_SH='server mongod
+has mongodump || { echo "mongodump not found in the container (an image without the database tools?)" >&2; exit 4; }
+if p=$(sec MONGO_INITDB_ROOT_PASSWORD MONGODB_ROOT_PASSWORD); then
+    u=$(sec MONGO_INITDB_ROOT_USERNAME MONGODB_ROOT_USER) || u=root
+    note "user $u"
+    printf "%s\n" "$p" | mongodump --quiet --username "$u" --authenticationDatabase admin --archive --gzip
+else
+    note "no root password in the container: without authentication"
+    exec mongodump --quiet --archive --gzip
+fi'
+
+# _db_dump <container> <out> <gzip|raw> <script> [args…] — runs the script in the container; its stdout
+# goes to <out> (through gzip, or as is). Returns 0, 3 (not a database server: skipped) or 1, with the reason logged.
+_db_dump() {
+    local container="$1" out="$2" mode="$3" script="$4"; shift 4
+    local err rc=0 line
+    local -a st env=() notes=() errs=()
+    err="$(mktemp "${out%/*}/.dump-err.XXXXXX")" || { log_warn "      Cannot create a temporary file in ${out%/*}"; return 1; }
+    [[ -n "${DBB_REDIS_PASS:-}" ]] && env+=(-e DBB_REDIS_PASS)
+    [[ -n "${DBB_REDIS_PORT:-}" ]] && env+=(-e DBB_REDIS_PORT)
+    if [[ "$mode" == gzip ]]; then
+        timeout "${DB_DUMP_TIMEOUT:-1800}" docker exec ${env[@]+"${env[@]}"} "$container" \
+            sh -c "${_DB_SH_LIB}${script}" sh "$@" 2>"$err" | gzip > "$out"
+        st=("${PIPESTATUS[@]}")
+        rc=${st[0]}; (( rc == 0 && st[1] != 0 )) && rc=1
+    else
+        timeout "${DB_DUMP_TIMEOUT:-1800}" docker exec ${env[@]+"${env[@]}"} "$container" \
+            sh -c "${_DB_SH_LIB}${script}" sh "$@" 2>"$err" > "$out" || rc=$?
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ -z "${line// /}" ]] && continue
+        case "$line" in
+            "@note "*) notes+=("${line#@note }") ;;
+            *"Enter password"*) ;;
+            *) errs+=("${line:0:200}") ;;
+        esac
+    done < "$err"
+    rm -f "$err"
+    for line in ${notes[@]+"${notes[@]}"}; do log "      ${C_DIM}${line}${C_RESET}"; done
+    (( rc == 0 )) && return 0
+    rm -f "$out"
+    # docker exec could not start sh at all (126/127; our scripts exit 1, 3 or 4): an exporter built FROM scratch.
+    # Docker prints that error to stdout, so it is not in $err.
+    if (( rc == 126 || rc == 127 )); then
+        rc=3; errs=("no database server in the container (no shell in it)")
+    fi
+    if (( rc == 3 )); then
+        log "      ⊘ Skipped: ${errs[0]:-not a database server}"
+        return 3
+    fi
+    (( rc == 124 )) && errs+=("timed out after ${DB_DUMP_TIMEOUT:-1800} s (DB_DUMP_TIMEOUT)")
+    (( ${#errs[@]} )) || errs=("exit code $rc")
+    local n=${#errs[@]} i
+    for (( i = (n > 3 ? n - 3 : 0); i < n; i++ )); do log_warn "      ${errs[i]}"; done
+    return 1
+}
+
+# _db_prepare <container> <project_dir> — sets DUMPS_DIR (700) and CNAME.
+_db_prepare() {
+    DUMPS_DIR="${2}/${DB_DUMPS_DIR:-db-dumps}"
+    mkdir -p "$DUMPS_DIR"
+    # The directory may be left over from old versions with 755 — tighten it explicitly
+    chmod 700 "$DUMPS_DIR" 2>/dev/null || true
+    CNAME=$(docker inspect --format '{{.Name}}' "$1" | sed 's|^/||')
+}
+
+# _db_done <title> <file> <prune glob> — the size line and the rotation of local dumps.
+_db_done() {
+    local size; size=$(du -h "$2" | awk '{print $1}')
+    log_ok "    $1 dump done: $size"
+    prune_old_dumps "$DUMPS_DIR" "$3" "${DB_DUMPS_RETENTION_COUNT:-3}"
 }
 
 # Delete old dumps by mask, keeping the last N
@@ -938,221 +1171,74 @@ prune_old_dumps() {
     local dir="$1" pattern="$2" keep="$3"
     [[ -d "$dir" ]] || return 0
     # shellcheck disable=SC2012,SC2086 # $pattern is a glob on purpose; dump names have no spaces
-    ls -t "$dir"/$pattern 2>/dev/null | tail -n +$((keep + 1)) | xargs -r rm -f
+    ls -t "$dir"/$pattern 2>/dev/null | tail -n +$((keep + 1)) | xargs -r rm -f || true   # no match is fine
 }
 
-# --- PostgreSQL dump ---
 dump_postgres() {
-    local container="$1" project_dir="$2" timestamp="$3"
-    local dumps_dir="${project_dir}/${DB_DUMPS_DIR:-db-dumps}"
-    mkdir -p "$dumps_dir"
-    # The directory may be left over from old versions with 755 — tighten it explicitly
-    chmod 700 "$dumps_dir" 2>/dev/null || true
-
-    # Determine the user — try the standard env variables
-    local pg_user
-    pg_user="$(container_env "$container" POSTGRES_USER)"
-    [[ -z "$pg_user" ]] && pg_user="postgres"
-
-    local cname; cname=$(docker inspect --format '{{.Name}}' "$container" | sed 's|^/||')
-    local out="${dumps_dir}/postgres_${cname}_${timestamp}.sql.gz"
-
-    log "    🐘 PostgreSQL: $cname (user=$pg_user) -> $(basename "$out")"
-
-    # Password: the official postgres image allows trust on the local socket, so it is usually
-    # not needed. But with POSTGRES_HOST_AUTH_METHOD=scram or a custom pg_hba, pg_dumpall would
-    # fail without it. Pass it when set: with trust it is simply ignored.
-    local pg_pass; pg_pass="$(container_env "$container" POSTGRES_PASSWORD)"
-
-    # pg_dumpall = all databases + roles + tablespaces
-    if timeout "${DB_DUMP_TIMEOUT:-1800}" \
-        docker exec -e "PGPASSWORD=$pg_pass" "$container" pg_dumpall -U "$pg_user" 2>/dev/null \
-        | gzip > "$out"; then
-
-        local size; size=$(du -h "$out" | awk '{print $1}')
-        log_ok "    PostgreSQL dump done: $size"
-        prune_old_dumps "$dumps_dir" "postgres_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
-        return 0
-    else
-        log_warn "    pg_dumpall failed for $cname"
-        rm -f "$out"
-        return 1
-    fi
+    local container="$1" timestamp="$3" rc=0 DUMPS_DIR CNAME
+    _db_prepare "$container" "$2"
+    local out="${DUMPS_DIR}/postgres_${CNAME}_${timestamp}.sql.gz"
+    log "    🐘 PostgreSQL: $CNAME -> $(basename "$out")"
+    _db_dump "$container" "$out" gzip "$_PG_DUMP_SH" || rc=$?
+    (( rc == 0 )) || { (( rc == 3 )) || log_warn "    pg_dumpall failed for $CNAME"; return "$rc"; }
+    _db_done PostgreSQL "$out" "postgres_${CNAME}_*.sql.gz"
 }
-
-# --- MySQL/MariaDB dump ---
-# The dump command, run inside the container: mariadb-dump where there is one — MariaDB 11 images no longer have
-# mysqldump at all (the dump failed, and only the raw volume went into the backup) — otherwise mysqldump.
-# MYSQL_PWD (passed with docker exec -e) is read by both.
-_MYSQL_DUMP_CMD='if command -v mariadb-dump >/dev/null 2>&1; then d=mariadb-dump; else d=mysqldump; fi
-exec "$d" --all-databases --single-transaction --quick --routines --triggers -u root'
 
 dump_mysql() {
-    local container="$1" project_dir="$2" timestamp="$3" db_type="$4"
-    local dumps_dir="${project_dir}/${DB_DUMPS_DIR:-db-dumps}"
-    mkdir -p "$dumps_dir"
-    # The directory may be left over from old versions with 755 — tighten it explicitly
-    chmod 700 "$dumps_dir" 2>/dev/null || true
-
-    local cname; cname=$(docker inspect --format '{{.Name}}' "$container" | sed 's|^/||')
-
-    # Get the root password from env
-    local mysql_pass
-    mysql_pass="$(container_env "$container" MYSQL_ROOT_PASSWORD)"
-    [[ -z "$mysql_pass" ]] && mysql_pass="$(container_env "$container" MARIADB_ROOT_PASSWORD)"
-    # mailcow names the root password its own way
-    [[ -z "$mysql_pass" ]] && mysql_pass="$(container_env "$container" DBROOT)"
-    [[ -z "$mysql_pass" ]] && mysql_pass="$(container_env "$container" MYSQL_PASSWORD)"
-
-    local out="${dumps_dir}/${db_type}_${cname}_${timestamp}.sql.gz"
-
+    local container="$1" timestamp="$3" db_type="$4" rc=0 DUMPS_DIR CNAME
+    _db_prepare "$container" "$2"
+    local out="${DUMPS_DIR}/${db_type}_${CNAME}_${timestamp}.sql.gz"
     local db_name="MySQL"; [[ "$db_type" == mariadb ]] && db_name="MariaDB"
-    log "    🐬 ${db_name}: $cname -> $(basename "$out")"
-
-    if [[ -z "$mysql_pass" ]]; then
-        log_warn "    No MYSQL_ROOT_PASSWORD/MARIADB_ROOT_PASSWORD found — trying without a password"
-        if timeout "${DB_DUMP_TIMEOUT:-1800}" \
-            docker exec "$container" sh -c "$_MYSQL_DUMP_CMD" \
-            2>/dev/null | gzip > "$out"; then
-            log_ok "    ${db_name} dump done"
-            prune_old_dumps "$dumps_dir" "${db_type}_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
-            return 0
-        fi
-    else
-        # Password goes via the MYSQL_PWD env, not --password (visible in ps)
-        if timeout "${DB_DUMP_TIMEOUT:-1800}" \
-            docker exec -e "MYSQL_PWD=$mysql_pass" "$container" sh -c "$_MYSQL_DUMP_CMD" \
-            2>/dev/null | gzip > "$out"; then
-
-            local size; size=$(du -h "$out" | awk '{print $1}')
-            log_ok "    ${db_name} dump done: $size"
-            prune_old_dumps "$dumps_dir" "${db_type}_${cname}_*.sql.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
-            return 0
-        fi
-    fi
-
-    log_warn "    mariadb-dump/mysqldump failed for $cname"
-    rm -f "$out"
-    return 1
+    log "    🐬 ${db_name}: $CNAME -> $(basename "$out")"
+    _db_dump "$container" "$out" gzip "$_MYSQL_DUMP_SH" || rc=$?
+    (( rc == 0 )) || { (( rc == 3 )) || log_warn "    mariadb-dump/mysqldump failed for $CNAME"; return "$rc"; }
+    _db_done "$db_name" "$out" "${db_type}_${CNAME}_*.sql.gz"
 }
 
-# --- Redis BGSAVE (produces a copy of the RDB file) ---
+# A copy of the RDB file after BGSAVE.
 dump_redis() {
-    local container="$1" project_dir="$2" timestamp="$3"
-    local dumps_dir="${project_dir}/${DB_DUMPS_DIR:-db-dumps}"
-    mkdir -p "$dumps_dir"
-    # The directory may be left over from old versions with 755 — tighten it explicitly
-    chmod 700 "$dumps_dir" 2>/dev/null || true
-
-    local cname; cname=$(docker inspect --format '{{.Name}}' "$container" | sed 's|^/||')
-    local out="${dumps_dir}/redis_${cname}_${timestamp}.rdb.gz"
-
-    log "    🟥 Redis: $cname -> $(basename "$out")"
-
-    # Password from the container environment. mailcow sets REDISPASS and runs redis with
-    # --requirepass, so redis-cli without -a gets NOAUTH. The catch: redis-cli
-    # returns 0 even when the server replied with an error: this used to look like
-    # "BGSAVE succeeded", while the wait loop dutifully spun for DB_DUMP_TIMEOUT — all 30 minutes.
-    local rpass
-    rpass=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null |
-            sed -n -E 's/^(REDISPASS|REDIS_PASSWORD|REDIS_PASS|REQUIREPASS)=//p' | head -1)
-    # The password is often passed not as a variable but as an argument: redis-server --requirepass X
-    if [[ -z "$rpass" ]]; then
-        rpass=$(docker inspect --format '{{join .Config.Cmd " "}} {{join .Args " "}}' "$container" 2>/dev/null |
-                sed -n -E 's/.*--requirepass[= ]+([^ ]+).*/\1/p' | head -1)
-    fi
-    local -a rcli=(redis-cli)
-    [[ -n "$rpass" ]] && rcli=(redis-cli --no-auth-warning -a "$rpass")
-
-    # Run BGSAVE and wait for it to finish (watching lastsave)
-    local before after timeout_sec="${DB_DUMP_TIMEOUT:-1800}"
-    before=$(docker exec "$container" "${rcli[@]}" LASTSAVE 2>/dev/null | tr -d '\r')
-
-    # Check the REPLY, not the exit code: LASTSAVE must return unix time as a number. Not a number —
-    # the command did not run (no auth, wrong port, not Redis), and there is nothing to wait for.
-    if [[ ! "$before" =~ ^[0-9]+$ ]]; then
-        log_warn "    Redis does not answer LASTSAVE for $cname (password needed? NOAUTH)"
-        log_warn "    Logical dump skipped; the RDB still goes into the backup along with the volume"
-        return 1
-    fi
-
-    if ! docker exec "$container" "${rcli[@]}" BGSAVE >/dev/null 2>&1; then
-        log_warn "    redis-cli BGSAVE failed for $cname"
-        return 1
-    fi
-
-    local i
-    for ((i=0; i<timeout_sec; i++)); do
-        sleep 1
-        after=$(docker exec "$container" "${rcli[@]}" LASTSAVE 2>/dev/null | tr -d '\r')
-        [[ "$after" != "$before" ]] && break
+    local container="$1" timestamp="$3" rc=0 DUMPS_DIR CNAME
+    _db_prepare "$container" "$2"
+    local out="${DUMPS_DIR}/redis_${CNAME}_${timestamp}.rdb.gz"
+    log "    🟥 Redis: $CNAME -> $(basename "$out")"
+    # The server command line: --requirepass X, --port N and a config file. Each argument on its own line;
+    # `sh -c "redis-server --requirepass X"` is one argument, so the words inside it are looked at too.
+    local -a words=()
+    local w prev="" conf="" DBB_REDIS_PASS="" DBB_REDIS_PORT=""
+    mapfile -t words < <(docker inspect --format '{{range .Config.Entrypoint}}{{println .}}{{end}}{{range .Config.Cmd}}{{println .}}{{end}}' "$container" 2>/dev/null | tr ' \t' '\n\n')
+    for w in ${words[@]+"${words[@]}"}; do
+        case "$prev" in
+            --requirepass) DBB_REDIS_PASS="$w" ;;
+            --port) DBB_REDIS_PORT="$w" ;;
+        esac
+        case "$w" in
+            --requirepass=*) DBB_REDIS_PASS="${w#--requirepass=}" ;;
+            --port=*) DBB_REDIS_PORT="${w#--port=}" ;;
+            *.conf) [[ -z "$conf" ]] && conf="$w" ;;
+        esac
+        prev="$w"
     done
-
-    if [[ "$after" == "$before" ]]; then
-        log_warn "    BGSAVE did not finish within ${timeout_sec}s for $cname"
-        return 1
-    fi
-
-    # Find the RDB file path inside the container and copy it
-    # CONFIG GET is also behind auth — pass the same arguments as above.
-    local rdb_path rdb_dir rdb_name
-    rdb_dir=$(docker exec "$container" "${rcli[@]}" CONFIG GET dir 2>/dev/null | tail -1 | tr -d '\r')
-    rdb_name=$(docker exec "$container" "${rcli[@]}" CONFIG GET dbfilename 2>/dev/null | tail -1 | tr -d '\r')
-    if [[ -n "$rdb_dir" && -n "$rdb_name" ]]; then
-        rdb_path="${rdb_dir}/${rdb_name}"
-    else
-        rdb_path="/data/dump.rdb"
-    fi
-
-    if docker exec "$container" cat "$rdb_path" 2>/dev/null | gzip > "$out"; then
-        local size; size=$(du -h "$out" | awk '{print $1}')
-        log_ok "    Redis dump done: $size"
-        prune_old_dumps "$dumps_dir" "redis_${cname}_*.rdb.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
-        return 0
-    else
-        log_warn "    Could not copy the RDB file from $cname"
-        rm -f "$out"
-        return 1
-    fi
+    # Quotes from `sh -c "… --requirepass '$X'"`
+    DBB_REDIS_PASS="${DBB_REDIS_PASS#[\"\']}"; DBB_REDIS_PASS="${DBB_REDIS_PASS%[\"\']}"
+    [[ "$DBB_REDIS_PASS" == *'$'* ]] && DBB_REDIS_PASS=""   # a variable, not the password: the env lookup finds it
+    [[ "$DBB_REDIS_PORT" =~ ^[0-9]+$ ]] || DBB_REDIS_PORT=""
+    export DBB_REDIS_PASS DBB_REDIS_PORT
+    _db_dump "$container" "$out" gzip "$_REDIS_DUMP_SH" "${DB_DUMP_TIMEOUT:-1800}" "$conf" || rc=$?
+    (( rc == 0 )) || { (( rc == 3 )) || log_warn "    Redis dump failed for $CNAME; the RDB still goes into the backup along with the volume"; return "$rc"; }
+    _db_done Redis "$out" "redis_${CNAME}_*.rdb.gz"
 }
 
-# --- MongoDB dump ---
+# A mongodump archive (gzipped by mongodump): mongorestore --archive=<file> --gzip.
+# Versions before 1.5.1 named it .tar.gz though it is not a tar; those are removed with the first new dump.
 dump_mongo() {
-    local container="$1" project_dir="$2" timestamp="$3"
-    local dumps_dir="${project_dir}/${DB_DUMPS_DIR:-db-dumps}"
-    mkdir -p "$dumps_dir"
-    # The directory may be left over from old versions with 755 — tighten it explicitly
-    chmod 700 "$dumps_dir" 2>/dev/null || true
-
-    local cname; cname=$(docker inspect --format '{{.Name}}' "$container" | sed 's|^/||')
-    local out_dir="${dumps_dir}/mongo_${cname}_${timestamp}"
-    local out_archive="${out_dir}.tar.gz"
-
-    # Get the root credentials
-    local mongo_user mongo_pass
-    mongo_user="$(container_env "$container" MONGO_INITDB_ROOT_USERNAME)"
-    mongo_pass="$(container_env "$container" MONGO_INITDB_ROOT_PASSWORD)"
-
-    log "    🍃 MongoDB: $cname -> $(basename "$out_archive")"
-
-    # mongodump into /tmp inside the container
-    local dump_cmd="mongodump --archive --gzip"
-    if [[ -n "$mongo_user" && -n "$mongo_pass" ]]; then
-        dump_cmd="mongodump --archive --gzip --username '$mongo_user' --password '$mongo_pass' --authenticationDatabase admin"
-    fi
-
-    if timeout "${DB_DUMP_TIMEOUT:-1800}" \
-        docker exec "$container" sh -c "$dump_cmd" 2>/dev/null > "$out_archive"; then
-
-        local size; size=$(du -h "$out_archive" | awk '{print $1}')
-        log_ok "    MongoDB dump done: $size"
-        prune_old_dumps "$dumps_dir" "mongo_${cname}_*.tar.gz" "${DB_DUMPS_RETENTION_COUNT:-3}"
-        return 0
-    else
-        log_warn "    mongodump failed for $cname"
-        rm -f "$out_archive"
-        return 1
-    fi
+    local container="$1" timestamp="$3" rc=0 DUMPS_DIR CNAME
+    _db_prepare "$container" "$2"
+    local out="${DUMPS_DIR}/mongo_${CNAME}_${timestamp}.archive.gz"
+    log "    🍃 MongoDB: $CNAME -> $(basename "$out")"
+    _db_dump "$container" "$out" raw "$_MONGO_DUMP_SH" || rc=$?
+    (( rc == 0 )) || { (( rc == 3 )) || log_warn "    mongodump failed for $CNAME"; return "$rc"; }
+    _db_done MongoDB "$out" "mongo_${CNAME}_*.archive.gz"
+    prune_old_dumps "$DUMPS_DIR" "mongo_${CNAME}_*.tar.gz" 0
 }
 
 # --- Main auto-dump function ---
@@ -1163,7 +1249,16 @@ dump_mongo() {
 # So all the work runs under umask 077 (files 600), and the db-dumps/ directory is 700.
 auto_dump_databases() {
     [[ "${AUTO_DUMP_DATABASES:-true}" != "true" ]] && return 0
+    if in_project_list "$1" "${DB_DUMP_EXCLUDE_PROJECTS:-}"; then
+        log "  ⊘ Database dumps are off for this project (DB_DUMP_EXCLUDE_PROJECTS)"
+        return 0
+    fi
     ( umask 077; _auto_dump_databases_impl "$@" )
+}
+
+# db_dump_skipped <container> — 0 if the container carries the label docker-backup-s3.skip=true
+db_dump_skipped() {
+    [[ "$(docker inspect --format '{{ index .Config.Labels "docker-backup-s3.skip" }}' "$1" 2>/dev/null)" == "true" ]]
 }
 
 _auto_dump_databases_impl() {
@@ -1185,6 +1280,10 @@ _auto_dump_databases_impl() {
 
         local db_type; db_type=$(detect_db_type "$image")
         [[ -z "$db_type" ]] && continue
+        if db_dump_skipped "$cid"; then
+            log "  ⊘ $(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||'): label docker-backup-s3.skip=true — no dump"
+            continue
+        fi
 
         # Check that the container is running (dumping needs exec)
         local state
@@ -1194,40 +1293,26 @@ _auto_dump_databases_impl() {
             continue
         fi
 
-        found_any=true
+        # rc 3 — not a database server after all (an exporter, an admin UI): not counted
+        local rc=0
         case "$db_type" in
             postgres)
                 [[ "${AUTO_DUMP_POSTGRES:-true}" == "true" ]] || continue
-                if dump_postgres "$cid" "$project_dir" "$timestamp"; then
-                    success_count=$((success_count + 1))
-                else
-                    fail_count=$((fail_count + 1))
-                fi
-                ;;
+                dump_postgres "$cid" "$project_dir" "$timestamp" || rc=$? ;;
             mysql|mariadb)
                 [[ "${AUTO_DUMP_MYSQL:-true}" == "true" ]] || continue
-                if dump_mysql "$cid" "$project_dir" "$timestamp" "$db_type"; then
-                    success_count=$((success_count + 1))
-                else
-                    fail_count=$((fail_count + 1))
-                fi
-                ;;
+                dump_mysql "$cid" "$project_dir" "$timestamp" "$db_type" || rc=$? ;;
             redis)
                 [[ "${AUTO_DUMP_REDIS:-true}" == "true" ]] || continue
-                if dump_redis "$cid" "$project_dir" "$timestamp"; then
-                    success_count=$((success_count + 1))
-                else
-                    fail_count=$((fail_count + 1))
-                fi
-                ;;
+                dump_redis "$cid" "$project_dir" "$timestamp" || rc=$? ;;
             mongo)
                 [[ "${AUTO_DUMP_MONGO:-true}" == "true" ]] || continue
-                if dump_mongo "$cid" "$project_dir" "$timestamp"; then
-                    success_count=$((success_count + 1))
-                else
-                    fail_count=$((fail_count + 1))
-                fi
-                ;;
+                dump_mongo "$cid" "$project_dir" "$timestamp" || rc=$? ;;
+        esac
+        case "$rc" in
+            0) found_any=true; success_count=$((success_count + 1)) ;;
+            3) ;;
+            *) found_any=true; fail_count=$((fail_count + 1)) ;;
         esac
     done <<< "$containers"
 

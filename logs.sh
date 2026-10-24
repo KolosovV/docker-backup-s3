@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # logs.sh
-# Convenient viewing of docker-backup logs with filters and highlighting.
+# Convenient viewing of docker-backup-s3 logs with filters and highlighting.
 #
 # Usage:
 #   sudo ./logs.sh                    # the last 50 lines of all logs
@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
             cat <<EOF
 Usage: $0 [options]
 
-Viewing and filtering docker-backup logs.
+Viewing and filtering docker-backup-s3 logs.
 
   -n, --lines N        number of last lines (default 50, 0 = all)
   -f, --follow         follow the log in real time (like tail -f)
@@ -239,7 +239,7 @@ desc="last $N_LINES lines"
 [[ -n "$PROJECT_FILTER" ]] && desc="$desc, project=$PROJECT_FILTER"
 [[ -n "$SINCE" ]] && desc="$desc, since $SINCE"
 
-echo "${C_BOLD}${C_CYAN}━━━ docker-backup logs ($desc) ━━━${C_RESET}"
+echo "${C_BOLD}${C_CYAN}━━━ docker-backup-s3 logs ($desc) ━━━${C_RESET}"
 echo
 
 for log in "${existing_logs[@]}"; do

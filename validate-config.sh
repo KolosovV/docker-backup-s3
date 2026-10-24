@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             cat <<EOF
 Usage: $0 [-c <config_file>]
-Checks the docker-backup configuration and that every component is reachable.
+Checks the docker-backup-s3 configuration and that every component is reachable.
 EOF
             exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -109,7 +109,8 @@ for role in "${S3_ROLES[@]}"; do
             err "$var is not filled in with a real value yet (placeholder)"
         else
             case "$f" in
-                ACCESS_KEY|SECRET_KEY) ok "$var = ${val:0:4}...${val: -4}" ;;
+                ACCESS_KEY) ok "$var = ${val:0:4}...${val: -4}" ;;
+                SECRET_KEY) ok "$var is set (${#val} characters, not shown)" ;;
                 *) ok "$var = $val" ;;
             esac
         fi
@@ -433,7 +434,7 @@ if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" || -n "${EMAI
             err "TELEGRAM_CHAT_ID must be a number (negative for groups). Now: '$TELEGRAM_CHAT_ID'"
         else
             # 1) Test the token via getMe
-            response=$(curl -s -m 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>/dev/null || echo "")
+            response=$(curl -s -m 10 -K <(curl_url_cfg "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe") 2>/dev/null || echo "")
             if echo "$response" | grep -q '"ok":true'; then
                 bot_name=$(echo "$response" | jq -r '.result.username' 2>/dev/null || echo "?")
                 ok "Telegram bot is valid: @$bot_name"
