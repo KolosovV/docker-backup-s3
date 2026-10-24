@@ -63,6 +63,9 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   secret is kept and who can read it.
 
 ### Fixed
+- **`docker-restore.sh --list -p a,b`.** Several projects in `--list` were taken as one name, and the listing
+  stopped with `None: unbound variable`. Now each project gets its own table; an empty answer from the storage
+  is no longer read as a backup date or a size.
 - **A Telegram message lost to one network hiccup.** With no answer from api.telegram.org (a timeout, a dropped
   connection) it is now sent again after 5 and then 15 seconds; a refusal from Telegram is not retried.
 - **`update.sh` in a git clone.** Installed with `git clone` and switched with `git checkout`, the installation is

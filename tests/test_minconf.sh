@@ -54,6 +54,33 @@ run logs        logs.sh -c "$CONF" -n 20;              clean logs
 run logs-err    logs.sh -c "$CONF" --errors;           clean logs-err
 run diagnose    diagnose-s3.sh -c "$CONF";             clean diagnose
 run drop        drop-project.sh -c "$CONF" -y nothing-here; clean drop
+section "docker-restore.sh --list -p with several projects"
+# A storage with two projects. aws --output text answers "None" to a listing with nothing in it — as for a
+# project name that does not exist; the script must not take it for a date or a size.
+mkdir -p "$W/bin2"
+cat > "$W/bin2/aws" <<'STUB'
+#!/bin/sh
+case "$*" in
+    *--version*) echo "aws-cli/2.30.0 Python/3.13" ;;
+    *"--prefix backups/app/2026-10-23_21-15-10/"*) echo 2097152 ;;
+    *"--prefix backups/web/2026-10-22_21-15-10/"*) echo 1048576 ;;
+    *"--prefix backups/app/"*) printf 'backups/app/2026-10-23_21-15-10/\n' ;;
+    *"--prefix backups/web/"*) printf 'backups/web/2026-10-22_21-15-10/\n' ;;
+    *"--prefix backups/ "*) printf 'backups/app/\tbackups/web/\n' ;;
+    *list-objects-v2*) echo None ;;
+esac
+exit 0
+STUB
+chmod +x "$W/bin2/aws"
+PATH="$W/bin2:$PATH" run list-two docker-restore.sh -c "$CONF" --list -p app,web; clean list-two
+check "--list -p app,web: a table for app"  grep -q "Backups of project 'app'" "$W/list-two.out"
+check "--list -p app,web: a table for web"  grep -q "Backups of project 'web'" "$W/list-two.out"
+check "--list -p app,web: app's date and size" grep -qE '2026-10-23_21-15-10 .* 2 MB' "$W/list-two.out"
+check "--list -p app,web: web's date and size" grep -qE '2026-10-22_21-15-10 .* 1 MB' "$W/list-two.out"
+PATH="$W/bin2:$PATH" run list-none docker-restore.sh -c "$CONF" --list -p nothing-here; clean list-none
+check "--list -p <unknown>: no backups, not a date called None" grep -q '(no backups)' "$W/list-none.out"
+check "--list -p <unknown>: exit 0" test "$(cat "$W/list-none.rc")" = 0
+
 if [[ "$EUID" -eq 0 ]]; then
     printf '12\n' > "$W/answers"
     UI_PLAIN=true UI_TTY="$W/answers" timeout 60 bash "$REPO/menu.sh" -c "$CONF" < /dev/null > "$W/menu.out" 2>&1

@@ -252,7 +252,7 @@ list_projects() {
         --output text 2>/dev/null \
         | tr '\t' '\n' \
         | sed "s|^${BACKUP_PREFIX}/||; s|/$||" \
-        | grep -v '^$' \
+        | grep -vx -e '' -e 'None' \
         | sort
 }
 
@@ -266,17 +266,20 @@ list_timestamps() {
         --output text 2>/dev/null \
         | tr '\t' '\n' \
         | sed "s|^${BACKUP_PREFIX}/${project}/||; s|/$||" \
-        | grep -v '^$' \
+        | grep -vx -e '' -e 'None' \
         | sort -r
 }
 
 # Get the archive size of a specific backup
 get_archive_size() {
-    local project="$1" timestamp="$2"
-    aws_q s3api list-objects-v2 \
+    local project="$1" timestamp="$2" size
+    size="$(aws_q s3api list-objects-v2 \
         --bucket "$SRC_BUCKET" \
         --prefix "${BACKUP_PREFIX}/${project}/${timestamp}/" \
-        --query 'Contents[0].Size' --output text 2>/dev/null || echo 0
+        --query 'Contents[0].Size' --output text 2>/dev/null)" || size=0
+    # An empty result comes back as the text "None": only a number goes on, or the caller's arithmetic fails
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    echo "$size"
 }
 
 # ==============================================================================
@@ -292,31 +295,36 @@ if [[ "$LIST_MODE" == "true" ]]; then
     fi
 
     if [[ -n "$PROJECT_ARG" ]]; then
-        # A specific project — list of backups with sizes
-        echo
-        echo "${C_BOLD}📅 Backups of project '${PROJECT_ARG}':${C_RESET}"
-        echo "──────────────────────────────────────────────────────────────"
-        printf "  %-25s  %-15s  %s\n" "Date" "Age" "Size"
-        echo "──────────────────────────────────────────────────────────────"
+        # Given projects (-p a,b) — a list of backups with sizes for each
+        IFS=',' read -ra LIST_ARGS <<< "$PROJECT_ARG"
+        for LIST_PROJECT in "${LIST_ARGS[@]}"; do
+            LIST_PROJECT="${LIST_PROJECT// /}"
+            [[ -n "$LIST_PROJECT" ]] || continue
+            echo
+            echo "${C_BOLD}📅 Backups of project '${LIST_PROJECT}':${C_RESET}"
+            echo "──────────────────────────────────────────────────────────────"
+            printf "  %-25s  %-15s  %s\n" "Date" "Age" "Size"
+            echo "──────────────────────────────────────────────────────────────"
 
-        mapfile -t TIMESTAMPS_LIST < <(list_timestamps "$PROJECT_ARG")
-        if [[ ${#TIMESTAMPS_LIST[@]} -eq 0 ]]; then
-            echo "  ${C_DIM}(no backups)${C_RESET}"
-        else
-            for ts in "${TIMESTAMPS_LIST[@]}"; do
-                local_dt="$(echo "$ts" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
-                if epoch="$(date -d "$local_dt" +%s 2>/dev/null)"; then
-                    diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                    age="$(days_ago "$diff_days")"
-                else
-                    age="—"
-                fi
-                size=$(get_archive_size "$PROJECT_ARG" "$ts")
-                size_mb=$((size / 1048576))
-                printf "  %-25s  %-15s  %d MB\n" "$ts" "$age" "$size_mb"
-            done
-        fi
-        echo "──────────────────────────────────────────────────────────────"
+            mapfile -t TIMESTAMPS_LIST < <(list_timestamps "$LIST_PROJECT")
+            if [[ ${#TIMESTAMPS_LIST[@]} -eq 0 ]]; then
+                echo "  ${C_DIM}(no backups)${C_RESET}"
+            else
+                for ts in "${TIMESTAMPS_LIST[@]}"; do
+                    local_dt="$(echo "$ts" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
+                    if epoch="$(date -d "$local_dt" +%s 2>/dev/null)"; then
+                        diff_days=$(( ($(date +%s) - epoch) / 86400 ))
+                        age="$(days_ago "$diff_days")"
+                    else
+                        age="—"
+                    fi
+                    size=$(get_archive_size "$LIST_PROJECT" "$ts")
+                    size_mb=$((size / 1048576))
+                    printf "  %-25s  %-15s  %d MB\n" "$ts" "$age" "$size_mb"
+                done
+            fi
+            echo "──────────────────────────────────────────────────────────────"
+        done
     else
         # All projects — a compact overview
         echo
