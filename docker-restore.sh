@@ -307,17 +307,16 @@ if [[ "$LIST_MODE" == "true" ]]; then
             echo "──────────────────────────────────────────────────────────────"
 
             mapfile -t TIMESTAMPS_LIST < <(list_timestamps "$LIST_PROJECT")
-            if [[ ${#TIMESTAMPS_LIST[@]} -eq 0 ]]; then
+            if ! printf '%s\n' "${PROJECTS_LIST[@]}" | grep -qxF -- "$LIST_PROJECT"; then
+                # A compose project's name may differ from its folder (mailcow sets COMPOSE_PROJECT_NAME=mailcowdockerized
+                # in /opt/mailcow-dockerized/.env): say which names the storage has
+                echo "  ${C_YELLOW}No project '${LIST_PROJECT}' ${SRC_S3_PREP}.${C_RESET}"
+                echo "  ${C_DIM}Projects there: $(join_list "${PROJECTS_LIST[@]}")${C_RESET}"
+            elif [[ ${#TIMESTAMPS_LIST[@]} -eq 0 ]]; then
                 echo "  ${C_DIM}(no backups)${C_RESET}"
             else
                 for ts in "${TIMESTAMPS_LIST[@]}"; do
-                    local_dt="$(echo "$ts" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
-                    if epoch="$(date -d "$local_dt" +%s 2>/dev/null)"; then
-                        diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                        age="$(days_ago "$diff_days")"
-                    else
-                        age="—"
-                    fi
+                    age="$(ts_age "$ts")" || age="—"
                     size=$(get_archive_size "$LIST_PROJECT" "$ts")
                     size_mb=$((size / 1048576))
                     printf "  %-25s  %-15s  %d MB\n" "$ts" "$age" "$size_mb"
@@ -336,14 +335,7 @@ if [[ "$LIST_MODE" == "true" ]]; then
             mapfile -t ts_list < <(list_timestamps "$p")
             count="${#ts_list[@]}"
             if (( count > 0 )); then
-                latest="${ts_list[0]}"
-                latest_pretty="$(echo "$latest" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
-                if epoch="$(date -d "$latest_pretty" +%s 2>/dev/null)"; then
-                    diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                    last_info="$(days_ago "$diff_days")"
-                else
-                    last_info="$latest"
-                fi
+                last_info="$(ts_age "${ts_list[0]}")" || last_info="${ts_list[0]}"
             else
                 last_info="—"
             fi
@@ -481,11 +473,8 @@ if [[ -z "$PROJECT_ARG" ]]; then
         mapfile -t p_timestamps < <(list_timestamps "$p")
         p_count="${#p_timestamps[@]}"
         if (( p_count > 0 )); then
-            latest="${p_timestamps[0]}"
-            latest_pretty="$(echo "$latest" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
-            if epoch="$(date -d "$latest_pretty" +%s 2>/dev/null)"; then
-                diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                line="$p   [$p_count $(plural "$p_count" backup backups), latest $(days_ago "$diff_days")]"
+            if age="$(ts_age "${p_timestamps[0]}")"; then
+                line="$p   [$p_count $(plural "$p_count" backup backups), latest $age]"
             else
                 line="$p   [$p_count backups]"
             fi
@@ -565,10 +554,8 @@ for proj in "${SELECTED_PROJECTS[@]}"; do
     else
         declare -a PRETTY_LIST=()
         for ts in "${TIMESTAMPS_LIST[@]}"; do
-            local_dt="$(echo "$ts" | sed 's/_/ /; s/-/:/3; s/-/:/3')"
-            if epoch="$(date -d "$local_dt" +%s 2>/dev/null)"; then
-                diff_days=$(( ($(date +%s) - epoch) / 86400 ))
-                PRETTY_LIST+=("$ts   ($(days_ago "$diff_days"))")
+            if age="$(ts_age "$ts")"; then
+                PRETTY_LIST+=("$ts   ($age)")
             else
                 PRETTY_LIST+=("$ts")
             fi

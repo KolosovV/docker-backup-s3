@@ -65,7 +65,10 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 ### Fixed
 - **`docker-restore.sh --list -p a,b`.** Several projects in `--list` were taken as one name, and the listing
   stopped with `None: unbound variable`. Now each project gets its own table; an empty answer from the storage
-  is no longer read as a backup date or a size.
+  is no longer read as a backup date or a size. A name the storage doesn't have is said so, with the names it
+  has (a compose project may be named unlike its folder: mailcow is `mailcowdockerized`).
+- **Last night's backup was "today".** The age counted whole 24-hour periods; it now counts calendar days
+  (`docker-restore.sh`, `verify-restore.sh`).
 - **A Telegram message lost to one network hiccup.** With no answer from api.telegram.org (a timeout, a dropped
   connection) it is now sent again after 5 and then 15 seconds; a refusal from Telegram is not retried.
 - **`update.sh` in a git clone.** Installed with `git clone` and switched with `git checkout`, the installation is

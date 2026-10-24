@@ -267,6 +267,15 @@ days_ago() {
     case "$1" in 0) printf 'today' ;; 1) printf '1 day ago' ;; *) printf '%s days ago' "$1" ;; esac
 }
 
+# ts_age <YYYY-mm-dd_HH-MM-SS> — a backup's age by the calendar (days_ago): last night's is "1 day ago" even
+# 20 hours later, not "today". 1 if the name is not a date. +12 h: a day around a DST change is 23 or 25 hours.
+ts_age() {
+    local day now
+    day="$(date -d "${1%%_*}" +%s 2>/dev/null)" || return 1
+    now="$(date -d "$(date +%F)" +%s)"
+    days_ago $(( (now - day + 43200) / 86400 ))
+}
+
 # join_list <item…> — "a, b, c" for messages. Not "${arr[*]}": the scripts run with IFS=$'\n\t', and that would put
 # one item per line.
 join_list() { local IFS=$'\x1f'; local s="$*"; printf '%s' "${s//$'\x1f'/, }"; }

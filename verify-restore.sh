@@ -236,12 +236,8 @@ verify_project() {
     log "  📅 Timestamp: $timestamp"
 
     # Age
-    local local_dt epoch age_days
-    local_dt=$(echo "$timestamp" | sed 's/_/ /; s/-/:/3; s/-/:/3')
-    if epoch=$(date -d "$local_dt" +%s 2>/dev/null); then
-        age_days=$(( ($(date +%s) - epoch) / 86400 ))
-        log "  ⏱  Age: $age_days d"
-    fi
+    local age
+    if age="$(ts_age "$timestamp")"; then log "  ⏱  Age: $age"; fi
 
     # 2. Archive
     archive_name=$(find_archive_name "$project" "$timestamp")

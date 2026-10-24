@@ -175,6 +175,13 @@ else
     ok "SKIP: no setsid"
 fi
 
+section "a backup's age, by the calendar"
+check "this morning: today" test "$(ts_age "$(date +%F)_00-00-01")" == today
+check "late last night, nearly a day ago: 1 day ago" test "$(ts_age "$(date -d yesterday +%F)_23-59-59")" == "1 day ago"
+check "early yesterday: 1 day ago" test "$(ts_age "$(date -d yesterday +%F)_00-00-01")" == "1 day ago"
+check "a week ago: 7 days ago" test "$(ts_age "$(date -d '7 days ago' +%F)_12-00-00")" == "7 days ago"
+check "not a date: code 1" bash -c 'source "$1/lib.sh"; ! ts_age None' _ "$REPO"
+
 section "logs.sh filters (plain awk)"
 y="$(date -d yesterday +%Y-%m-%d)"; t="$(date +%Y-%m-%d)"
 cat > "$W/b.log" <<EOF

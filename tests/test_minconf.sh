@@ -78,7 +78,9 @@ check "--list -p app,web: a table for web"  grep -q "Backups of project 'web'" "
 check "--list -p app,web: app's date and size" grep -qE '2026-10-23_21-15-10 .* 2 MB' "$W/list-two.out"
 check "--list -p app,web: web's date and size" grep -qE '2026-10-22_21-15-10 .* 1 MB' "$W/list-two.out"
 PATH="$W/bin2:$PATH" run list-none docker-restore.sh -c "$CONF" --list -p nothing-here; clean list-none
-check "--list -p <unknown>: no backups, not a date called None" grep -q '(no backups)' "$W/list-none.out"
+check "--list -p <unknown>: says there is no such project" grep -q "No project 'nothing-here'" "$W/list-none.out"
+check "--list -p <unknown>: and names the ones there are" grep -q 'Projects there: app, web' "$W/list-none.out"
+check "--list -p <unknown>: not a date called None" bash -c '! grep -q None "$1"' _ "$W/list-none.out"
 check "--list -p <unknown>: exit 0" test "$(cat "$W/list-none.rc")" = 0
 
 if [[ "$EUID" -eq 0 ]]; then
