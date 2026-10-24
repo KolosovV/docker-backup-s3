@@ -52,6 +52,7 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 ### Backup
 - 📦 **Compose project auto-discovery** — via docker labels and directory scanning
 - 🗄️ **Automatic database dump** — PostgreSQL, MySQL/MariaDB, Redis, MongoDB; custom hooks for non-standard databases
+- 🌐 **Remote databases** — a managed service or another server, streamed straight into the storages: no local copy, so its size does not matter ([details](#remote-databases))
 - 💾 **Full coverage** — named volumes, bind mounts, project folders with compose files
 - ☁️ **Multiple storages** — primary + up to two copies (secondary, tertiary); one archive goes to all of them, rotation cleans all of them
 - 🔄 **Storage synchronization** — `sync-s3.sh` aligns the copies with the primary if they drift apart
@@ -90,6 +91,7 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 - [Configuration](#configuration)
 - [Multiple storages (primary / secondary / tertiary)](#multiple-storages-primary--secondary--tertiary)
 - [Automatic database dump](#automatic-database-dump)
+- [Remote databases](#remote-databases)
 - [First run](#first-run)
 - [Backing up a single project](#backing-up-a-single-project)
 - [Restore verification](#restore-verification)
@@ -142,6 +144,7 @@ The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arg
 | Status overview | `status.sh` |
 | Back up now | all projects or the ones you tick in a list; a dry run of either |
 | Projects | which projects not to back up (`EXCLUDE_PROJECTS`), and which to back up without database dumps (`DB_DUMP_EXCLUDE_PROJECTS`): ticked in a list of the projects on this host |
+| Remote databases | add one (type, host, user, password, TLS — the login is checked at once), change it, test the login, back it up now, take it off |
 | Restore | pick the storage, the project and the backup from lists, then: restore in place (with or without starting), into another folder, one named volume, unpack only, or show the contents |
 | Synchronize storages | the plan, all copies, one copy, with `--prune`, or restoring the primary from a copy |
 | Checks and diagnostics | `validate-config.sh`, quick/full restore verification (of any storage, all projects or one), `diagnose-s3.sh`, `diagnose-cron.sh` |
@@ -509,6 +512,7 @@ Everything else has sensible defaults.
 | `DB_DUMPS_DIR` | `db-dumps` | subfolder for the dumps |
 | `DB_DUMPS_RETENTION_COUNT` | `3` | how many dumps to keep locally |
 | `DB_DUMP_TIMEOUT` | `1800` | timeout for each dump (sec) |
+| `REMOTE_DBS`, `REMOTE_DB_<NAME>_*` | empty | databases not on this host (see [Remote databases](#remote-databases)) |
 | `ENCRYPT_BACKUPS` | `false` | GPG encryption |
 | `GPG_PASSPHRASE_FILE` | `/root/.docker-backup-passphrase` | passphrase file |
 | `NOTIFY_ON` | `error` | none / error (errors and warnings) / always |
@@ -825,6 +829,100 @@ The hook runs **after** the auto-dump of the standard databases. Available varia
 - `COMPOSE_PROJECT` — project name
 - `PROJECT_DIR` — path to the folder
 - `BACKUP_TIMESTAMP` — timestamp
+
+---
+
+## Remote databases
+
+A database that is not a container on this host — a managed service, a server elsewhere — can be backed
+up too. It is dumped by a throwaway client container, and the dump goes straight into the primary storage
+through a pipe:
+
+```
+docker run --rm postgres:18-alpine pg_dump …  |  gzip  |  gpg (if ENCRYPT_BACKUPS)  |  aws s3 cp - s3://…
+```
+
+The dump is never written to this disk, so its size does not matter here: a 300 GB database needs no
+300 GB of free space. The checksum and the size are counted on the way. The copies (secondary, tertiary)
+get the object from the primary the same way, as a stream. If the dump fails half-way, the half-uploaded
+object is removed, not left looking like a backup; a transient storage error starts the dump again
+(`S3_UPLOAD_TRIES`).
+
+**Redis is the exception**: `redis-cli --rdb` cannot write a clean stream to stdout, so the client keeps the
+RDB inside its container (in Docker's own storage on this host) until it is sent, then the container is
+removed.
+
+### Setting one up
+
+In the menu: `sudo docker-backup-s3` → **Remote databases** → add. It asks for the type, the host, the
+port, the user, the password, the database and TLS, saves them to `backup.conf` and checks the login at
+once. The same in `backup.conf` by hand:
+
+```bash
+REMOTE_DBS="shop cache"                     # the names: lower-case letters, digits, - and _
+REMOTE_DB_SHOP_TYPE="postgres"              # postgres, mysql, mariadb, mongo, redis
+REMOTE_DB_SHOP_HOST="db.example.com"
+REMOTE_DB_SHOP_USER="backup"
+REMOTE_DB_SHOP_PASSWORD="…"                 # or REMOTE_DB_SHOP_PASSWORD_FILE=/root/shop.pass
+REMOTE_DB_SHOP_DATABASE="shop"              # empty — all databases
+REMOTE_DB_SHOP_SSL="true"
+REMOTE_DB_CACHE_TYPE="redis"
+REMOTE_DB_CACHE_HOST="10.0.0.5"
+REMOTE_DB_CACHE_PASSWORD_FILE="/root/cache.pass"
+```
+
+| Field (`REMOTE_DB_<NAME>_…`) | Default | What it does |
+|---|---|---|
+| `TYPE` | — | **required**: `postgres`, `mysql`, `mariadb`, `mongo` or `redis` |
+| `HOST` | — | **required**: a name or an address; for mongo a `mongodb://` or `mongodb+srv://` URI works too (without the password in it) |
+| `PORT` | the type's own | 5432, 3306, 27017, 6379 |
+| `USER` | `postgres` / `root`; mongo and redis: none | the login |
+| `PASSWORD` / `PASSWORD_FILE` | empty | the password, or a file holding it (the first line); not both |
+| `DATABASE` | empty — all | one database (`pg_dump`, `--databases`, `--db`); empty — `pg_dumpall`, `--all-databases`, everything in mongo |
+| `SSL` | `false` | `true` — an encrypted connection; most managed services require it |
+| `IMAGE` | `postgres:18-alpine`, `mysql:8.4`, `mariadb:11.4`, `mongo:8`, `redis:7-alpine` | the client image; it must not be older than the server (`pg_dump` refuses that) |
+| `NETWORK` | `host` | the client container's Docker network |
+| `ARGS` | empty | more arguments for the dump tool, e.g. `--no-owner` |
+| `TIMEOUT` | `14400` | seconds for the whole dump |
+| `MAX_SIZE` | empty | the compressed dump's rough size, e.g. `200G`: needed past 50 GB, since an upload from a stream is cut into at most 10000 parts and their size is picked from this |
+
+`<NAME>` is the name in capitals with `-` as `_` (`shop-db` → `SHOP_DB`). The user needs read access to
+everything it dumps: `pg_dumpall` wants a superuser (a managed service may not give one — set `DATABASE`
+then); `mysqldump`/`mariadb-dump` need `SELECT`, `SHOW VIEW` and `TRIGGER`; Redis needs the right to start
+a replication sync, which some managed services do not allow.
+
+`validate-config.sh` (and the menu's **Test** item) checks every field and logs in with the same client:
+`logged in — PostgreSQL 17.6 …` or `cannot log in — password authentication failed …`.
+
+### In the storages and in the tools
+
+Each one is a project named `_db_<name>`:
+
+```
+backups/_db_shop/2026-05-12_03-00-00/_db_shop__2026-05-12_03-00-00.sql.gz          (.gpg if encrypted)
+backups/_db_shop/2026-05-12_03-00-00/_db_shop__2026-05-12_03-00-00.sql.gz.sha256
+backups/_db_cache/2026-05-12_03-00-00/_db_cache__2026-05-12_03-00-00.rdb.gz
+```
+
+(MongoDB: `.archive.gz`, from `mongodump --archive --gzip`.) Rotation, sync and `status.sh` treat it like
+any other project; `drop-project.sh` refuses to remove it while the name is still in `REMOTE_DBS`.
+
+- **Back up one now**: `sudo docker-backup-s3 backup -p db:shop` (`-p db:shop,myapp` mixes them). A full run
+  dumps them all after the compose projects; a failed one is reported like a failed project.
+- **Check one**: `verify-restore.sh -p _db_shop` streams the dump back, checks the checksum, decrypts and
+  unpacks it without saving it, and says what it is (`PostgreSQL dump, intact`).
+- **Restore**: `docker-restore.sh` saves the dump (`600`) and loads nothing — the database is not on this host,
+  and overwriting it should be your decision. It prints the command to load it, e.g.:
+
+  ```bash
+  sudo docker-restore.sh -p _db_shop --extract-to /root/restore
+  gunzip -c /root/restore/_db_shop__….sql.gz | psql -h db.example.com -U backup -d shop   # asks for the password
+  ```
+
+**Very large managed databases.** A logical dump of a multi-terabyte database takes hours and loads the
+server while it runs; restoring it takes longer still. For such a database your provider's own snapshots
+or point-in-time recovery are the main backup: they are taken in seconds and restored as a whole. A dump
+here is then a second, independent copy — in your own storages, readable without the provider.
 
 ---
 
@@ -1556,6 +1654,7 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 | S3 keys, the Telegram token, the webhook URL, the SMTP password | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
 | The GPG passphrase | `GPG_PASSPHRASE_FILE` (`/root/.docker-backup-passphrase`) | root only (`600`); gpg reads it from the file, never from an argument |
 | Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
+| Remote database passwords | `backup.conf`, or the file `REMOTE_DB_<NAME>_PASSWORD_FILE` points to | root only (`600`) |
 | Database dumps | `<project>/db-dumps/` | root only: the folder is `700`, the dumps are `600` |
 | An archive being built, downloaded or checked | `WORK_DIR` (`/var/tmp/docker-backup`) | root only: each run works in its own `700` folder, removed afterwards |
 
@@ -1571,6 +1670,9 @@ so no secret is ever passed as an argument:
   the dump tool in its environment (`PGPASSWORD`, `MYSQL_PWD`, `REDISCLI_AUTH`) or on its stdin (`mongodump`).
   A Redis password given only as `redis-server --requirepass …` is taken from the container's settings and
   passed to `docker exec` through the environment (`-e NAME` without a value), not as an argument.
+- A remote database's password goes to its client container through the environment: exported in a subshell
+  and passed as `-e PGPASSWORD` (`MYSQL_PWD`, `REDISCLI_AUTH`) without a value; `mongodump` reads it on its stdin.
+  The container runs with `--log-driver none`, so the dump passing through it is not kept in Docker's log either.
 - Hooks (`pre-backup-hook.sh`) run without the S3 keys in their environment.
 
 **Never in the log or in a notification.** Messages say which account a dump used (`user app`) and why
@@ -1774,8 +1876,10 @@ the executable bit, and that `VERSION`, the changelog and the badge agree. `test
 restore name matching, upload retries (a fake aws that fails with OperationAborted), DB dump recognition and settings
 given twice. `test_dbdump` runs the database dump scripts against a `docker` stub and fake database tools (in the
 system's own `sh`: dash, busybox): which account and password each one picks, the skips, the reasons in the log, and
-that no password reaches the log or a command line. `test_notify` covers every notification channel and format, `test_menu` drives the menu's notification
-section end to end from a file of answers, and `test_install` checks that install, update, uninstall and a reinstall
+that no password reaches the log or a command line. `test_remotedb` covers remote databases against `docker` and
+`aws` stubs: the settings checks, the client's command line (never a password in it), the stream, encryption, the
+part size, a failed dump that must leave nothing, the retries and the copies. `test_notify` covers every notification channel and format, `test_menu` drives the menu's notification,
+project and remote database sections end to end from a file of answers, and `test_install` checks that install, update, uninstall and a reinstall
 keep every value of a config, and that the installer's wizard asks about encryption. `test_menu` and `test_install`
 need root (they use `sudo` or skip themselves), and `test_install` runs only in a container or in CI.
 
@@ -1790,7 +1894,9 @@ It checks the config, makes an encrypted backup to the primary, shows its conten
 syncs to the secondary. Then it wipes out the project (containers, volumes, folders), restores it from the
 secondary and compares both databases, the volume, the bind mounts and the project folder with what was there.
 It also runs a backup in `stop` mode, one with encryption switched off by a second line (a warning must come), a
-Ctrl+C during the S3 access check (it must be logged and reported), and a backup with S3 down, which must fail.
+Ctrl+C during the S3 access check (it must be logged and reported), and a backup with S3 down, which must fail. Remote databases: Postgres, MariaDB, MongoDB and Redis (with a password),
+each in its own container, are dumped straight into both storages, checked, saved back with `docker-restore.sh`,
+loaded into the emptied servers and compared; one with a wrong password must fail and be reported.
 Every step's notification is checked. It needs Docker with Compose v2, AWS CLI v2, jq, python3 and gpg, and it
 removes everything it created.
 

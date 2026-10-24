@@ -459,6 +459,8 @@ fi
 #     Wipes ALL storages: the primary and every configured copy.
 # ==============================================================================
 if [[ "$PURGE_S3" == "true" && -f "$TARGET_DIR/backup.conf" ]]; then
+    # log_step is the one defined above; lib.sh, sourced below, has its own
+    # shellcheck disable=SC2218
     log_step "${C_RED}${C_BOLD}Deleting backups in S3${C_RESET}"
 
     if [[ "$DRY_RUN" == "true" ]]; then

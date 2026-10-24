@@ -469,9 +469,12 @@ abort_key_uploads() {
 # A transient failure (s3_transient) is retried: S3_UPLOAD_TRIES attempts in all (3), the pauses growing
 # from S3_UPLOAD_RETRY_DELAY seconds (15 → 15, 45). Before every retry, and after the last failure, the
 # unfinished multipart upload of this file is aborted.
-# usage: aws_upload <local> <s3-url>
+# usage: aws_upload <local> <s3-url> [size]
+# <local> can be an s3:// URL in the PRIMARY storage (a remote database's dump, which never was on this disk):
+# then it is read from there and piped into <s3-url>, nothing is stored here. [size] — its exact size, which
+# aws needs to pick the part size of a stream.
 aws_upload() {
-    local src="$1" dst="$2"
+    local src="$1" dst="$2" size="${3:-}"
     local size_mb=0 tries="${S3_UPLOAD_TRIES:-3}" delay="${S3_UPLOAD_RETRY_DELAY:-15}" try=1 out rc errf
     if [[ -f "$src" ]]; then
         size_mb=$(( $(stat -c %s "$src" 2>/dev/null || echo 0) / 1048576 ))
@@ -484,6 +487,16 @@ aws_upload() {
             errf="$(mktemp)"
             aws_q s3 cp "$src" "$dst" 2> >(tee "$errf" >&2) || rc=$?
             out="$(cat "$errf" 2>/dev/null)"; rm -f "$errf"
+        elif [[ "$src" == s3://* ]]; then
+            # The read side in a subshell with the primary's keys (the read-only ones, if set); this shell keeps the copy's
+            local -a exp=()
+            [[ -n "$size" ]] && exp=(--expected-size "$size")
+            out="$( { ( _aws_setup primary read && aws "${S3_OPTS[@]}" s3 cp "$src" - ) \
+                | aws "${S3_OPTS[@]}" s3 cp - "$dst" --only-show-errors ${exp[@]+"${exp[@]}"}; } 2>&1)" || rc=$?
+            if [[ -n "$out" ]]; then
+                printf '%s\n' "$out" \
+                    | grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' >&2 || true
+            fi
         else
             # Capture the output and the REAL aws exit code (not the grep filter's):
             # otherwise, under pipefail, a successful upload with no output reads as an error.
@@ -547,7 +560,7 @@ upload_to_copy() {
     log "  ☁²  Uploading $(s3_label "$role" to): $s3_url"
 
     local rc=0
-    if aws_upload "$src" "$s3_url"; then
+    if aws_upload "$src" "$s3_url" "$expected_size"; then
         local s3_size
         s3_size="$(aws_q s3api head-object --bucket "$S3_CUR_BUCKET" --key "$s3_key" \
             --query ContentLength --output text 2>/dev/null || echo 0)"
@@ -1106,8 +1119,8 @@ fi'
 # goes to <out> (through gzip, or as is). Returns 0, 3 (not a database server: skipped) or 1, with the reason logged.
 _db_dump() {
     local container="$1" out="$2" mode="$3" script="$4"; shift 4
-    local err rc=0 line
-    local -a st env=() notes=() errs=()
+    local err rc=0
+    local -a st env=()
     err="$(mktemp "${out%/*}/.dump-err.XXXXXX")" || { log_warn "      Cannot create a temporary file in ${out%/*}"; return 1; }
     [[ -n "${DBB_REDIS_PASS:-}" ]] && env+=(-e DBB_REDIS_PASS)
     [[ -n "${DBB_REDIS_PORT:-}" ]] && env+=(-e DBB_REDIS_PORT)
@@ -1120,29 +1133,38 @@ _db_dump() {
         timeout "${DB_DUMP_TIMEOUT:-1800}" docker exec ${env[@]+"${env[@]}"} "$container" \
             sh -c "${_DB_SH_LIB}${script}" sh "$@" 2>"$err" > "$out" || rc=$?
     fi
+    # docker exec could not start sh at all (126/127; our scripts exit 1, 3 or 4): an exporter built FROM scratch.
+    # Docker prints that error to stdout, so it is not in $err.
+    if (( rc == 126 || rc == 127 )); then
+        rc=3; echo "no database server in the container (no shell in it)" > "$err"
+    fi
+    _db_report "$err" "$rc" "${DB_DUMP_TIMEOUT:-1800} s (DB_DUMP_TIMEOUT)" || rc=$?
+    rm -f "$err"
+    (( rc == 0 )) || rm -f "$out"
+    return "$rc"
+}
+
+# _db_report <stderr file> <rc> <timeout text> — logs what a dump said on stderr: "@note …" lines always;
+# when rc is not 0, the last 3 other lines (the reason). Returns 0, 3 (skipped: not a database server) or 1.
+_db_report() {
+    local errf="$1" rc="$2" line
+    local -a notes=() errs=()
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%$'\r'}"
         [[ -z "${line// /}" ]] && continue
         case "$line" in
             "@note "*) notes+=("${line#@note }") ;;
-            *"Enter password"*) ;;
+            *"Enter password"*|*"reading password from standard input"*) ;;
             *) errs+=("${line:0:200}") ;;
         esac
-    done < "$err"
-    rm -f "$err"
+    done < "$errf"
     for line in ${notes[@]+"${notes[@]}"}; do log "      ${C_DIM}${line}${C_RESET}"; done
     (( rc == 0 )) && return 0
-    rm -f "$out"
-    # docker exec could not start sh at all (126/127; our scripts exit 1, 3 or 4): an exporter built FROM scratch.
-    # Docker prints that error to stdout, so it is not in $err.
-    if (( rc == 126 || rc == 127 )); then
-        rc=3; errs=("no database server in the container (no shell in it)")
-    fi
     if (( rc == 3 )); then
         log "      ⊘ Skipped: ${errs[0]:-not a database server}"
         return 3
     fi
-    (( rc == 124 )) && errs+=("timed out after ${DB_DUMP_TIMEOUT:-1800} s (DB_DUMP_TIMEOUT)")
+    (( rc == 124 )) && errs+=("timed out after $3")
     (( ${#errs[@]} )) || errs=("exit code $rc")
     local n=${#errs[@]} i
     for (( i = (n > 3 ? n - 3 : 0); i < n; i++ )); do log_warn "      ${errs[i]}"; done
@@ -1322,6 +1344,355 @@ _auto_dump_databases_impl() {
         [[ $fail_count -gt 0 && $success_count -eq 0 ]] && return 1
     fi
     return 0
+}
+
+# ==============================================================================
+# REMOTE DATABASES
+# Databases that are not containers on this host: a managed service, a database on another server.
+# Listed in backup.conf: REMOTE_DBS="shop cache", then REMOTE_DB_<NAME>_<FIELD> for each one
+# (the name in capitals, "-" as "_"), the fields in REMOTE_DB_FIELDS (see backup.conf.example).
+#
+# The dump is made by a throwaway client container and goes into the primary storage through a pipe,
+# dump | gzip | gpg | aws s3 cp -, so nothing lands on this host's disk, however big it is. Redis is the
+# exception: its client needs a file, kept inside the container and gone with it. The copies read the
+# dump back from the primary the same way (aws_upload with an s3:// source). In the storages it is a
+# project named _db_<name>, so rotation, sync-s3, status, verify-restore and docker-restore handle it
+# like the others.
+#
+# Passwords go to docker as -e NAME, with the value taken from this shell's environment and not from the
+# command line, and to mongodump on stdin. The container runs with --log-driver none: otherwise Docker
+# keeps everything the container prints, which is the whole dump, in its own log file on this disk.
+# ==============================================================================
+# shellcheck disable=SC2034 # the menu uses it
+REMOTE_DB_FIELDS=(TYPE HOST PORT USER PASSWORD PASSWORD_FILE DATABASE SSL IMAGE NETWORK ARGS TIMEOUT MAX_SIZE)
+
+# remote_db_names — the names in REMOTE_DBS, one per line (spaces or commas between them)
+remote_db_names() { split_words "${REMOTE_DBS//,/ }"; }
+
+# remote_db_key <name> — its part of the variable names: shop-db → SHOP_DB
+remote_db_key() { local k="${1^^}"; printf '%s' "${k//-/_}"; }
+
+# remote_db_var <name> <FIELD> — the value of REMOTE_DB_<NAME>_<FIELD>
+remote_db_var() {
+    local n; n="REMOTE_DB_$(remote_db_key "$1")_$2"
+    [[ "$n" =~ ^[A-Z][A-Z0-9_]*$ ]] || return 0
+    printf '%s' "${!n:-}"
+}
+
+remote_db_default_port() {
+    case "$1" in postgres) echo 5432 ;; mysql|mariadb) echo 3306 ;; mongo) echo 27017 ;; redis) echo 6379 ;; esac
+}
+
+# The client images. A newer client dumps an older server, not the other way round: pg_dump refuses a
+# server newer than itself. REMOTE_DB_<NAME>_IMAGE picks another one.
+remote_db_default_image() {
+    case "$1" in
+        postgres) echo postgres:18-alpine ;;
+        mysql)    echo mysql:8.4 ;;
+        mariadb)  echo mariadb:11.4 ;;
+        mongo)    echo mongo:8 ;;
+        redis)    echo redis:7-alpine ;;
+    esac
+}
+
+# remote_db_check <name> — what is wrong with its settings, one problem per line; 1 if anything is
+remote_db_check() {
+    local name="$1" k type host v
+    local -a bad=()
+    if [[ ! "$name" =~ ^[a-z0-9][a-z0-9_-]{0,47}$ ]]; then
+        echo "the name \"$name\": lower-case letters, digits, - and _ only (up to 48)"
+        return 1
+    fi
+    k="REMOTE_DB_$(remote_db_key "$name")"
+    type="$(remote_db_var "$name" TYPE)"; host="$(remote_db_var "$name" HOST)"
+    case "$type" in
+        postgres|mysql|mariadb|mongo|redis) ;;
+        "") bad+=("${k}_TYPE is not set (postgres, mysql, mariadb, mongo or redis)") ;;
+        *)  bad+=("${k}_TYPE=$type is not a known type (postgres, mysql, mariadb, mongo or redis)") ;;
+    esac
+    if [[ -z "$host" ]]; then
+        bad+=("${k}_HOST is not set")
+    elif [[ "$host" =~ ://[^/@]*:[^/@]*@ ]]; then
+        # It would be on the client's command line, which every user of the host can read in ps
+        bad+=("${k}_HOST has a password in it: put the password in ${k}_PASSWORD")
+    elif [[ "$host" == *://* && "$type" != mongo ]]; then
+        bad+=("${k}_HOST: an address with :// works for mongo only; give the host name")
+    fi
+    v="$(remote_db_var "$name" PORT)"
+    [[ -z "$v" || "$v" =~ ^[0-9]{1,5}$ ]] || bad+=("${k}_PORT=$v is not a port number")
+    v="$(remote_db_var "$name" SSL)"
+    [[ -z "$v" || "$v" == true || "$v" == false ]] || bad+=("${k}_SSL=$v: true or false")
+    v="$(remote_db_var "$name" TIMEOUT)"
+    [[ -z "$v" || "$v" =~ ^[1-9][0-9]*$ ]] || bad+=("${k}_TIMEOUT=$v is not a number of seconds")
+    v="$(remote_db_var "$name" MAX_SIZE)"
+    [[ -z "$v" || "$v" =~ ^[1-9][0-9]*[KMGT]?$ ]] || bad+=("${k}_MAX_SIZE=$v: a size like 200G")
+    v="$(remote_db_var "$name" PASSWORD_FILE)"
+    if [[ -n "$v" ]]; then
+        [[ -n "$(remote_db_var "$name" PASSWORD)" ]] && bad+=("both ${k}_PASSWORD and ${k}_PASSWORD_FILE are set: keep one")
+        [[ -r "$v" ]] || bad+=("${k}_PASSWORD_FILE: cannot read $v")
+    fi
+    (( ${#bad[@]} )) || return 0
+    printf '%s\n' "${bad[@]}"
+    return 1
+}
+
+# remote_db_password <name> — PASSWORD, or the first line of PASSWORD_FILE
+remote_db_password() {
+    local p f
+    p="$(remote_db_var "$1" PASSWORD)"; f="$(remote_db_var "$1" PASSWORD_FILE)"
+    if [[ -z "$p" && -n "$f" && -r "$f" ]]; then IFS= read -r p < "$f" || true; fi
+    printf '%s' "$p"
+}
+
+# remote_db_desc <name> — "postgres db.example.com:5432, database shop, user backup, TLS" (no password)
+remote_db_desc() {
+    local n="$1" type host port db user where
+    type="$(remote_db_var "$n" TYPE)"; host="$(remote_db_var "$n" HOST)"; db="$(remote_db_var "$n" DATABASE)"
+    port="$(remote_db_var "$n" PORT)"; port="${port:-$(remote_db_default_port "$type")}"
+    user="$(remote_db_var "$n" USER)"
+    where="$host"; [[ "$host" == *://* ]] || where="${host}:${port}"
+    if [[ -n "$db" ]]; then printf '%s %s, database %s' "${type:-?}" "$where" "$db"
+    else printf '%s %s, all databases' "${type:-?}" "$where"; fi
+    [[ -n "$user" ]] && printf ', user %s' "$user"
+    [[ "$(remote_db_var "$n" SSL)" == true ]] && printf ', TLS'
+    return 0
+}
+
+# _remote_db_build <name> <dump|probe> — the client container for a dump (or a quick login check):
+#   RDB_DOCKER  the arguments of docker run      RDB_ENV    NAME=value pairs it gets by -e NAME
+#   RDB_FEED    true — RDB_STDIN goes to its stdin (mongo: the password)
+#   RDB_GZIP    true — gzip the output here      RDB_EXT    the dump file's extension
+#   RDB_IMAGE, RDB_TIMEOUT (seconds), RDB_CNAME (the container's name, to remove it if it is left running)
+# shellcheck disable=SC2034 # RDB_EXT: docker-backup.sh names the dump with it
+_remote_db_build() {
+    local name="$1" what="$2" type host port user db ssl net pw
+    local -a args=() cmd=() conn=()
+    type="$(remote_db_var "$name" TYPE)"; host="$(remote_db_var "$name" HOST)"
+    port="$(remote_db_var "$name" PORT)"; port="${port:-$(remote_db_default_port "$type")}"
+    user="$(remote_db_var "$name" USER)"; db="$(remote_db_var "$name" DATABASE)"
+    ssl="$(remote_db_var "$name" SSL)"; net="$(remote_db_var "$name" NETWORK)"
+    RDB_IMAGE="$(remote_db_var "$name" IMAGE)"; RDB_IMAGE="${RDB_IMAGE:-$(remote_db_default_image "$type")}"
+    RDB_TIMEOUT="$(remote_db_var "$name" TIMEOUT)"; RDB_TIMEOUT="${RDB_TIMEOUT:-14400}"
+    [[ "$what" == probe ]] && RDB_TIMEOUT=60
+    RDB_CNAME="dbb-db-${name}-$$"
+    mapfile -t args < <(split_words "$(remote_db_var "$name" ARGS)")
+    pw="$(remote_db_password "$name")"
+    RDB_ENV=(); RDB_FEED=false; RDB_STDIN=""; RDB_GZIP=true; RDB_EXT=sql.gz
+    case "$type" in
+        postgres)
+            user="${user:-postgres}"
+            [[ -n "$pw" ]] && RDB_ENV+=("PGPASSWORD=$pw")
+            [[ "$ssl" == true ]] && RDB_ENV+=("PGSSLMODE=require")
+            RDB_ENV+=("PGCONNECT_TIMEOUT=30")
+            conn=(-h "$host" -p "$port" -U "$user")
+            if [[ "$what" == probe ]]; then
+                cmd=(psql "${conn[@]}" -d "${db:-postgres}" -tAc "SELECT version()")
+            elif [[ -n "$db" ]]; then
+                cmd=(pg_dump "${conn[@]}" ${args[@]+"${args[@]}"} "--dbname=$db")
+            else
+                cmd=(pg_dumpall "${conn[@]}" ${args[@]+"${args[@]}"})
+            fi ;;
+        mysql|mariadb)
+            user="${user:-root}"
+            local dumper=mysqldump client=mysql tls=--ssl-mode=REQUIRED
+            [[ "$type" == mariadb ]] && { dumper=mariadb-dump; client=mariadb; tls=--ssl; }
+            [[ -n "$pw" ]] && RDB_ENV+=("MYSQL_PWD=$pw")
+            # TCP even for "localhost": the client would look for a local socket file otherwise
+            conn=(-h "$host" -P "$port" -u "$user" --protocol=TCP)
+            [[ "$ssl" == true ]] && conn+=("$tls")
+            if [[ "$what" == probe ]]; then
+                cmd=("$client" "${conn[@]}" -N -e "SELECT VERSION()")
+            else
+                cmd=("$dumper" "${conn[@]}" --single-transaction --quick --routines --triggers --no-tablespaces ${args[@]+"${args[@]}"})
+                if [[ -n "$db" ]]; then cmd+=(--databases "$db"); else cmd+=(--all-databases); fi
+            fi ;;
+        mongo)
+            if [[ "$host" == mongodb://* || "$host" == mongodb+srv://* ]]; then conn=("--uri=$host")
+            else conn=(--host "$host" --port "$port"); fi
+            # Without --password, mongodump reads it from stdin
+            if [[ -n "$user" ]]; then conn+=(--username "$user" --authenticationDatabase admin); RDB_FEED=true; RDB_STDIN="$pw"; fi
+            [[ "$ssl" == true ]] && conn+=(--tls)
+            if [[ "$what" == probe ]]; then
+                # Nothing to dump: a collection that is not there. It still has to log in and list the database.
+                cmd=(mongodump --quiet "${conn[@]}" --db "${db:-admin}" --collection dbb-probe-none --archive=/dev/null)
+            else
+                cmd=(mongodump --quiet "${conn[@]}")
+                [[ -n "$db" ]] && cmd+=(--db "$db")
+                cmd+=(${args[@]+"${args[@]}"} --archive --gzip)
+            fi
+            RDB_GZIP=false; RDB_EXT=archive.gz ;;
+        redis)
+            [[ -n "$pw" ]] && RDB_ENV+=("REDISCLI_AUTH=$pw")
+            conn=(-h "$host" -p "$port")
+            [[ -n "$user" ]] && conn+=(--user "$user")
+            [[ "$ssl" == true ]] && conn+=(--tls)
+            if [[ "$what" == probe ]]; then
+                cmd=(redis-cli "${conn[@]}" ${args[@]+"${args[@]}"} PING)
+            else
+                # A file, not --rdb - : on stdout redis-cli leaves the transfer's end marker in the stream
+                cmd=(sh -c 'redis-cli "$@" --rdb /tmp/dbb.rdb >&2 || exit 1
+[ -s /tmp/dbb.rdb ] || { echo "the server sent an empty RDB file" >&2; exit 1; }
+exec cat /tmp/dbb.rdb' sh "${conn[@]}" ${args[@]+"${args[@]}"})
+            fi
+            RDB_EXT=rdb.gz ;;
+    esac
+    local e
+    RDB_DOCKER=(--rm --log-driver none --name "$RDB_CNAME" --network "${net:-host}")
+    for e in ${RDB_ENV[@]+"${RDB_ENV[@]}"}; do RDB_DOCKER+=(-e "${e%%=*}"); done
+    [[ "$RDB_FEED" == true ]] && RDB_DOCKER+=(-i)
+    RDB_DOCKER+=("$RDB_IMAGE" "${cmd[@]}")
+}
+
+# _remote_db_run — docker run of what _remote_db_build set, its stdout to stdout. In a subshell: the passwords
+# are exported there only, for docker to pass on.
+_remote_db_run() {
+    (
+        local e
+        for e in ${RDB_ENV[@]+"${RDB_ENV[@]}"}; do export "${e?}"; done
+        if [[ "$RDB_FEED" == true ]]; then
+            printf '%s\n' "$RDB_STDIN" | timeout "$RDB_TIMEOUT" docker run "${RDB_DOCKER[@]}"
+        else
+            timeout "$RDB_TIMEOUT" docker run "${RDB_DOCKER[@]}" < /dev/null
+        fi
+    )
+}
+
+_rdb_compress() { if [[ "$RDB_GZIP" == true ]]; then gzip -c "-${COMPRESS_LEVEL:-6}"; else cat; fi; }
+_rdb_encrypt() {
+    if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
+        gpg --batch --yes --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" --symmetric --cipher-algo AES256 -o -
+    else
+        cat
+    fi
+}
+
+# remote_db_image_ready — the client image is here, or pulled now. 1 with docker's reason in the log.
+remote_db_image_ready() {
+    docker image inspect "$RDB_IMAGE" >/dev/null 2>&1 && return 0
+    log "  ⬇  Pulling the client image $RDB_IMAGE..."
+    local out
+    out="$(docker pull -q "$RDB_IMAGE" 2>&1)" && return 0
+    log_err "  Could not pull $RDB_IMAGE: $(tail -n 1 <<< "$out")"
+    return 1
+}
+
+# _size_bytes <200G> — the number of bytes (K, M, G, T are powers of 1024)
+_size_bytes() {
+    local n="${1%[KMGT]}"
+    case "$1" in
+        *K) echo $(( n * 1024 )) ;; *M) echo $(( n * 1048576 )) ;;
+        *G) echo $(( n * 1073741824 )) ;; *T) echo $(( n * 1099511627776 )) ;;
+        *) echo "$n" ;;
+    esac
+}
+
+# _rdb_drop <bucket> <key> — remove a dump that must not stay: aws finishes an upload as soon as its input
+# ends, so a dump that broke off would lie there looking like a complete one.
+_rdb_drop() {
+    abort_key_uploads "$1" "$2"
+    aws_q s3api head-object --bucket "$1" --key "$2" >/dev/null 2>&1 || return 0
+    if aws_rm "s3://$1/$2" 2>/dev/null; then log "  ✂  Removed the incomplete dump from the storage"
+    else log_warn "  Could not remove the incomplete dump s3://$1/$2 — delete it by hand"; fi
+}
+
+# remote_db_stream <name> <s3 key> — after _remote_db_build <name> dump: the dump into the primary storage.
+# Sets RDB_SIZE (bytes, checked against the storage) and RDB_SHA256. 0 — it is in place; 1 — it is not,
+# the reason logged. A transient storage failure is retried with a new dump (a stream cannot be sent twice),
+# S3_UPLOAD_TRIES attempts in all, like any upload.
+remote_db_stream() {
+    local name="$1" key="$2" bucket="$PRIMARY_S3_BUCKET"
+    local url="s3://${PRIMARY_S3_BUCKET}/$2" tries="${S3_UPLOAD_TRIES:-3}" delay="${S3_UPLOAD_RETRY_DELAY:-15}"
+    local try=1 dir st rc_src rc_gz rc_gpg rc_tee rc_aws aws_out i s3_size ms wait_s
+    local -a exp=()
+    RDB_SIZE=""; RDB_SHA256=""
+    dir="$(mktemp -d "${WORK_DIR:-/var/tmp/docker-backup}/remote-db.XXXXXX")" \
+        || { log_err "  Cannot create a temporary folder in ${WORK_DIR:-/var/tmp/docker-backup}"; return 1; }
+    ms="$(remote_db_var "$name" MAX_SIZE)"
+    [[ -n "$ms" ]] && exp=(--expected-size "$(_size_bytes "$ms")")
+    while true; do
+        : > "$dir/err"; rm -f "$dir/sum" "$dir/size"
+        st="$(
+            set +e
+            _remote_db_run 2> "$dir/err" | _rdb_compress | _rdb_encrypt \
+                | tee >(sha256sum | awk '{print $1}' > "$dir/sum") >(wc -c > "$dir/size") \
+                | aws "${S3_OPTS[@]}" s3 cp - "$url" --only-show-errors ${exp[@]+"${exp[@]}"} > "$dir/aws" 2>&1
+            printf '%s ' "${PIPESTATUS[@]}"
+        )"
+        IFS=' ' read -r rc_src rc_gz rc_gpg rc_tee rc_aws <<< "$st"
+        rc_src="${rc_src:-1}" rc_gz="${rc_gz:-1}" rc_gpg="${rc_gpg:-1}" rc_tee="${rc_tee:-1}" rc_aws="${rc_aws:-1}"
+        # Gone by itself with --rm, but not after a timeout or a broken pipe: then docker run ended, the container did not
+        docker rm -f "$RDB_CNAME" >/dev/null 2>&1 || true
+        aws_out="$(grep -v -E 'InsecureRequestWarning|urllib3/connectionpool|certificate verification is strongly advised' "$dir/aws" || true)"
+        (( rc_aws == 0 )) && break
+        if (( try < tries )) && s3_transient "$aws_out"; then
+            wait_s=$(( delay * (3 ** (try - 1)) ))
+            log_warn "    The storage failed the upload ($(grep -oiE 'OperationAborted|SlowDown|InternalError|RequestTimeout|ServiceUnavailable|Throttl[a-z]*|TooManyRequests|Connection [a-z]+|timed out|EndpointConnectionError|Could not connect|reached max retries' <<< "$aws_out" | head -n 1)) — dumping again in ${wait_s} s ($((try + 1))/${tries})..."
+            abort_key_uploads "$bucket" "$key"
+            sleep "$wait_s"
+            try=$((try + 1))
+            continue
+        fi
+        log_err "  The upload to the primary S3 failed"
+        [[ -n "$aws_out" ]] && tail -n 3 <<< "$aws_out" | sed 's/^/      /' >&2
+        _rdb_drop "$bucket" "$key"
+        rm -rf "$dir"
+        return 1
+    done
+    if (( rc_src != 0 || rc_gz != 0 || rc_gpg != 0 || rc_tee != 0 )); then
+        if (( rc_src != 0 )); then
+            log_err "  The dump failed"
+            case "$rc_src" in
+                125) echo "docker could not start the client container (image $RDB_IMAGE, network $(remote_db_var "$name" NETWORK))" >> "$dir/err" ;;
+                126|127) echo "the dump tool is not in the image $RDB_IMAGE (REMOTE_DB_$(remote_db_key "$name")_IMAGE)" >> "$dir/err" ;;
+            esac
+            _db_report "$dir/err" "$rc_src" "${RDB_TIMEOUT} s (REMOTE_DB_$(remote_db_key "$name")_TIMEOUT)" || true
+        else
+            log_err "  Compressing or encrypting the dump failed (gzip $rc_gz, gpg $rc_gpg, tee $rc_tee)"
+        fi
+        _rdb_drop "$bucket" "$key"
+        rm -rf "$dir"
+        return 1
+    fi
+    # The counts come from tee's two side processes, which end a moment after it
+    for (( i = 0; i < 300; i++ )); do
+        [[ -s "$dir/sum" && -s "$dir/size" ]] && break
+        sleep 0.1
+    done
+    # shellcheck disable=SC2034 # docker-backup.sh writes the manifest from it
+    RDB_SHA256="$(cat "$dir/sum" 2>/dev/null || true)"
+    RDB_SIZE="$(tr -dc '0-9' < "$dir/size" 2>/dev/null || true)"
+    rm -rf "$dir"
+    s3_size="$(aws_q s3api head-object --bucket "$bucket" --key "$key" --query ContentLength --output text 2>/dev/null || echo 0)"
+    if [[ -z "$RDB_SIZE" || "$s3_size" != "$RDB_SIZE" ]]; then
+        log_err "  Size in S3 (${s3_size}) != sent (${RDB_SIZE:-unknown})"
+        _rdb_drop "$bucket" "$key"
+        return 1
+    fi
+    return 0
+}
+
+# remote_db_probe <name> — logs in with the backup's settings and asks the server something small.
+# Prints its answer (the version) or the reason it failed; 1 if it failed.
+remote_db_probe() {
+    local name="$1" out rc=0 problems
+    if ! problems="$(remote_db_check "$name")"; then printf '%s\n' "$problems"; return 1; fi
+    _remote_db_build "$name" probe
+    if ! docker image inspect "$RDB_IMAGE" >/dev/null 2>&1; then
+        out="$(docker pull -q "$RDB_IMAGE" 2>&1)" || { printf 'could not pull %s: %s\n' "$RDB_IMAGE" "$(tail -n 1 <<< "$out")"; return 1; }
+    fi
+    out="$(_remote_db_run 2>&1)" || rc=$?
+    docker rm -f "$RDB_CNAME" >/dev/null 2>&1 || true
+    out="$(grep -v -i -E 'Enter password|reading password from standard input|^[[:space:]]*$|^(mysql: \[)?warning' <<< "$out" | tr -d '\r' || true)"
+    # redis-cli prints a refusal (NOAUTH, WRONGPASS) with exit code 0
+    [[ "$(remote_db_var "$name" TYPE)" == redis && "$out" != PONG* ]] && (( rc == 0 )) && rc=1
+    if (( rc == 0 )); then
+        [[ -z "$out" ]] && out="logged in"
+        head -n 1 <<< "$out"
+        return 0
+    fi
+    (( rc == 124 )) && out="no answer in ${RDB_TIMEOUT} s${out:+: $out}"
+    tail -n 3 <<< "${out:-exit code $rc}"
+    return 1
 }
 
 # ==============================================================================

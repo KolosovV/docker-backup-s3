@@ -153,6 +153,66 @@ find_archive_name() {
         | xargs -I{} basename {}
 }
 
+# verify_remote_dump <project> <s3 key> <file name> — the full check of a remote database's dump without a copy
+# on this disk: download | sha256 | decrypt | gunzip (which checks the gzip CRC), the first 64 KB kept to tell
+# what made the dump.
+verify_remote_dump() {
+    local project="$1" key="$2" name="$3" d st expected rc_aws rc_tee rc_gpg rc_gz head kind
+    d="${VERIFY_DIR}/${project}"
+    mkdir -p "$d"
+    log "  🗄  A remote database's dump: checking it as it streams by (download, sha256, decrypt, gunzip)"
+    st="$(
+        set +e
+        aws_q s3 cp "s3://${SRC_BUCKET}/${key}" - \
+            | tee >(sha256sum | awk '{print $1}' > "$d/sum") \
+            | if [[ "$name" == *.gpg ]]; then gpg --batch --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" -d; else cat; fi \
+            | gunzip -c 2> "$d/gz" \
+            | { head -c 65536 > "$d/head"; cat > /dev/null; }
+        printf '%s ' "${PIPESTATUS[@]}"
+    )"
+    IFS=' ' read -r rc_aws rc_tee rc_gpg rc_gz _ <<< "$st"
+    for _ in $(seq 1 100); do [[ -s "$d/sum" ]] && break; sleep 0.1; done
+    if [[ "${rc_aws:-1}" != 0 ]]; then
+        log_err "Download failed"; FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("Download error"); return 1
+    fi
+    if expected="$(aws_q s3 cp "s3://${SRC_BUCKET}/${key}.sha256" - 2>/dev/null | awk '{print $1}' | head -n 1)" && [[ -n "$expected" ]]; then
+        if [[ "$(cat "$d/sum" 2>/dev/null)" == "$expected" ]]; then
+            log_ok "sha256 matches"
+        else
+            log_err "sha256 does NOT match — the object in S3 is corrupted"
+            FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("sha256 mismatch (corruption in the storage)"); return 1
+        fi
+    else
+        log_warn "No sha256 manifest — checking by size only"
+    fi
+    if [[ "${rc_gpg:-1}" != 0 ]]; then
+        log_err "Decryption failed"; FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("GPG decryption"); return 1
+    fi
+    if [[ "${rc_gz:-1}" != 0 ]]; then
+        log_err "The dump is corrupted: $(head -n 1 "$d/gz" 2>/dev/null)"
+        FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("Corrupted dump (gzip)"); return 1
+    fi
+    head="$(head -c 4096 "$d/head" 2>/dev/null | tr -d '\0' || true)"
+    case "$name" in
+        *.sql.gz*)
+            if grep -qE 'PostgreSQL database (cluster )?dump|^--[[:space:]]+PostgreSQL' <<< "$head"; then kind="PostgreSQL dump"
+            elif grep -qE -- '-- (MySQL|MariaDB) dump|mysqldump|mariadb-dump|^-- Server version' <<< "$head"; then kind="MySQL/MariaDB dump"
+            fi ;;
+        *.rdb.gz*)
+            [[ "$head" == REDIS* || "$head" == VALKEY* ]] && kind="Redis RDB" ;;
+        *.archive.gz*)
+            [[ "$(od -An -tx1 -N4 "$d/head" | tr -d ' \n')" == 6de29981 ]] && kind="MongoDB archive" ;;
+    esac
+    if [[ -z "${kind:-}" ]]; then
+        log_err "gzip is intact, but it is not the dump its name says ($name)"
+        FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("Not a database dump"); return 1
+    fi
+    log_ok "$kind, intact"
+    log_ok "${C_BOLD}Check passed${C_RESET}"
+    rm -rf "$d"
+    return 0
+}
+
 # ==============================================================================
 # CHECKING ONE PROJECT
 # ==============================================================================
@@ -213,6 +273,12 @@ verify_project() {
     if [[ "$MODE" == "quick" ]]; then
         log_ok "Quick check passed"
         return 0
+    fi
+
+    # A remote database's dump (_db_<name>): checked as it streams by, it may be too big for this disk
+    if [[ "$project" == _db_* ]]; then
+        verify_remote_dump "$project" "$s3_key" "$archive_name"
+        return
     fi
 
     # 4. Download

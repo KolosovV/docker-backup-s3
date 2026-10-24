@@ -522,6 +522,9 @@ fi
 declare -A PROJECT_TIMESTAMP=()
 declare -A PROJECT_ARCHIVE_NAME=()  # file name (including .gpg if encrypted)
 
+# Where the dump of a remote database (_db_<name>) is put: --extract-to, -d, or WORK_DIR/restored
+remote_dump_dest() { printf '%s' "${EXTRACT_TO:-${RESTORE_DIR:-${WORK_DIR:-/var/tmp/docker-backup}/restored}}"; }
+
 # Find the archive name for project/timestamp (allowing for a possible .gpg)
 find_archive_name() {
     local project="$1" timestamp="$2"
@@ -590,6 +593,9 @@ done
         encrypted=""
         [[ "$archive" == *.gpg ]] && encrypted=" ${C_MAGENTA}🔐${C_RESET}"
         echo "  • $proj  ←  $ts${encrypted}"
+        if [[ "$proj" == _db_* && "$CONTENTS_MODE" != "true" ]]; then
+            echo "      ${C_CYAN}a remote database: its dump is saved to $(remote_dump_dest), nothing is loaded into a database${C_RESET}"
+        fi
     done
     if [[ "$CONTENTS_MODE" == "true" ]]; then
         echo "  Mode:    ${C_CYAN}view contents only${C_RESET}"
@@ -620,6 +626,67 @@ fi
 # ==============================================================================
 # 8. RESTORING ONE PROJECT
 # ==============================================================================
+
+# restore_remote_dump <name> <dump file, decrypted> — a remote database is not loaded: that would overwrite
+# a live database on another server. Its dump is saved (mode 600), with the command that loads it.
+restore_remote_dump() {
+    local name="$1" file="$2" base dest kind type host port user db where head
+    base="$(basename "$file")"
+    type="$(remote_db_var "$name" TYPE)"
+    case "$base" in
+        *.rdb.gz)     kind=redis ;;
+        *.archive.gz) kind=mongo ;;
+        *.sql.gz)
+            head="$(gunzip -c "$file" 2>/dev/null | head -n 20 || true)"
+            if grep -qE 'PostgreSQL database (cluster )?dump' <<< "$head"; then kind=postgres
+            else kind=mysql; fi ;;
+        *) kind=unknown ;;
+    esac
+    if [[ "$CONTENTS_MODE" == "true" ]]; then
+        {
+            echo
+            echo "${C_BOLD}🗄  The dump of the remote database ${name}${C_RESET}"
+            echo "    ${base}  $(du -h "$file" | awk '{print $1}')  (${kind})"
+            [[ -n "$type" ]] && echo "    In backup.conf now: $(remote_db_desc "$name")"
+            if [[ "$kind" == postgres || "$kind" == mysql ]]; then
+                echo "    ${C_DIM}It begins:${C_RESET}"
+                gunzip -c "$file" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 5 | sed 's/^/      /' || true
+            fi
+        } >&2
+        return 0
+    fi
+    dest="$(remote_dump_dest)"
+    mkdir -p "$dest" || { log_err "Cannot create $dest"; return 1; }
+    # Moved, not copied: the dump may be big. Its folder here (a mktemp -d) is private until then.
+    chmod 600 "$file"
+    mv -f "$file" "$dest/$base" || { log_err "Could not move the dump to $dest"; return 1; }
+    log_done "The dump of the remote database $name is saved: $dest/$base (nothing was loaded into a database)"
+
+    host="$(remote_db_var "$name" HOST)"; host="${host:-HOST}"
+    port="$(remote_db_var "$name" PORT)"; user="$(remote_db_var "$name" USER)"; db="$(remote_db_var "$name" DATABASE)"
+    [[ -n "$port" ]] || port="$(remote_db_default_port "${type:-$kind}")"
+    where="-h ${host} -p ${port}"
+    {
+        echo "  To load it (the database is overwritten where the dump has the same objects; try a test server first):"
+        case "$kind" in
+            postgres)
+                if [[ -n "$db" ]]; then echo "    gunzip -c $dest/$base | psql $where -U ${user:-postgres} -d $db"
+                else echo "    gunzip -c $dest/$base | psql $where -U ${user:-postgres} -d postgres"; fi ;;
+            mysql)
+                local cl=mysql; [[ "$type" == mariadb ]] && cl=mariadb
+                echo "    gunzip -c $dest/$base | $cl -h $host -P $port -u ${user:-root} -p" ;;
+            mongo)
+                if [[ "$host" == *://* ]]; then where="--uri=$host"; else where="--host $host --port $port"; fi
+                echo "    mongorestore $where${user:+ --username $user --authenticationDatabase admin} --archive=$dest/$base --gzip --drop" ;;
+            redis)
+                echo "    Redis takes a dump as its RDB file: gunzip it, stop the server, put it in its data folder"
+                echo "    as dump.rdb (CONFIG GET dir / dbfilename), start it. A managed Redis: the service's own import." ;;
+            *)  echo "    (an unknown kind of dump: $base)" ;;
+        esac
+        echo "  Delete the file when done: it is the whole database, unencrypted."
+    } >&2
+    return 0
+}
 restore_one_project() {
     local PROJECT="$1"
     local TIMESTAMP="$2"
@@ -671,6 +738,11 @@ restore_one_project() {
         log "  🔐 Decrypting..."
         backup_archive="$(decrypt_file "$backup_archive")" \
             || { log_err "Decryption failed — check GPG_PASSPHRASE_FILE"; return 1; }
+    fi
+
+    if [[ "$PROJECT" == _db_* ]]; then
+        restore_remote_dump "${PROJECT#_db_}" "$backup_archive"
+        return
     fi
 
     log "  📂 Unpacking..."

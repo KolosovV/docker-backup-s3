@@ -290,6 +290,48 @@ DB_DUMPS_RETENTION_COUNT=3
 # if a database is large or stuck.
 DB_DUMP_TIMEOUT=1800   # 30 minutes
 
+# ==============================================================================
+# REMOTE DATABASES (not containers on this host: a managed service, another server)
+# ==============================================================================
+# Each one is dumped by a throwaway client container (docker run --rm) and goes straight into the primary
+# storage through a pipe: dump | gzip | gpg | upload. The dump is never written to this disk, so its size
+# does not matter here (Redis is the exception: its client keeps the RDB in the container until it is sent).
+# The copies get it from the primary the same way. It shows up as the project _db_<name>: rotation, sync,
+# status and verify-restore treat it like any other; docker-restore saves the dump and loads nothing.
+# The menu sets these up and checks the login: sudo docker-backup-s3 → Remote databases.
+#
+# REMOTE_DBS — the names, space-separated: lower-case letters, digits, - and _.
+# Then for each name REMOTE_DB_<NAME>_<FIELD>, the name in capitals and "-" as "_" (shop-db → SHOP_DB):
+#   TYPE           postgres, mysql, mariadb, mongo or redis (required)
+#   HOST           the server's name or address (required); mongo: a mongodb:// or mongodb+srv:// URI works too
+#   PORT           empty — the type's own (5432, 3306, 27017, 6379)
+#   USER           empty — postgres / root; mongo and redis: none
+#   PASSWORD       the password; or PASSWORD_FILE — a file holding it (one line). Never in HOST: the
+#                  client's command line can be read by any user of this host, this file only by root.
+#   DATABASE       one database; empty — all of them (pg_dumpall, --all-databases, everything in mongo)
+#   SSL            true — an encrypted connection (needed by most managed services)
+#   IMAGE          the client image; empty — postgres:18-alpine, mysql:8.4, mariadb:11.4, mongo:8,
+#                  redis:7-alpine. The client must not be older than the server (pg_dump refuses that).
+#   NETWORK        the client container's Docker network; empty — host (it reaches what this host reaches)
+#   ARGS           more arguments for the dump tool, space-separated, e.g. --no-owner for pg_dump
+#   TIMEOUT        seconds for the whole dump; empty — 14400 (4 hours)
+#   MAX_SIZE       the dump's rough size after compression, e.g. 200G — needed past 50G: the upload of
+#                  a stream is cut into at most 10000 parts, and their size is picked from this
+# The user needs read access to everything: pg_dumpall wants a superuser (a managed service may not give
+# one — set DATABASE then); mysqldump/mariadb-dump need SELECT, SHOW VIEW and TRIGGER (EVENT with
+# --events in ARGS); redis needs the right to start a replication sync (some managed services do not
+# allow it).
+#
+# Example:
+#   REMOTE_DBS="shop"
+#   REMOTE_DB_SHOP_TYPE="postgres"
+#   REMOTE_DB_SHOP_HOST="db.example.com"
+#   REMOTE_DB_SHOP_USER="backup"
+#   REMOTE_DB_SHOP_PASSWORD="…"
+#   REMOTE_DB_SHOP_DATABASE="shop"
+#   REMOTE_DB_SHOP_SSL="true"
+REMOTE_DBS=""
+
 # --- Minimum free space before starting (MB) ---
 # Protects against "containers paused, disk ran out, script failed".
 # The threshold is compared with the space available in WORK_DIR before the start.

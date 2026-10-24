@@ -43,9 +43,9 @@ run_menu() {
 conf_val() { bash -c 'source "$1" 2>/dev/null; printf "%s" "${!2}"' _ "$CONF" "$1"; }
 
 section "email: set up, test"
-# main: 10 notifications → 5 email → wizard (to, server, 1 starttls, port default, login, password, sender default)
-#   → 2 send a test → q back; 1 when → 2 every run; q; 11 exit
-run_menu 10 5 ops@example.com smtp.example.com 1 "" bk@example.com 'pa"ss$1' "" 2 q 1 2 q 11
+# main: 11 notifications → 5 email → wizard (to, server, 1 starttls, port default, login, password, sender default)
+#   → 2 send a test → q back; 1 when → 2 every run; q; 12 exit
+run_menu 11 5 ops@example.com smtp.example.com 1 "" bk@example.com 'pa"ss$1' "" 2 q 1 2 q 12
 check "the menu exits cleanly" grep -q 'saved to' "$W/out"
 check "EMAIL_TO saved" test "$(conf_val EMAIL_TO)" == ops@example.com
 check "SMTP_HOST saved" test "$(conf_val SMTP_HOST)" == smtp.example.com
@@ -62,8 +62,8 @@ check "smtp was called" grep -q '^smtp://smtp.example.com:587$' "$MOCK_DIR/calls
 
 section "email off, webhook on"
 : > "$MOCK_DIR/calls"
-# 10 → 5 email (configured) → 3 off → y; 4 webhook → URL → 1 auto; q (webhook menu) q (notifications) 11
-run_menu 10 5 3 y 4 https://discord.com/api/webhooks/1/x 1 q q 11
+# 11 → 5 email (configured) → 3 off → y; 4 webhook → URL → 1 auto; q (webhook menu) q (notifications) 12
+run_menu 11 5 3 y 4 https://discord.com/api/webhooks/1/x 1 q q 12
 check "email is off" test -z "$(conf_val EMAIL_TO)$(conf_val SMTP_HOST)$(conf_val SMTP_PASSWORD)"
 check "the webhook is saved" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 check "the test went as Discord content" test "$(jq -r '.content|split("\n")[0]' "$MOCK_DIR/body")" == "🟢 **Server $(uname -n): test message**"
@@ -72,8 +72,8 @@ check "the list shows the webhook" grep -q 'Webhook — discord.com (discord)' "
 
 section "telegram: a failed test, not kept"
 export MOCK_TG=fail
-# 10 → 3 telegram → token, chat → ✗ → enter again? n → keep anyway? n → off; q; 11
-run_menu 10 3 1:abc 42 n n q 11
+# 11 → 3 telegram → token, chat → ✗ → enter again? n → keep anyway? n → off; q; 12
+run_menu 11 3 1:abc 42 n n q 12
 unset MOCK_TG
 check "Telegram's reason is shown" grep -q 'Bad Request: chat not found' "$W/out"
 check "with a hint" grep -q 'nobody has started the bot' "$W/out"
@@ -81,9 +81,9 @@ check "the settings are not kept" test -z "$(conf_val TELEGRAM_BOT_TOKEN)"
 check "the webhook is untouched" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 
 section "server name and test-all"
-# 10 → 2 name → web-9; 6 test all; q; 11
+# 11 → 2 name → web-9; 6 test all; q; 12
 : > "$MOCK_DIR/calls"
-run_menu 10 2 web-9 6 q 11
+run_menu 11 2 web-9 6 q 12
 check "NOTIFY_NAME saved" test "$(conf_val NOTIFY_NAME)" == web-9
 check "test-all reports the webhook" grep -q '✓ webhook: sent' "$W/out"
 check "the new name is in the message" grep -q 'Server web-9: test message' <<< "$(jq -r .content "$MOCK_DIR/body")"
@@ -91,16 +91,45 @@ check "the new name is in the message" grep -q 'Server web-9: test message' <<< 
 section "projects: what to leave out"
 # docker and aws stubs: two compose projects on "this host"
 mkdir -p "$W/p1" "$W/p2"
-printf '#!/usr/bin/env bash\n[[ "$1 $2" == "ps -a" && "$*" == *working_dir* ]] && printf "app1\\t%s\\napp2\\t%s\\n" "%s" "%s"\nexit 0\n' "$W/p1" "$W/p2" > "$W/bin/docker"
+cat > "$W/bin/docker" <<EOF
+#!/usr/bin/env bash
+[[ "\$1 \$2" == "ps -a" && "\$*" == *working_dir* ]] && printf 'app1\t%s\napp2\t%s\n' "$W/p1" "$W/p2"
+exit 0
+EOF
 printf '#!/bin/sh\nexit 0\n' > "$W/bin/aws"; chmod +x "$W/bin/docker" "$W/bin/aws"
 sed -i 's/^EXCLUDE_PROJECTS=.*/EXCLUDE_PROJECTS="old-*"/' "$CONF"
-# 3 projects → 1 not backed up → tick 2 (app2); 2 without dumps → tick 1,2; q; 11
-run_menu 3 1 2 2 1,2 q 11
+# 3 projects → 1 not backed up → tick 2 (app2); 2 without dumps → tick 1,2; q; 12
+run_menu 3 1 2 2 1,2 q 12
 check "EXCLUDE_PROJECTS: the ticked project, and the glob kept" test "$(conf_val EXCLUDE_PROJECTS)" == "old-* app2"
 check "DB_DUMP_EXCLUDE_PROJECTS: both" test "$(conf_val DB_DUMP_EXCLUDE_PROJECTS)" == "app1 app2"
 check "the menu said the glob is kept" grep -q 'Kept as written (not a project here now): old-\*' "$W/out"
 check "the section shows the lists" grep -q 'Not backed up: old-\*, app2' "$W/out"
 rm -f "$W/bin/docker" "$W/bin/aws"
+
+section "remote databases: add, change, take off"
+# The docker stub answers the login check like psql would
+cat > "$W/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == run ]] && { printf '%s\n' "$@" >> "$MOCK_DIR/docker-args"; echo "PostgreSQL 17.6 on x86_64"; }
+exit 0
+EOF
+chmod +x "$W/bin/docker"
+# 4 remote → 1 add → name, 1 postgres, host, port default, user, password, database, TLS y → (the check)
+#   → 1 shop → 2 change: type kept, host kept, port 6432, user kept, password kept, database kept, TLS kept
+#   → q → q; 12
+run_menu 4 1 shop 1 db.example.test "" bk 'p"w$1 x' shop y 1 2 "" "" 6432 "" "" "" "" q q 12
+check "REMOTE_DBS has it" test "$(conf_val REMOTE_DBS)" == shop
+check "its type, host, user, database, TLS" test "$(conf_val REMOTE_DB_SHOP_TYPE):$(conf_val REMOTE_DB_SHOP_HOST):$(conf_val REMOTE_DB_SHOP_USER):$(conf_val REMOTE_DB_SHOP_DATABASE):$(conf_val REMOTE_DB_SHOP_SSL)" == "postgres:db.example.test:bk:shop:true"
+check "the password survives quoting, and an edit that left it empty" test "$(conf_val REMOTE_DB_SHOP_PASSWORD)" == 'p"w$1 x'
+check "the port from the edit" test "$(conf_val REMOTE_DB_SHOP_PORT)" == 6432
+check "the login was checked, the answer shown" grep -q 'saved, and it logs in — PostgreSQL 17.6' "$W/out"
+check "the password is not among docker's arguments" bash -c '! grep -qF -- "p\"w\$1 x" "$1"' _ "$MOCK_DIR/docker-args"
+check "the main menu lists it" grep -q 'Remote databases: shop' "$W/out"
+# 4 remote → 1 shop → 4 take off → y → q; 12
+run_menu 4 1 4 y q 12
+check "taken off: REMOTE_DBS is empty" test -z "$(conf_val REMOTE_DBS)"
+check "and its settings are gone, the password too" bash -c '! grep -q "^REMOTE_DB_SHOP_" "$1"' _ "$CONF"
+rm -f "$W/bin/docker"
 
 section "whiptail colors"
 # A whiptail stub and a terminal stand-in: ui_init picks whiptail mode and sets the palette

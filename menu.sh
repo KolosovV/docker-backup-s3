@@ -561,6 +561,112 @@ menu_projects() {
     done
 }
 
+# ==============================================================================
+# REMOTE DATABASES (REMOTE_DBS and REMOTE_DB_<NAME>_* in backup.conf)
+# ==============================================================================
+menu_remote() {
+    local choice n
+    local -a items
+    while true; do
+        UI_TITLE="Remote databases"
+        items=()
+        while IFS= read -r n; do
+            [[ -n "$n" ]] && items+=("db:$n" "$n — $(remote_db_desc "$n")")
+        done < <(remote_db_names)
+        items+=(add "Add a remote database…")
+        choice="$(ui_menu "Databases on other servers or managed services. Each is dumped by a client container straight into the storages: nothing is kept on this disk." "${items[@]}")" || return 0
+        case "$choice" in
+            add)  remote_wizard "" ;;
+            db:*) menu_remote_one "${choice#db:}" ;;
+        esac
+    done
+}
+
+menu_remote_one() {
+    local name="$1" choice out rest
+    while true; do
+        UI_TITLE="Remote database $name"
+        choice="$(ui_menu "$(remote_db_desc "$name")" \
+            test   "Check the login" \
+            edit   "Change the settings…" \
+            backup "Back it up now" \
+            remove "Take it off the list (its backups stay in the storages)")" || return 0
+        case "$choice" in
+            test)
+                if out="$(remote_db_probe "$name" 2>&1)"; then ui_msg "✓ ${name}: logged in — ${out}"
+                else ui_msg "✗ ${name}: cannot log in.\n\n${out}"; fi ;;
+            edit)   remote_wizard "$name" ;;
+            backup) run_tool docker-backup.sh -c "$CONFIG_FILE" -p "db:$name" ;;
+            remove)
+                ui_yesno "Take $name off the list? Its settings (the password too) are removed from the config. Its backups stay in the storages and age out by the rotation; drop-project.sh _db_$name removes them at once." n || continue
+                rest="$(remote_db_names | grep -vxF -- "$name" | tr '\n' ' ')"
+                backup_conf_once
+                conf_set REMOTE_DBS "$(trim "$rest")" --allow-empty
+                sed -i -E "/^REMOTE_DB_$(remote_db_key "$name")_($(IFS='|'; printf '%s' "${REMOTE_DB_FIELDS[*]}"))=/d" "$CONFIG_FILE"
+                reload_conf
+                return 0 ;;
+        esac
+    done
+}
+
+# remote_wizard <name|""> — asks for a remote database's settings (a new one when the name is empty), saves them,
+# then checks the login.
+remote_wizard() {
+    local name="$1" new=false type host port user pw db ssl k out def
+    if [[ -z "$name" ]]; then
+        new=true
+        while true; do
+            name="$(ui_input "A name for it (lower-case letters, digits, - and _). Its backups are stored as _db_<name>.")" || return 0
+            name="$(trim "$name")"
+            [[ -z "$name" ]] && return 0
+            if [[ ! "$name" =~ ^[a-z0-9][a-z0-9_-]{0,47}$ ]]; then ui_msg "\"$name\": lower-case letters, digits, - and _ only."; continue; fi
+            if remote_db_names | grep -qxF -- "$name"; then ui_msg "$name is on the list already."; continue; fi
+            k="$(remote_db_key "$name")"
+            if remote_db_names | while IFS= read -r x; do printf '%s\n' "$(remote_db_key "$x")"; done | grep -qxF -- "$k"; then
+                ui_msg "$name would share its settings (REMOTE_DB_${k}_*) with another one on the list: pick another name."; continue
+            fi
+            break
+        done
+    fi
+    k="REMOTE_DB_$(remote_db_key "$name")"
+    UI_TITLE="Remote database $name"
+    type="$(UI_DEFAULT="$(remote_db_var "$name" TYPE)" ui_menu "What kind of database?" \
+        postgres "PostgreSQL" mysql "MySQL" mariadb "MariaDB" mongo "MongoDB" redis "Redis, Valkey, KeyDB")" || return 0
+    host="$(ui_input "The server's name or address$([[ "$type" == mongo ]] && echo " (or a mongodb+srv:// address, without the password)")" "$(remote_db_var "$name" HOST)")" || return 0
+    host="$(trim "$host")"
+    [[ -n "$host" ]] || { ui_msg "No address — nothing saved."; return 0; }
+    port="$(ui_input "Port (empty — $(remote_db_default_port "$type"))" "$(remote_db_var "$name" PORT)")" || return 0
+    case "$type" in postgres) def="postgres" ;; mysql|mariadb) def="root" ;; *) def="none" ;; esac
+    user="$(ui_input "User (empty — ${def})" "$(remote_db_var "$name" USER)")" || return 0
+    if $new || [[ -z "$(remote_db_password "$name")" ]]; then
+        pw="$(ui_password "Password (empty — none)")" || return 0
+    else
+        pw="$(ui_password "Password (empty — keep the current one)")" || return 0
+    fi
+    db="$(ui_input "Database (empty — all of them)" "$(remote_db_var "$name" DATABASE)")" || return 0
+    ssl=false
+    def=n; [[ "$(remote_db_var "$name" SSL)" == true ]] && def=y
+    ui_yesno "An encrypted connection (TLS)? Most managed services need one." "$def" && ssl=true
+
+    backup_conf_once
+    conf_set "${k}_TYPE" "$type"
+    conf_set "${k}_HOST" "$host"
+    conf_set "${k}_PORT" "$(trim "$port")" --allow-empty
+    conf_set "${k}_USER" "$(trim "$user")" --allow-empty
+    [[ -n "$pw" ]] && conf_set "${k}_PASSWORD" "$pw"
+    conf_set "${k}_DATABASE" "$(trim "$db")" --allow-empty
+    conf_set "${k}_SSL" "$ssl"
+    if $new; then conf_set REMOTE_DBS "$(trim "$(remote_db_names | tr '\n' ' ') $name")"; fi
+    reload_conf
+
+    ui_note "Checking the login (the client image is pulled the first time)..."
+    if out="$(remote_db_probe "$name" 2>&1)"; then
+        ui_msg "✓ ${name}: saved, and it logs in — ${out}\n\nIt is backed up with every run from now on."
+    else
+        ui_msg "✗ ${name} is saved, but it cannot log in:\n\n${out}\n\nFix the settings here (Change the settings) or in ${CONFIG_FILE}: until then its backup fails, and the run's message says so."
+    fi
+}
+
 menu_notify() {
     local choice v ch err out
     while true; do
@@ -654,6 +760,7 @@ while true; do
         status   "Status overview" \
         backup   "Back up now…" \
         projects "Projects: what to leave out…" \
+        remote   "Remote databases: $(projects_line "${REMOTE_DBS:-}")…" \
         restore  "Restore…" \
         sync     "Synchronize storages…" \
         checks   "Checks and diagnostics…" \
@@ -667,6 +774,7 @@ while true; do
         status)   run_tool status.sh -c "$CONFIG_FILE" ;;
         backup)   menu_backup ;;
         projects) menu_projects ;;
+        remote)   menu_remote ;;
         restore)  menu_restore ;;
         sync)     menu_sync ;;
         checks)   menu_checks ;;

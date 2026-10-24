@@ -154,6 +154,20 @@ else
 fi
 echo
 
+# Remote databases (REMOTE_DBS): dumped straight into the storages, as the projects _db_<name>
+declare -A REMOTE_HERE=()
+while IFS= read -r n; do
+    [[ -z "$n" ]] && continue
+    if (( ${#REMOTE_HERE[@]} == 0 )); then echo "${C_BOLD}${C_CYAN}━━━ Remote databases ━━━${C_RESET}"; fi
+    REMOTE_HERE["_db_$n"]=1
+    if problems="$(remote_db_check "$n")"; then
+        echo "  $(status_dot ok) $(printf '%-24s' "$n") $(remote_db_desc "$n")"
+    else
+        echo "  $(status_dot err) $(printf '%-24s' "$n") ${C_RED}$(head -n 1 <<< "$problems")${C_RESET}"
+    fi
+done < <(remote_db_names)
+(( ${#REMOTE_HERE[@]} )) && echo
+
 # ==============================================================================
 # 2. BACKUPS IN THE STORAGES — the primary and every enabled copy
 # ==============================================================================
@@ -253,6 +267,10 @@ show_store() {
         # Does the project exist locally?
         if [[ -n "${LOCAL_PROJECTS[$proj]:-}" ]]; then
             here_marker=""
+        elif [[ -n "${REMOTE_HERE[$proj]:-}" ]]; then
+            here_marker=" ${C_DIM}(remote database)${C_RESET}"
+        elif [[ "$proj" == _db_* ]]; then
+            here_marker=" ${C_DIM}(a remote database no longer in REMOTE_DBS)${C_RESET}"
         else
             here_marker=" ${C_DIM}(not found locally)${C_RESET}"
         fi

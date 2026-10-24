@@ -37,7 +37,8 @@ while [[ $# -gt 0 ]]; do
 Usage: $0 [options]
   -c, --config FILE   path to the config file (default: backup.conf next to the script)
   -n, --dry-run       run without real actions (shows the plan, does nothing)
-  -p, --project NAME  back up only the given project (several, comma-separated)
+  -p, --project NAME  back up only the given project (several, comma-separated);
+                      db:NAME — a remote database from REMOTE_DBS
   -l, --list          print the names of the compose projects found on this host and exit
   -h, --help          this help
 
@@ -48,6 +49,7 @@ EXAMPLES:
   Back up all projects:    $0
   Only one project:        $0 -p myapp
   Several projects:        $0 -p myapp,otherapp
+  One remote database:     $0 -p db:shop
   Dry run:                 $0 --dry-run
   One project, dry run:    $0 -p myapp --dry-run
 EOF
@@ -132,6 +134,8 @@ _on_exit() {
     trap '' PIPE
     [[ -n "${LOG_FD:-}" ]] && exec 2>&"$LOG_FD"
     _resume_paused_project
+    # A remote database's client container, if the run broke off during its dump
+    [[ -n "${RDB_CNAME:-}" ]] && { docker rm -f "$RDB_CNAME" >/dev/null 2>&1 || true; }
     release_lock
     if [[ "${RUN_DONE:-false}" != "true" ]] && [[ "${RUN_STARTED:-false}" == "true" || -n "${INTERRUPT_SIGNAL:-}" ]]; then
         RUN_DONE=true
@@ -140,7 +144,11 @@ _on_exit() {
         if [[ -n "${INTERRUPT_SIGNAL:-}" ]]; then
             body+="Stopped by signal ${INTERRUPT_SIGNAL} (Ctrl+C, a shutdown or a kill)${step:+ at: $(html_esc "$step")}."$'\n'
         fi
-        [[ -n "${CURRENT_PROJECT:-}" ]] && body+="Interrupted on project <b>$(html_esc "$CURRENT_PROJECT")</b>, its containers were brought back."$'\n'
+        case "${CURRENT_PROJECT:-}" in
+            "") ;;
+            "database "*) body+="Interrupted on the remote <b>$(html_esc "$CURRENT_PROJECT")</b>: its dump of this run is not complete (the next full run clears what was uploaded of it)."$'\n' ;;
+            *) body+="Interrupted on project <b>$(html_esc "$CURRENT_PROJECT")</b>, its containers were brought back."$'\n' ;;
+        esac
         if [[ "${RUN_STARTED:-false}" == "true" ]]; then body+="Some projects were not saved."
         else body+="It stopped before the first project: nothing was saved in this run."; fi
         log_err "Backup interrupted${INTERRUPT_SIGNAL:+ (signal ${INTERRUPT_SIGNAL})}${step:+ at: ${step}}"
@@ -316,16 +324,38 @@ fi
 log "📦 Compose projects found: ${C_BOLD}${#PROJECTS[@]}${C_RESET}"
 log "📦 Standalone containers: ${C_BOLD}${#STANDALONE_CONTAINERS[@]}${C_RESET}"
 
+# 1d) Remote databases (REMOTE_DBS). A name given twice, or two names with the same settings (shop-db and
+# shop_db both read REMOTE_DB_SHOP_DB_*), are backed up once.
+declare -a REMOTE_LIST=()
+declare -A _rdb_seen=()
+while IFS= read -r n; do
+    [[ -z "$n" ]] && continue
+    k="$(remote_db_key "$n")"
+    if [[ -n "${_rdb_seen[$k]:-}" ]]; then
+        [[ "${_rdb_seen[$k]}" != "$n" ]] && log_warn "REMOTE_DBS: $n and ${_rdb_seen[$k]} share the settings REMOTE_DB_${k}_* — backing up ${_rdb_seen[$k]} only"
+        continue
+    fi
+    _rdb_seen[$k]="$n"
+    REMOTE_LIST+=("$n")
+done < <(remote_db_names)
+(( ${#REMOTE_LIST[@]} )) && log "🗄  Remote databases: ${C_BOLD}${#REMOTE_LIST[@]}${C_RESET}"
+
 # --- Apply the --project filter if given ---
 if [[ -n "$PROJECT_FILTER" ]]; then
     log "${C_CYAN}🎯 Project filter: ${C_BOLD}$PROJECT_FILTER${C_RESET}"
 
     # Parse the comma-separated project list
-    declare -A REQUESTED=()
+    # db:NAME (or _db_NAME, as in the storage) — a remote database
+    declare -A REQUESTED=() REQUESTED_DB=()
     IFS=',' read -ra _requested_arr <<< "$PROJECT_FILTER"
     for p in "${_requested_arr[@]}"; do
         p="${p// /}"  # trim spaces
-        [[ -n "$p" ]] && REQUESTED["$p"]=1
+        case "$p" in
+            "") ;;
+            db:*)  REQUESTED_DB["${p#db:}"]=1 ;;
+            _db_*) REQUESTED_DB["${p#_db_}"]=1 ;;
+            *)     REQUESTED["$p"]=1 ;;
+        esac
     done
 
     # Filter PROJECTS — keep only the requested ones
@@ -343,6 +373,13 @@ if [[ -n "$PROJECT_FILTER" ]]; then
             NOT_FOUND+=("$p")
         fi
     done
+    declare -a FILTERED_REMOTE=()
+    for p in ${REMOTE_LIST[@]+"${REMOTE_LIST[@]}"}; do
+        [[ -n "${REQUESTED_DB[$p]:-}" ]] && FILTERED_REMOTE+=("$p")
+    done
+    for p in "${!REQUESTED_DB[@]}"; do
+        printf '%s\n' ${REMOTE_LIST[@]+"${REMOTE_LIST[@]}"} | grep -qxF -- "$p" || NOT_FOUND+=("db:$p")
+    done
 
     if [[ ${#NOT_FOUND[@]} -gt 0 ]]; then
         log_err "Projects not found: $(join_list "${NOT_FOUND[@]}")"
@@ -354,8 +391,10 @@ if [[ -n "$PROJECT_FILTER" ]]; then
         else
             log "      (no compose projects on this host)"
         fi
+        for p in ${REMOTE_LIST[@]+"${REMOTE_LIST[@]}"}; do log "      • db:$p  (remote database)"; done
         fail "Stopping — the requested projects were not found"
     fi
+    REMOTE_LIST=(${FILTERED_REMOTE[@]+"${FILTERED_REMOTE[@]}"})
 
     # Replace PROJECTS with the filtered list
     unset PROJECTS
@@ -367,7 +406,7 @@ if [[ -n "$PROJECT_FILTER" ]]; then
     # Standalone containers are skipped when filtering
     STANDALONE_CONTAINERS=()
 
-    log_ok "After filtering — projects to back up: ${C_BOLD}${#PROJECTS[@]}${C_RESET}"
+    log_ok "After filtering — projects to back up: ${C_BOLD}${#PROJECTS[@]}${C_RESET}, remote databases: ${C_BOLD}${#REMOTE_LIST[@]}${C_RESET}"
 fi
 
 # --list: project names, one per line, and exit
@@ -482,6 +521,19 @@ if [[ "$DRY_RUN" == "true" ]]; then
         for cid in "${STANDALONE_CONTAINERS[@]}"; do
             cname="$(docker inspect --format '{{.Name}}' "$cid" | sed 's|^/||')"
             log "   - $cname"
+        done
+    fi
+
+    if (( ${#REMOTE_LIST[@]} )); then
+        log ""
+        log "${C_CYAN}🗄  Remote databases (dumped straight into the primary S3):${C_RESET}"
+        for n in "${REMOTE_LIST[@]}"; do
+            if problems="$(remote_db_check "$n")"; then
+                log "   - $n: $(remote_db_desc "$n")"
+            else
+                log "   ${C_RED}- $n: the settings are not complete${C_RESET}"
+                while IFS= read -r p; do log "       $p"; done <<< "$problems"
+            fi
         done
     fi
 
@@ -1101,6 +1153,61 @@ backup_standalone() {
 }
 
 # ==============================================================================
+# 7b. REMOTE DATABASES (REMOTE_DBS)
+# The dump goes from a client container straight into the primary storage, without a file on this disk
+# (remote_db_stream, lib.sh); the copies read it back from the primary. In the storages it is the project
+# _db_<name>: one dump per timestamp, next to it the .sha256 manifest, as with an archive.
+# ==============================================================================
+backup_remote_db() {
+    local name="$1" start problems p
+    start=$(date +%s)
+    log ""
+    log "${C_BOLD}${C_BLUE}──────────────────────────────────────────────────${C_RESET}"
+    log "${C_BOLD}🗄  Remote database: $name${C_RESET}  ($(remote_db_desc "$name"))"
+    log "${C_BOLD}${C_BLUE}──────────────────────────────────────────────────${C_RESET}"
+    if ! problems="$(remote_db_check "$name")"; then
+        log_err "  The settings of $name are not complete:"
+        while IFS= read -r p; do log_err "    $p"; done <<< "$problems"
+        return 1
+    fi
+    if [[ "${ENCRYPT_BACKUPS:-false}" == "true" && ! -r "${GPG_PASSPHRASE_FILE:-}" ]]; then
+        log_err "  Cannot read the passphrase file ${GPG_PASSPHRASE_FILE:-}: no dump is made, it would go unencrypted"
+        return 1
+    fi
+    _remote_db_build "$name" dump
+    remote_db_image_ready || return 1
+
+    local folder="_db_${name}" file key
+    file="${folder}__${TIMESTAMP}.${RDB_EXT}"
+    [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && file+=".gpg"
+    key="${BACKUP_PREFIX}/${folder}/${TIMESTAMP}/${file}"
+    log "  ☁  Dumping straight into the primary S3$([[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && echo ", encrypted"): s3://${PRIMARY_S3_BUCKET}/${key}"
+    remote_db_stream "$name" "$key" || return 1
+    log_ok "Size in S3 matches: ${RDB_SIZE} bytes"
+
+    local checksum_file="" checksum_key=""
+    if [[ "${CHECKSUM_MANIFEST:-true}" == "true" && -n "$RDB_SHA256" ]]; then
+        log_ok "  sha256: ${RDB_SHA256}"
+        checksum_file="${BACKUP_ROOT}/${file}.sha256"
+        printf '%s  %s\n' "$RDB_SHA256" "$file" > "$checksum_file"
+        if aws_upload "$checksum_file" "s3://${PRIMARY_S3_BUCKET}/${key}.sha256"; then
+            checksum_key="${key}.sha256"
+        else
+            log_warn "  The sha256 manifest did not upload — hash verification will not be available for this dump"
+        fi
+    fi
+
+    if ! upload_copies "database $name" "s3://${PRIMARY_S3_BUCKET}/${key}" "$key" "$RDB_SIZE" "$checksum_file" "$checksum_key"; then
+        rm -f "$checksum_file"
+        return 1
+    fi
+    rm -f "$checksum_file"
+    TOTAL_UPLOADED_BYTES=$((TOTAL_UPLOADED_BYTES + RDB_SIZE))
+    log_done "database $name  (size: $(awk -v b="$RDB_SIZE" 'BEGIN { split("B KB MB GB TB", u, " "); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ } printf(i == 1 ? "%d %s" : "%.1f %s", b, u[i]) }'), time: $(fmt_duration $(($(date +%s) - start))))"
+    return 0
+}
+
+# ==============================================================================
 # 8. ROTATION
 # ==============================================================================
 cleanup_old_backups() {
@@ -1180,10 +1287,10 @@ cleanup_old_backups() {
 # ==============================================================================
 # 9. MAIN FLOW
 # ==============================================================================
-TOTAL_PROJECTS=${#PROJECTS[@]}
+TOTAL_PROJECTS=$(( ${#PROJECTS[@]} + ${#REMOTE_LIST[@]} ))
 
 RUN_STARTED=true
-if (( TOTAL_PROJECTS > 0 )); then
+if (( ${#PROJECTS[@]} > 0 )); then
     for proj in "${!PROJECTS[@]}"; do
         CURRENT_PROJECT="$proj"
         if backup_project "$proj" "${PROJECTS[$proj]}"; then
@@ -1194,7 +1301,7 @@ if (( TOTAL_PROJECTS > 0 )); then
             log_err "Project $proj finished with an error"
         fi
     done
-else
+elif (( ${#REMOTE_LIST[@]} == 0 )); then
     log_warn "No compose projects found on this host"
 fi
 
@@ -1206,6 +1313,20 @@ else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     FAILED_PROJECTS+=("containers outside compose")
 fi
+CURRENT_PROJECT=""
+
+# Remote databases
+for n in ${REMOTE_LIST[@]+"${REMOTE_LIST[@]}"}; do
+    CURRENT_PROJECT="database $n"
+    if backup_remote_db "$n"; then
+        TOTAL_SUCCESS=$((TOTAL_SUCCESS + 1))
+    else
+        TOTAL_FAILED=$((TOTAL_FAILED + 1))
+        FAILED_PROJECTS+=("database $n")
+        log_err "Remote database $n finished with an error"
+    fi
+    RDB_CNAME=""
+done
 CURRENT_PROJECT=""
 
 # Rotation — skipped if there was a project filter (deleting others' backups is dangerous)
@@ -1221,7 +1342,8 @@ elif (( TOTAL_SUCCESS == 0 )); then
 else
     # Live projects — for rotation: for them it protects the last copies, for the rest it doesn't (plan_rotation).
     # Left out by EXCLUDE_PROJECTS counts as live: the project is still here, only not backed up.
-    ROTATION_LIVE_PROJECTS="$(printf '%s\n' "${!PROJECTS[@]}" ${EXCLUDED[@]+"${!EXCLUDED[@]}"} "_standalone_${HOSTNAME}")"
+    ROTATION_LIVE_PROJECTS="$(printf '%s\n' "${!PROJECTS[@]}" ${EXCLUDED[@]+"${!EXCLUDED[@]}"} "_standalone_${HOSTNAME}" \
+        ${REMOTE_LIST[@]+"${REMOTE_LIST[@]/#/_db_}"})"
     export ROTATION_LIVE_PROJECTS
     for role in primary ${S3_COPIES[@]+"${S3_COPIES[@]}"}; do
         cleanup_old_backups "$role" || log_warn "Rotation ($(s3_label "$role")) finished with an error"

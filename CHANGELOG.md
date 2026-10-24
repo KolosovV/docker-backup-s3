@@ -25,6 +25,15 @@ The installed version: `docker-backup version` (or the `VERSION` file).
   the menu has a new section, **Projects**, to tick them in a list. The dry run shows both.
 - The label `docker-backup-s3.skip=true` on a database container in a compose project turns off its dump (before,
   the label worked only for containers started without compose).
+- **Remote databases** — Postgres, MySQL, MariaDB, MongoDB and Redis that are not containers on this host (a managed
+  service, another server): `REMOTE_DBS` and `REMOTE_DB_<NAME>_*` in `backup.conf`, or the menu's new section
+  **Remote databases**, which checks the login at once. A throwaway client container dumps each one, and the dump
+  goes straight into the primary storage through a pipe (gzip, gpg, upload), then from the primary into the copies:
+  nothing is written to this disk, so the size of the database does not matter here. A dump that fails half-way
+  leaves no object behind; a transient storage error starts it again. Each one is the project `_db_<name>` in the
+  storages: rotation, sync and `status.sh` handle it, `-p db:NAME` backs up one, `verify-restore.sh` streams it back
+  and checks it, `docker-restore.sh` saves it and prints the command to load it. `validate-config.sh` logs in to
+  each. The password reaches the client through its environment or stdin, never its command line.
 
 ### Security
 - **Database passwords no longer go on a command line.** `docker exec -e PGPASSWORD=…`, `-e MYSQL_PWD=…`,

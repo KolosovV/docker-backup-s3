@@ -536,6 +536,32 @@ else
 fi
 
 # ==============================================================================
+# 8. REMOTE DATABASES — the settings, then a login with them (the client image is pulled if missing)
+# ==============================================================================
+if [[ -n "$(remote_db_names)" ]]; then
+    section "Remote databases"
+    declare -A _rdb_keys=()
+    while IFS= read -r n; do
+        [[ -z "$n" ]] && continue
+        k="$(remote_db_key "$n")"
+        if [[ -n "${_rdb_keys[$k]:-}" ]]; then
+            err "REMOTE_DBS: $n and ${_rdb_keys[$k]} share the settings REMOTE_DB_${k}_* — give one another name"
+            continue
+        fi
+        _rdb_keys[$k]="$n"
+        if ! problems="$(remote_db_check "$n")"; then
+            while IFS= read -r p; do err "$n: $p"; done <<< "$problems"
+            continue
+        fi
+        pw="$(remote_db_password "$n")"
+        if [[ -n "$pw" ]]; then ok "$n: $(remote_db_desc "$n"), password set (${#pw} characters, not shown)"
+        else ok "$n: $(remote_db_desc "$n"), no password"; fi
+        if answer="$(remote_db_probe "$n" 2>&1)"; then ok "$n: logged in — $answer"
+        else err "$n: cannot log in — $(tr '\n' ' ' <<< "$answer")"; fi
+    done < <(remote_db_names)
+fi
+
+# ==============================================================================
 # SUMMARY
 # ==============================================================================
 echo

@@ -45,6 +45,9 @@ require_cmd aws
 if [[ -n "$(docker ps -aq --filter "label=com.docker.compose.project=${NAME}" 2>/dev/null || true)" ]]; then
     fail "Project ${NAME} has containers on this server — it's a live backup, not deleting."
 fi
+if [[ "$NAME" == _db_* ]] && remote_db_names | grep -qxF -- "${NAME#_db_}"; then
+    fail "${NAME#_db_} is in REMOTE_DBS — a live backup of a remote database, not deleting. Take it out of REMOTE_DBS first."
+fi
 
 PREFIX="${BACKUP_PREFIX}/${NAME}/"   # with the slash: mailcow-dockerized/ doesn't touch mailcowdockerized/
 

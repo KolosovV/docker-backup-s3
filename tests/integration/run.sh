@@ -25,6 +25,8 @@ PROJ="itproj"
 PDIR="$IT/srv/${PROJ}-app"   # not named like the project: its name must come from -p, not from the folder
 EXT="$IT/srv/${PROJ}-ext"          # a bind mount NEXT TO the project folder (the 1.0.1 fix)
 S3C="dbit-s3-$$"
+# "Remote" databases: containers with published ports, reached the way a server elsewhere would be
+RPG="dbit-rpg-$$" RMY="dbit-rmy-$$" RMO="dbit-rmo-$$" RRE="dbit-rre-$$"
 S3PORT=17070
 HOOKPORT=17071
 CONF="$IT/backup.conf"
@@ -39,7 +41,7 @@ die()  { echo "FATAL: $*"; exit 1; }
 cleanup() {
     if $KEEP; then echo "Kept: $IT, container $S3C"; return; fi
     [[ -f "$PDIR/compose.yaml" ]] && docker compose -p "$PROJ" -f "$PDIR/compose.yaml" down -v --remove-orphans >/dev/null 2>&1
-    docker rm -f "$S3C" >/dev/null 2>&1
+    docker rm -f "$S3C" "$RPG" "$RMY" "$RMO" "$RRE" >/dev/null 2>&1
     docker volume rm -f "${PROJ}_pgdata" "${PROJ}_appdata" >/dev/null 2>&1
     [[ -n "${HOOK_PID:-}" ]] && kill "$HOOK_PID" 2>/dev/null
     rm -rf "$IT"
@@ -270,6 +272,125 @@ if wait_pg; then ok "Postgres is up after the restore"; else bad "Postgres did n
 fingerprint > "$IT/after.txt" 2>&1
 if [[ "$(cat "$IT/before.txt")" == "$(cat "$IT/after.txt")" ]]; then ok "the data matches: database, volume, bind mounts, project folder"
 else bad "the data differs"; echo "--- before:"; cat "$IT/before.txt"; echo "--- after:"; cat "$IT/after.txt"; fi
+
+# ------------------------------------------------------------------------------
+step "Remote databases: dumped straight into both storages, then loaded back"
+RPW='r pg$1"x' RMW='r my"x' ROW='r mo!' RRW='r re'
+docker run -d --name "$RPG" --label docker-backup-s3.skip=true -p 127.0.0.1:17080:5432 \
+    -e POSTGRES_PASSWORD="$RPW" -e POSTGRES_DB=shop postgres:17-alpine >/dev/null
+docker run -d --name "$RMY" --label docker-backup-s3.skip=true -p 127.0.0.1:17081:3306 \
+    -e MARIADB_ROOT_PASSWORD="$RMW" mariadb:11.4 >/dev/null
+docker run -d --name "$RMO" --label docker-backup-s3.skip=true -p 127.0.0.1:17082:27017 \
+    -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$ROW" mongo:7 >/dev/null
+docker run -d --name "$RRE" --label docker-backup-s3.skip=true -p 127.0.0.1:17083:6379 \
+    redis:7-alpine redis-server --requirepass "$RRW" >/dev/null
+r_pg() { docker exec -i "$RPG" psql -U postgres -d shop -tAc "$1"; }
+r_my() { docker exec -i "$RMY" mariadb -uroot "-p$RMW" -N -B -e "$1"; }
+r_mo() { docker exec "$RMO" mongosh -u root -p "$ROW" --quiet --eval "$1"; }
+r_re() { docker exec "$RRE" redis-cli -a "$RRW" --no-auth-warning "$@"; }
+r_fp() {
+    echo "pg: $(r_pg "select count(*) || ':' || md5(string_agg(v, ',' order by id)) from t")"
+    echo "my: $(r_my "select count(*), md5(group_concat(v order by id separator ',')) from rx.t")"
+    echo "mo: $(r_mo 'db.getSiblingDB("app").c.countDocuments()')"
+    echo "re: $(r_re get k)"
+}
+for _ in $(seq 1 90); do
+    r_pg 'select 1' >/dev/null 2>&1 && r_my 'select 1' >/dev/null 2>&1 && r_mo '1' >/dev/null 2>&1 && [[ "$(r_re ping 2>/dev/null)" == PONG ]] && break
+    sleep 1
+done
+for c in "$RPG" "$RMY" "$RMO" "$RRE"; do
+    [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == true ]] && continue
+    bad "the test server $c is not running: $(docker inspect -f '{{.State.Status}}, exit {{.State.ExitCode}} {{.State.Error}}' "$c" 2>&1)"
+    docker logs "$c" 2>&1 | tail -n 15
+done
+r_pg "create table t(id int primary key, v text); insert into t select g, md5(g::text) from generate_series(1, 2000) g;" >/dev/null
+r_my "create database rx; create table rx.t(id int primary key, v varchar(40)); insert into rx.t select seq, md5(seq) from rx.seq_1_to_1500;" >/dev/null
+r_mo 'for (let i = 0; i < 300; i++) db.getSiblingDB("app").c.insertOne({i: i})' >/dev/null
+r_re set k "remote value $RANDOM" >/dev/null
+r_fp > "$IT/remote-before.txt"; cat "$IT/remote-before.txt"
+cp "$CONF" "$IT/remote.conf"
+cat >> "$IT/remote.conf" <<EOF
+REMOTE_DBS="rpg rmy rmo rre rbad"
+REMOTE_DB_RPG_TYPE="postgres"
+REMOTE_DB_RPG_HOST="127.0.0.1"
+REMOTE_DB_RPG_PORT="17080"
+REMOTE_DB_RPG_PASSWORD='$RPW'
+REMOTE_DB_RPG_DATABASE="shop"
+REMOTE_DB_RPG_IMAGE="postgres:17-alpine"
+REMOTE_DB_RMY_TYPE="mariadb"
+REMOTE_DB_RMY_HOST="localhost"
+REMOTE_DB_RMY_PORT="17081"
+REMOTE_DB_RMY_PASSWORD='$RMW'
+REMOTE_DB_RMO_TYPE="mongo"
+REMOTE_DB_RMO_HOST="127.0.0.1"
+REMOTE_DB_RMO_PORT="17082"
+REMOTE_DB_RMO_USER="root"
+REMOTE_DB_RMO_PASSWORD='$ROW'
+REMOTE_DB_RMO_IMAGE="mongo:7"
+REMOTE_DB_RRE_TYPE="redis"
+REMOTE_DB_RRE_HOST="127.0.0.1"
+REMOTE_DB_RRE_PORT="17083"
+REMOTE_DB_RRE_PASSWORD='$RRW'
+REMOTE_DB_RBAD_TYPE="postgres"
+REMOTE_DB_RBAD_HOST="127.0.0.1"
+REMOTE_DB_RBAD_PORT="17080"
+REMOTE_DB_RBAD_PASSWORD="wrong"
+REMOTE_DB_RBAD_IMAGE="postgres:17-alpine"
+EOF
+chmod 600 "$IT/remote.conf"
+run rvalidate validate-config.sh -c "$IT/remote.conf"
+check "validate-config logs in to all four" test "$(grep -c ': logged in — ' "$IT/rvalidate.out")" -eq 4
+check "and says the wrong password does not" grep -q 'rbad: cannot log in — .*password authentication failed' "$IT/rvalidate.out"
+check "validate-config shows no password" bash -c 'for p in "$2" "$3" "$4" "$5"; do grep -qF -- "$p" "$1" && exit 1; done; exit 0' _ "$IT/rvalidate.out" "$RPW" "$RMW" "$ROW" "$RRW"
+if run rbackup docker-backup.sh -c "$IT/remote.conf" -p db:rpg,db:rmy,db:rmo,db:rre; then ok "the four are backed up"
+else bad "the remote backup failed"; show_tail rbackup; fi
+s3 s3 ls --recursive "s3://primary/it/" | awk '{print $3, $4}' | grep ' it/_db_' > "$IT/rprimary.ls"
+s3 s3 ls --recursive "s3://secondary/it/" | awk '{print $3, $4}' | grep ' it/_db_' > "$IT/rsecondary.ls"
+cat "$IT/rprimary.ls"
+for n in rpg:sql.gz rmy:sql.gz rmo:archive.gz rre:rdb.gz; do
+    check "${n%%:*}: an encrypted dump and its manifest in the primary" bash -c \
+        'grep -qE " it/_db_$2/[0-9_-]+/_db_$2__[0-9_-]+\.$3\.gpg$" "$1" && grep -qE "\.$3\.gpg\.sha256$" "$1"' _ "$IT/rprimary.ls" "${n%%:*}" "${n#*:}"
+done
+check "the secondary has the same dumps, the same sizes" test "$(sort "$IT/rprimary.ls")" == "$(sort "$IT/rsecondary.ls")"
+check "no dump was written in WORK_DIR" test -z "$(find "$IT/work" \( -name '*.sql*' -o -name '*.rdb*' -o -name '*.archive*' \) 2>/dev/null)"
+check "no client container is left" test -z "$(docker ps -aq --filter name=dbb-db-)"
+check "no password in the run's output or log" bash -c 'for p in "$3" "$4" "$5" "$6"; do grep -qF -- "$p" "$1" "$2" && exit 1; done; exit 0' _ \
+    "$IT/rbackup.out" "$IT/backup.log" "$RPW" "$RMW" "$ROW" "$RRW"
+if run rbad docker-backup.sh -c "$IT/remote.conf" -p db:rbad; then bad "a wrong password passed"; else ok "a wrong password fails the run"; fi
+check "the reason is in the log" grep -q 'password authentication failed' "$IT/rbad.out"
+check "webhook: saved nowhere — database rbad" grep -q '^error|backup with errors|Saved nowhere: database rbad\.' <<< "$(hook_msgs)"
+check "nothing of it left in the storage" test -z "$(s3 s3 ls --recursive s3://primary/it/_db_rbad/ 2>/dev/null)"
+run rstatus status.sh -c "$IT/remote.conf"
+check "status: the remote databases, and their backups marked as such" bash -c 'grep -q "Remote databases" "$1" && grep -q "_db_rpg.*(remote database)" "$1"' _ "$IT/rstatus.out"
+for n in rpg rmy rmo rre; do
+    if run "rverify-$n" verify-restore.sh -c "$IT/remote.conf" -p "_db_$n"; then ok "verify-restore _db_$n"
+    else bad "verify-restore _db_$n failed"; show_tail "rverify-$n"; fi
+done
+check "verify-restore knows each kind" bash -c 'grep -q "PostgreSQL dump, intact" "$1" && grep -q "MySQL/MariaDB dump, intact" "$2" && grep -q "MongoDB archive, intact" "$3" && grep -q "Redis RDB, intact" "$4"' _ \
+    "$IT/rverify-rpg.out" "$IT/rverify-rmy.out" "$IT/rverify-rmo.out" "$IT/rverify-rre.out"
+# The data is lost on the "remote" servers, and comes back from the dumps docker-restore saves
+RTS="$(grep ' it/_db_rpg/' "$IT/rprimary.ls" | head -n 1 | cut -d/ -f3)"
+for n in rpg rmy rmo rre; do
+    if run "rrestore-$n" docker-restore.sh -c "$IT/remote.conf" -p "_db_$n" -t "$RTS" --from secondary --extract-to "$IT/rdumps" -y; then ok "docker-restore saves the dump of $n"
+    else bad "docker-restore _db_$n failed"; show_tail "rrestore-$n"; fi
+done
+check "the saved dumps are mode 600" test "$(stat -c %a "$IT"/rdumps/* | sort -u)" == 600
+check "it says how to load one" grep -q 'gunzip -c .* | psql -h 127.0.0.1 -p 17080 -U postgres -d shop' "$IT/rrestore-rpg.out"
+r_pg 'drop table t' >/dev/null
+r_my 'drop database rx' >/dev/null
+r_mo 'db.getSiblingDB("app").c.drop()' >/dev/null
+r_re flushall >/dev/null
+gunzip -c "$IT"/rdumps/_db_rpg__*.sql.gz | docker exec -i "$RPG" psql -q -U postgres -d shop >/dev/null
+gunzip -c "$IT"/rdumps/_db_rmy__*.sql.gz | docker exec -i "$RMY" mariadb -uroot "-p$RMW" >/dev/null
+docker exec -i "$RMO" mongorestore --quiet -u root -p "$ROW" --authenticationDatabase admin --archive --gzip < "$(ls "$IT"/rdumps/_db_rmo__*.archive.gz)"
+docker stop "$RRE" >/dev/null
+gunzip -c "$IT"/rdumps/_db_rre__*.rdb.gz > "$IT/dump.rdb"; docker cp "$IT/dump.rdb" "$RRE:/data/dump.rdb" >/dev/null
+docker start "$RRE" >/dev/null
+for _ in $(seq 1 30); do [[ "$(r_re ping 2>/dev/null)" == PONG ]] && break; sleep 1; done
+r_fp > "$IT/remote-after.txt"
+if [[ "$(cat "$IT/remote-before.txt")" == "$(cat "$IT/remote-after.txt")" ]]; then ok "all four databases are back as they were"
+else bad "the remote data differs"; echo "--- before:"; cat "$IT/remote-before.txt"; echo "--- after:"; cat "$IT/remote-after.txt"; fi
+docker rm -f "$RPG" "$RMY" "$RMO" "$RRE" >/dev/null 2>&1
 
 # ------------------------------------------------------------------------------
 step "Encryption switched off by a second line, the passphrase in place"
