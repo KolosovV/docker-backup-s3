@@ -1367,7 +1367,7 @@ _auto_dump_databases_impl() {
 REMOTE_DB_FIELDS=(TYPE HOST PORT USER PASSWORD PASSWORD_FILE DATABASE SSL IMAGE NETWORK ARGS TIMEOUT MAX_SIZE)
 
 # remote_db_names — the names in REMOTE_DBS, one per line (spaces or commas between them)
-remote_db_names() { split_words "${REMOTE_DBS//,/ }"; }
+remote_db_names() { local l="${REMOTE_DBS:-}"; split_words "${l//,/ }"; }
 
 # remote_db_key <name> — its part of the variable names: shop-db → SHOP_DB
 remote_db_key() { local k="${1^^}"; printf '%s' "${k//-/_}"; }

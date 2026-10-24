@@ -336,4 +336,16 @@ check "WORK_DIR has no dump left" test -z "$(find "$W/run" -name '*.sql.gz*' 2>/
 "$REPO/docker-backup.sh" -c "$CONF" -p db:broken > "$W/broken.out" 2>&1; rc=$?
 check "incomplete settings: the run fails and says why" bash -c '[[ $1 == 1 ]] && grep -q "REMOTE_DB_BROKEN_TYPE is not set" "$2" && grep -q "Errors:    1  (database broken)" "$2"' _ "$rc" "$W/broken.out"
 
+section "a config from before these options (no REMOTE_DBS line at all)"
+OLD="$W/old.conf"
+grep -vE '^(REMOTE_DB|EXCLUDE_PROJECTS|DB_DUMP_EXCLUDE_PROJECTS|S3_UPLOAD_TRIES|S3_UPLOAD_RETRY_DELAY)' "$CONF" > "$OLD"
+chmod 600 "$OLD"
+"$REPO/docker-backup.sh" -c "$OLD" -n > "$W/old-backup.out" 2>&1
+"$REPO/validate-config.sh" -c "$OLD" > "$W/old-validate.out" 2>&1
+"$REPO/status.sh" -c "$OLD" > "$W/old-status.out" 2>&1
+for s in backup validate status; do
+    check "$s: no unbound variable" bash -c '! grep -q "unbound variable" "$1"' _ "$W/old-$s.out"
+done
+check "the dry run got to its plan" grep -q 'DRY-RUN END' "$W/old-backup.out"
+
 finish
