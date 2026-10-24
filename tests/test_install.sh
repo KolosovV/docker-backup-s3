@@ -46,7 +46,7 @@ section "a fresh clone with the old config copied in (install.sh in place)"
 T="$W/opt/docker-backup-s3"
 mkdir -p "$T"; cp -a "$REPO/." "$T/"; rm -rf "$T/.git"
 old_conf "$T/backup.conf"; chmod 600 "$T/backup.conf"
-mkdir -p /usr/local/bin; ln -sfn "$T/menu.sh" /usr/local/bin/docker-backup   # the command's name before 1.5.1
+mkdir -p /usr/local/bin; ln -sfn "$T/menu.sh" /usr/local/bin/docker-backup   # the command's name before 2.0.0
 if bash "$T/install.sh" -y --skip-deps --no-cron --skip-validate --target "$T" > "$W/install.log" 2>&1; then ok "install.sh exit 0"
 else bad "install.sh failed"; tail -n 20 "$W/install.log"; fi
 same_values "$T/backup.conf" "install"

@@ -480,7 +480,7 @@ verify_project() {
                 fi
             done
 
-            # Mongo dumps: a mongodump archive (.tar.gz before 1.5.1 — the same thing under a wrong name)
+            # Mongo dumps: a mongodump archive (.tar.gz before 2.0.0 — the same thing under a wrong name)
             for d in "$dumps_dir"/mongo_*.archive.gz "$dumps_dir"/mongo_*.tar.gz; do
                 [[ -f "$d" ]] || continue
                 local name; name=$(basename "$d")

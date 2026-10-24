@@ -810,7 +810,7 @@ if [[ -L "$CMD_LINK" || ! -e "$CMD_LINK" ]]; then
 else
     log_warn "$CMD_LINK already exists and is not our link — leaving it; the menu: sudo $TARGET_DIR/menu.sh"
 fi
-# Before 1.5.1 the command was called docker-backup: our old link goes
+# Before 2.0.0 the command was called docker-backup: our old link goes
 if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
     rm -f /usr/local/bin/docker-backup && log_ok "The old command name docker-backup is removed"
 fi

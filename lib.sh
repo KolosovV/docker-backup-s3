@@ -1251,7 +1251,7 @@ dump_redis() {
 }
 
 # A mongodump archive (gzipped by mongodump): mongorestore --archive=<file> --gzip.
-# Versions before 1.5.1 named it .tar.gz though it is not a tar; those are removed with the first new dump.
+# Versions before 2.0.0 named it .tar.gz though it is not a tar; those are removed with the first new dump.
 dump_mongo() {
     local container="$1" timestamp="$3" rc=0 DUMPS_DIR CNAME
     _db_prepare "$container" "$2"

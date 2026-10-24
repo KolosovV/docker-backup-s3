@@ -6,17 +6,16 @@ All notable changes to this project are documented here. The format follows
 on update (a config change that `update.sh` can't do for you), **minor** — new features,
 **patch** — fixes.
 
-The installed version: `docker-backup version` (or the `VERSION` file).
+The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
 ## [Unreleased]
 
 ### Changed — action needed
-- **The command is `docker-backup-s3`** (it was `docker-backup`): `sudo docker-backup-s3`, `sudo docker-backup-s3 backup -p app`.
-  `update.sh` and `install.sh` link the new name and remove the old one. The scripts' file names, the logs
+- **The command is `docker-backup-s3`**: `sudo docker-backup-s3`, `sudo docker-backup-s3 backup -p app`.
+  `update.sh` and `install.sh` link it and remove the old name. The scripts' file names, the logs
   (`/var/log/docker-backup*.log`), `WORK_DIR` and the schedule stay as they are.
-- **The label is `docker-backup-s3.skip=true`** (it was `docker-backup.skip=true`); the old one no longer works.
-  `update.sh` lists the containers that still carry the old label: rename it in their compose file or
-  `docker run`, and recreate them.
+- **The label is `docker-backup-s3.skip=true`.** `update.sh` lists the containers that still carry the old one:
+  rename it in their compose file or `docker run`, and recreate them.
 
 ### Added
 - **Projects to leave out.** `EXCLUDE_PROJECTS` — not backed up at all; their backups already in the storages stay
