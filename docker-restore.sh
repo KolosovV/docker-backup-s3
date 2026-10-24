@@ -221,7 +221,7 @@ show_backup_contents() {
         echo "${C_BOLD}🗄  Database dumps (inside project_dir.tar.gz):${C_RESET}"
         if [[ -f "$d/project_dir.tar.gz" ]]; then
             local dumps
-            dumps="$(tar tzf "$d/project_dir.tar.gz" 2>/dev/null | grep -E '/db-dumps/[^/]+$' || true)"
+            dumps="$(tar tzf "$d/project_dir.tar.gz" 2>/dev/null | grep -E '/db-dumps/[^/]+$' | sort || true)"
             if [[ -n "$dumps" ]]; then
                 while IFS= read -r line; do
                     [[ -z "$line" ]] && continue
@@ -237,7 +237,7 @@ show_backup_contents() {
             echo "    (no project_dir.tar.gz in the backup)"
         fi
         echo
-    } >&2
+    }   # to stdout: this is the answer of --contents (> file, | grep, diff of two backups); the log goes to stderr
 }
 
 # ==============================================================================
@@ -707,9 +707,10 @@ restore_one_project() {
     trap "rm -rf '$TMP_DIR'" RETURN
 
     log "  ⬇  Downloading the archive ${SRC_S3_GEN}..."
-    # Progress on a terminal; in a log or a pipe a progress line per chunk is noise — errors only there
+    # Progress on a terminal; in a log or a pipe a progress line per chunk is noise — errors only there.
+    # aws writes progress to stdout: sent to stderr with the log, so stdout keeps only the answer (--contents).
     local -a quiet=(); [[ -t 2 ]] || quiet=(--only-show-errors)
-    aws_q s3 cp "$S3_URL" "${TMP_DIR}/${ARCHIVE_NAME}" ${quiet[@]+"${quiet[@]}"} \
+    aws_q s3 cp "$S3_URL" "${TMP_DIR}/${ARCHIVE_NAME}" ${quiet[@]+"${quiet[@]}"} >&2 \
         || { log_err "Could not download $S3_URL"; return 1; }
 
     # Check against the sha256 manifest, if there is one next to the archive. The size already matched

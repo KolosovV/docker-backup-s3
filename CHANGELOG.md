@@ -67,6 +67,9 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   stopped with `None: unbound variable`. Now each project gets its own table; an empty answer from the storage
   is no longer read as a backup date or a size. A name the storage doesn't have is said so, with the names it
   has (a compose project may be named unlike its folder: mailcow is `mailcowdockerized`).
+- **`docker-restore.sh --contents > file` saved nothing useful.** The report went to stderr with the log, and
+  stdout got only aws's `download:` line, so two backups could not be compared with `diff`. The report now goes to
+  stdout (dumps sorted by name), and aws's output goes to stderr.
 - **Last night's backup was "today".** The age counted whole 24-hour periods; it now counts calendar days
   (`docker-restore.sh`, `verify-restore.sh`).
 - **A Telegram message lost to one network hiccup.** With no answer from api.telegram.org (a timeout, a dropped

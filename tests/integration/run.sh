@@ -226,6 +226,9 @@ check "the app volume is in it" grep -q "${PROJ}_appdata" "$IT/contents.out"
 check "a Postgres dump is in it" grep -qi 'itdb\|postgres.*\.sql' "$IT/contents.out"
 check "a MariaDB 11 dump is in it (mariadb-dump: the image has no mysqldump)" grep -q 'mariadb_.*\.sql\.gz' "$IT/contents.out"
 check "the bind mount next to the project folder is in it" grep -q "${PROJ}_ext\|${PROJ}-ext" "$IT/contents.out"
+"$REPO/docker-restore.sh" -c "$CONF" -p "$PROJ" -t "$TS" --contents -y < /dev/null 2>/dev/null > "$IT/contents-stdout.out"
+check "--contents > file: the report goes to stdout" grep -q "${PROJ}_pgdata" "$IT/contents-stdout.out"
+check "--contents > file: and no log or aws lines with it" bash -c '! grep -qE "^download:|Downloading|RESTORE" "$1"' _ "$IT/contents-stdout.out"
 
 step "verify-restore"
 if run verify verify-restore.sh -c "$CONF" -p "$PROJ"; then ok "verify-restore exit 0"; else bad "verify-restore failed"; show_tail verify; fi
