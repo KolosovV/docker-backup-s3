@@ -1140,10 +1140,39 @@ _db_prepare() {
 }
 
 # _db_done <title> <file> <prune glob> — the size line and the rotation of local dumps.
+# The new dump stays until the archive is in the storage (keep_local_dumps then leaves DB_DUMPS_RETENTION_COUNT).
+# With DUMP_RECORD set, it notes there what the archive needs: "new" — this run's dump, "old" — earlier dumps of
+# the same container (left out of the archive), "glob" — the mask for the cleanup after the upload.
 _db_done() {
-    local size; size=$(du -h "$2" | awk '{print $1}')
+    local size keep="${DB_DUMPS_RETENTION_COUNT:-0}" f
+    size=$(du -h "$2" | awk '{print $1}')
     log_ok "    $1 dump done: $size"
-    prune_old_dumps "$DUMPS_DIR" "$3" "${DB_DUMPS_RETENTION_COUNT:-3}"
+    [[ "$keep" =~ ^[0-9]+$ ]] || keep=0
+    prune_old_dumps "$DUMPS_DIR" "$3" "$(( keep > 0 ? keep : 1 ))"
+    [[ -n "${DUMP_RECORD:-}" ]] || return 0
+    {
+        printf 'new\t%s\n' "$2"
+        # shellcheck disable=SC2086 # $3 is a glob on purpose
+        for f in "$DUMPS_DIR"/$3; do
+            [[ -f "$f" && "$f" != "$2" ]] && printf 'old\t%s\n' "$f"
+        done
+        printf 'glob\t%s\t%s\n' "$DUMPS_DIR" "$3"
+    } >> "$DUMP_RECORD"
+    return 0
+}
+
+# keep_local_dumps <record> — after the archive with the dumps is in the storage: of each container's dumps
+# keep the DB_DUMPS_RETENTION_COUNT latest on the server (0 — none; the folder goes too, if nothing else is in it).
+keep_local_dumps() {
+    local rec="$1" kind dir glob keep="${DB_DUMPS_RETENTION_COUNT:-0}"
+    [[ -f "$rec" ]] || return 0
+    [[ "$keep" =~ ^[0-9]+$ ]] || keep=0
+    while IFS=$'\t' read -r kind dir glob; do
+        [[ "$kind" == glob ]] || continue
+        prune_old_dumps "$dir" "$glob" "$keep"
+        (( keep == 0 )) && rmdir "$dir" 2>/dev/null
+    done < "$rec"
+    return 0
 }
 
 # Delete old dumps by mask, keeping the last N

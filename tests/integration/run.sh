@@ -201,6 +201,7 @@ check "no transfer-client warning from aws" bash -c "! grep -q \"Using the 'clas
 check "the secondary got nothing (disabled)" test -z "$(s3 s3 ls --recursive s3://secondary/ 2>/dev/null)"
 check "webhook: backup done, worded right" grep -qE '^success\|backup done\|Saved 1 project in the primary storage \(127\.0\.0\.1:[0-9]+\)\. / [0-9.]+ [MG]B in ' <<< "$(hook_msgs)"
 check "the containers run again after the backup" test "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter status=running | wc -l)" -eq 3
+check "no database dumps left on the server (DB_DUMPS_RETENTION_COUNT=0 by default)" test ! -e "$PDIR/db-dumps"
 
 step "The plan shows the exclusion"
 run plan docker-backup.sh -c "$CONF" -p "$PROJ" --dry-run
@@ -235,9 +236,19 @@ check "webhook: backups restore fine" grep -q '^success|backups restore fine|' <
 # ------------------------------------------------------------------------------
 step "BACKUP_MODE=stop: the project's containers are stopped and started again"
 started_before="$(docker inspect -f '{{.State.StartedAt}}' "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter "label=com.docker.compose.service=db")")"
-cp "$CONF" "$IT/stop.conf"; echo 'BACKUP_MODE="stop"' >> "$IT/stop.conf"
+cp "$CONF" "$IT/stop.conf"; printf 'BACKUP_MODE="stop"\nDB_DUMPS_RETENTION_COUNT=2\n' >> "$IT/stop.conf"
+# An earlier dump kept on the server: it stays there (2 are kept), but is already in an earlier archive
+db_name="$(docker inspect -f '{{.Name}}' "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter "label=com.docker.compose.service=db")" | sed 's|^/||')"
+stale="$PDIR/db-dumps/postgres_${db_name}_2000-01-01_00-00-00.sql.gz"
+mkdir -p "$PDIR/db-dumps"; echo stale | gzip > "$stale"; touch -d '2000-01-01' "$stale"
 if run stopmode docker-backup.sh -c "$IT/stop.conf" -p "$PROJ"; then ok "a backup in stop mode"
 else bad "the stop-mode backup failed"; show_tail stopmode; fi
+TS2="$(s3 s3 ls --recursive "s3://primary/it/$PROJ/" 2>/dev/null | awk '{print $4}' | cut -d/ -f3 | sort -u | tail -n 1)"
+run contents2 docker-restore.sh -c "$CONF" -p "$PROJ" -t "$TS2" --contents -y
+check "the archive has this run's Postgres dump" grep -q "postgres_${db_name}_${TS2}" "$IT/contents2.out"
+check "but not the earlier one kept on the server" bash -c '! grep -q "2000-01-01_00-00-00" "$1"' _ "$IT/contents2.out"
+check "DB_DUMPS_RETENTION_COUNT=2: the server keeps both" test -f "$stale" -a "$(ls "$PDIR"/db-dumps/postgres_* | wc -l)" -eq 2
+rm -rf "$PDIR/db-dumps"
 db_id="$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter "label=com.docker.compose.service=db")"
 check "the database was really stopped and started (a new start time)" test -n "$db_id" -a "$(docker inspect -f '{{.State.StartedAt}}' "$db_id" 2>/dev/null)" != "$started_before"
 check "all three containers run again" test "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter status=running | wc -l)" -eq 3

@@ -69,6 +69,11 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   its own source, and `update.sh` refused to run: so the new `docker-backup-s3` command was not linked. Now it
   copies nothing there and does the rest (the command, the options you don't set, `validate-config.sh`).
   README: after `git checkout`, run `update.sh`.
+- **Every archive carried the earlier database dumps too.** The last 3 dumps of each database stayed in the project
+  folder, and the folder went into the archive whole: each archive held three dumps where one is needed. Now only
+  this run's dump goes in, and once the archive is in the storage the dumps on the server are deleted: the new
+  default `DB_DUMPS_RETENTION_COUNT=0`. A config that sets it (the template had `3`) keeps that many on the
+  server; set `0` to keep none. If the upload fails, this run's dump stays until the next run.
 - **Ctrl+C did not stop a script.** aws-cli catches it and exits with an ordinary error, so the script took it for a
   failed check and went on (`validate-config.sh` said "Cannot write to the bucket"). Every script now stops, and so
   does the one that called it (`update.sh` → `validate-config.sh`).

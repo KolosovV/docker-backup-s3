@@ -499,7 +499,7 @@ Everything else has sensible defaults.
 | `AUTO_DUMP_REDIS` | `true` | Redis auto-dump |
 | `AUTO_DUMP_MONGO` | `true` | MongoDB auto-dump |
 | `DB_DUMPS_DIR` | `db-dumps` | subfolder for the dumps |
-| `DB_DUMPS_RETENTION_COUNT` | `3` | how many dumps to keep locally |
+| `DB_DUMPS_RETENTION_COUNT` | `0` | how many dumps of each database stay on the server after the upload (`0` — none) |
 | `DB_DUMP_TIMEOUT` | `1800` | timeout for each dump (sec) |
 | `REMOTE_DBS`, `REMOTE_DB_<NAME>_*` | empty | databases not on this host (see [Remote databases](#remote-databases)) |
 | `ENCRYPT_BACKUPS` | `false` | GPG encryption |
@@ -721,9 +721,14 @@ When a backup runs, for each project the script:
 3. Checks that the container really runs that database server and has its dump tool: an exporter,
    an admin UI or a backup sidecar whose image name matched (`postgres-exporter`, `redis_exporter`,
    `mongo-express`…) is skipped with a note, not counted as a failure
-4. Saves the dump into the `db-dumps/` subfolder inside the project (`700`, the files `600`; the last
-   `DB_DUMPS_RETENTION_COUNT` dumps of each container are kept there)
-5. These files automatically end up in the archive (since the whole project folder is archived)
+4. Saves the dump into the `db-dumps/` subfolder inside the project (`700`, the files `600`)
+5. The dump goes into the archive with the project folder — only this run's: earlier dumps kept on the server
+   are left out, they are in earlier archives already
+6. Once the archive is in the storage, deletes the dumps on the server, or keeps the last
+   `DB_DUMPS_RETENTION_COUNT` of each database for a quick rollback. A dump is all the data in plain form, and
+   a local copy on the same disk does not survive the loss of the server. If the upload fails, this run's
+   dump stays until the next run. With `BACKUP_PROJECT_DIR="false"` the dumps are not in the archive, and
+   nothing is deleted.
 
 When a dump fails, the log says why — the last lines of the tool's own error (`Access denied for user…`,
 `WRONGPASS…`, a timeout) — and the raw volume still goes into the archive.

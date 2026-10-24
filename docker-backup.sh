@@ -777,7 +777,10 @@ backup_project() {
     local fail_marker="${BACKUP_ROOT}/.failed_${proj//\//_}"
     rm -f "$fail_marker"
 
-    # 6.1 — Automatic database dump (PostgreSQL/MySQL/MariaDB/Redis/MongoDB)
+    # 6.1 — Automatic database dump (PostgreSQL/MySQL/MariaDB/Redis/MongoDB).
+    # DUMP_RECORD — which dumps this run made and which are older (see _db_done in lib.sh)
+    local DUMP_RECORD="${BACKUP_ROOT}/.dumps_${proj//\//_}" dumps_archived=false
+    rm -f "$DUMP_RECORD"
     auto_dump_databases "$proj" "$dir" "$TIMESTAMP" || log_warn "Database auto-dump finished with an error, continuing..."
 
     # 6.2 — Pre-backup hook (your custom one — for non-standard databases, cleanup etc.)
@@ -900,14 +903,22 @@ backup_project() {
                 log "    ${C_DIM}⊘ Excluding nested project: $other_dir (backed up separately)${C_RESET}"
             fi
         done
+        # Earlier database dumps kept on the server are already in earlier archives: only this run's go in
+        local kind path
+        if [[ -f "$DUMP_RECORD" ]]; then
+            while IFS=$'\t' read -r kind path _; do
+                [[ "$kind" == old && "$path" == "$dir"/* ]] && tar_excludes+=(--exclude="${base_name}/${path#"$dir"/}")
+            done < "$DUMP_RECORD"
+        fi
 
         local pd_rc=0
         tar_gz "${proj_dir}/project_dir.tar.gz" \
             ${tar_excludes[@]+"${tar_excludes[@]}"} \
             -C "$(dirname "$dir")" "$base_name" || pd_rc=$?
         case "$pd_rc" in
-            0) ;;
-            1) log_warn "  Project folder: files changed while being read — archive created"
+            0) dumps_archived=true ;;
+            1) dumps_archived=true
+               log_warn "  Project folder: files changed while being read — archive created"
                echo "warn:project_dir:$dir" >> "$fail_marker" ;;
             *) log_err "  Could not back up the project folder (tar rc=$pd_rc)"
                echo "fail:project_dir:$dir" >> "$fail_marker" ;;
@@ -980,6 +991,11 @@ backup_project() {
         return 1
     fi
     log_ok "Size in S3 matches: ${local_size} bytes"
+
+    # 6.14b — The database dumps are in the storage now: on the server keep only DB_DUMPS_RETENTION_COUNT of them.
+    # Not in the archive (BACKUP_PROJECT_DIR off, the folder not archived) — then they stay: no other copy.
+    if $dumps_archived; then keep_local_dumps "$DUMP_RECORD"; fi
+    rm -f "$DUMP_RECORD"
 
     # 6.15 — Upload to the copies (secondary, tertiary), if enabled
     if ! upload_copies "$proj" "$archive_to_upload" "$s3_key" "$local_size" "$checksum_file" "$checksum_key"; then

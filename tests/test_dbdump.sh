@@ -241,6 +241,31 @@ section "permissions"
 check "db-dumps is 700" test "$(stat -c %a "$W/p-pg/db-dumps")" == 700
 check "a dump is 600" test "$(stat -c %a "$W/p-pg/db-dumps/postgres_pg_TS.sql.gz")" == 600
 
+section "the dumps on the server: what the archive takes, what stays after the upload"
+P="$W/p-keep"; D="$P/db-dumps"; R="$W/dumps.rec"; mkdir -p "$P"
+# keep_run <timestamp> <retention> [record] — one dump of the stub container pg, made a minute older each time
+keep_run() {
+    ( umask 077; DB_DUMPS_RETENTION_COUNT="$2" DUMP_RECORD="${3:-}" dump_postgres pg "$P" "$1" ) >> "$LOG_FILE" 2>&1
+    touch -d "-$(( 10 - ${1#T} )) min" "$D/postgres_pg_$1.sql.gz"
+}
+keep_run T1 0
+keep_run T2 0
+check "retention 0: the new dump stays until the upload, the earlier one goes" \
+    test "$(ls "$D")" == "postgres_pg_T2.sql.gz"
+rm -rf "$D"; keep_run T1 2; keep_run T2 2; rm -f "$R"; keep_run T3 2 "$R"
+check "retention 2: two dumps stay" test "$(ls "$D" | tr '\n' ' ')" == "postgres_pg_T2.sql.gz postgres_pg_T3.sql.gz "
+check "the record: this run's dump is new" grep -qx "new	$D/postgres_pg_T3.sql.gz" "$R"
+check "the record: the earlier one is old (left out of the archive)" grep -qx "old	$D/postgres_pg_T2.sql.gz" "$R"
+DB_DUMPS_RETENTION_COUNT=1 keep_local_dumps "$R"
+check "after the upload, retention 1: only the newest stays" test "$(ls "$D")" == "postgres_pg_T3.sql.gz"
+echo mine > "$D/hook-dump.sql"
+DB_DUMPS_RETENTION_COUNT=0 keep_local_dumps "$R"
+check "retention 0: our dumps go" test -z "$(ls "$D"/postgres_* 2>/dev/null)"
+check "a file of the user's own hook stays, and so does the folder" test -f "$D/hook-dump.sql"
+rm -f "$D/hook-dump.sql"; keep_run T4 0; rm -f "$R"; keep_run T5 0 "$R"
+DB_DUMPS_RETENTION_COUNT=0 keep_local_dumps "$R"
+check "nothing else in it: the folder goes too" test ! -e "$D"
+
 section "no secret on a command line we build"
 check "docker exec never got a password as an argument" bash -c '! grep -q -e rootpw -e apppw -e from-file -e bitnami-pw -e env-pw -e "conf pw" "$1"' _ "$F/argv.log"
 check "curl_url_cfg quotes the URL for a curl config" test "$(curl_url_cfg 'https://h/a"b\c')" == 'url = "https://h/a\"b\\c"'

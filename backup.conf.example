@@ -281,8 +281,11 @@ AUTO_DUMP_MONGO="true"
 # Where inside the project folder to put the dumps (relative path)
 DB_DUMPS_DIR="db-dumps"
 
-# How many dumps to keep (old ones are deleted before new ones are created)
-DB_DUMPS_RETENTION_COUNT=3
+# How many dumps of each database to keep on the server after the archive is in the storage.
+# 0 — none: the dump goes into the archive and is deleted (it is all the data, unencrypted, on the same disk).
+# 1 or more — a local copy for a quick rollback. Either way only this run's dump goes into the archive;
+# if the upload fails, this run's dump stays until the next run.
+DB_DUMPS_RETENTION_COUNT=0
 
 # Dump timeout for each database (seconds). Needed so the script doesn't hang
 # if a database is large or stuck.
