@@ -26,7 +26,9 @@ echo "$n $url" >> "$MOCK_DIR/calls"
 case "$url" in
     *api.telegram.org*)
         for a in "$@"; do [[ "$a" == text=* ]] && printf '%s' "${a#text=}" > "$MOCK_DIR/tg.$n"; done
-        if [[ "${MOCK_TG:-ok}" == ok ]]; then echo '{"ok":true}'
+        # silent: no answer at all (a timeout); silent1: only the first call gets none
+        if [[ "${MOCK_TG:-}" == silent || ( "${MOCK_TG:-}" == silent1 && "$n" == 1 ) ]]; then exit 28; fi
+        if [[ "${MOCK_TG:-ok}" == ok || "${MOCK_TG:-}" == silent1 ]]; then echo '{"ok":true}'
         else echo '{"ok":false,"description":"Bad Request: chat not found"}'; fi ;;
     smtp*://*)
         [[ "${MOCK_SMTP:-ok}" == ok ]] && exit 0
@@ -68,6 +70,16 @@ check "ends with …" grep -q '…$' "$MOCK_DIR/tg.1"
 if grep -q '<b>' "$MOCK_DIR/tg.1"; then bad "tags left in plain text"; else ok "no tags in plain text"; fi
 export MOCK_TG=fail; reset; notify error "x" "y" >>"$LOG_FILE" 2>&1; unset MOCK_TG
 check "a failure is logged with Telegram's reason" grep -q "to telegram: Bad Request: chat not found" "$LOG_FILE"
+check "a refusal is not tried again (HTML, then plain text)" test "$(calls)" == 2
+# The pauses between tries: a sleep stub that only records them
+printf '#!/bin/sh\necho "$1" >> "$MOCK_DIR/sleeps"\n' > "$W/bin/sleep"; chmod +x "$W/bin/sleep"
+export MOCK_TG=silent1; reset; notify error "backup with errors" "$BODY" >>"$LOG_FILE" 2>&1; unset MOCK_TG
+check "no answer: tried again after 5 s, and sent" bash -c '[[ "$(cat "$1/sleeps")" == 5 && $(wc -l < "$1/calls") == 2 ]] && grep -q "^🔴 <b>Server" "$1/tg.2"' _ "$MOCK_DIR"
+check "and nothing about a failure in the log" bash -c '! grep -q "to telegram" "$1"' _ "$LOG_FILE"
+export MOCK_TG=silent; reset; notify error "x" "y" >>"$LOG_FILE" 2>&1; unset MOCK_TG
+check "never an answer: 3 tries, pauses 5 and 15 s" bash -c '[[ "$(tr "\n" " " < "$1/sleeps")" == "5 15 " && $(wc -l < "$1/calls") == 3 ]]' _ "$MOCK_DIR"
+check "then logged as no response" grep -q "to telegram: no response from api.telegram.org" "$LOG_FILE"
+rm -f "$W/bin/sleep"
 TELEGRAM_BOT_TOKEN=""; TELEGRAM_CHAT_ID=""
 
 section "webhook: discord"

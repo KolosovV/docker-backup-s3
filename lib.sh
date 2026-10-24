@@ -723,21 +723,33 @@ curl_url_cfg() {
     printf 'url = "%s"\n' "$u"
 }
 
+# _tg_send <text> [HTML] — one sendMessage; the answer in TG_RESP. No answer at all (the network, a
+# timeout) is tried again after 5 and 15 seconds; an answer, even a refusal, is final.
+_tg_send() {
+    local api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" try=1 pause
+    local -a mode=()
+    [[ -n "${2:-}" ]] && mode=(--data-urlencode "parse_mode=$2" --data-urlencode "disable_web_page_preview=true")
+    while :; do
+        TG_RESP="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=$1" ${mode[@]+"${mode[@]}"} 2>/dev/null || true)"
+        [[ "$TG_RESP" == *'"ok":'* ]] && return 0
+        (( try >= ${TG_SEND_TRIES:-3} )) && return 1
+        pause=$(( 5 * 3 ** (try - 1) )); try=$((try + 1))
+        sleep "$pause"
+    done
+}
+
 # Telegram: HTML; if the markup is rejected — as plain text, so the alert isn't lost over a tag.
 # A message is at most 4096 characters: a longer one goes as plain text, cut on a line.
 _notify_telegram() {
-    local full="$1" api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" resp
+    local full="$1" resp
     if (( ${#full} <= 4000 )); then
-        resp="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${full}" \
-            --data-urlencode "parse_mode=HTML" \
-            --data-urlencode "disable_web_page_preview=true" 2>/dev/null || true)"
-        [[ "$resp" == *'"ok":true'* ]] && return 0
+        _tg_send "$full" HTML || { NOTIFY_ERR="no response from api.telegram.org"; return 1; }
+        [[ "$TG_RESP" == *'"ok":true'* ]] && return 0
     fi
-    resp="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
-        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-        --data-urlencode "text=$(_cut_lines "$(html_plain "$full")" 4000)" 2>/dev/null || true)"
+    _tg_send "$(_cut_lines "$(html_plain "$full")" 4000)" || true
+    resp="$TG_RESP"
     [[ "$resp" == *'"ok":true'* ]] && return 0
     NOTIFY_ERR="$(printf '%s' "$resp" | jq -r '.description // empty' 2>/dev/null || true)"
     NOTIFY_ERR="${NOTIFY_ERR:-no response from api.telegram.org}"

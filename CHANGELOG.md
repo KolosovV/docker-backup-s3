@@ -57,6 +57,8 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   secret is kept and who can read it.
 
 ### Fixed
+- **A Telegram message lost to one network hiccup.** With no answer from api.telegram.org (a timeout, a dropped
+  connection) it is now sent again after 5 and then 15 seconds; a refusal from Telegram is not retried.
 - **`update.sh` in a git clone.** Installed with `git clone` and switched with `git checkout`, the installation is
   its own source, and `update.sh` refused to run: so the new `docker-backup-s3` command was not linked and the old
   label was not looked for. Now it copies nothing there and does the rest (the command, the config's old names,
