@@ -223,7 +223,7 @@ In each compose project folder (optional):
 
 ### Supported systems
 
-Tested in CI on every release and once a week. On each of these systems CI runs `install.sh -y` on a fresh
+Tested in CI on every release and once a month. On each of these systems CI runs `install.sh -y` on a fresh
 install, then the tests and the full integration test (backup → restore → compare), see `tests/distros/`:
 
 | Distribution | Package manager | AWS CLI v2 from |
@@ -251,6 +251,8 @@ install, then the tests and the full integration test (backup → restore → co
   own are tested on a VM and with systemd as PID 1 on Debian, Ubuntu, Rocky 9, AlmaLinux 8, Fedora, openSUSE and
   Arch (systemd 239 to 25x).
 - Other Linux distributions with bash 4.4+ and these tools should work too; they are just not in CI.
+- **Linux only.** Windows and macOS (Docker Desktop) are not supported: Docker runs there in a hidden Linux VM,
+  so volumes and folder paths are not where the scripts look, and a laptop that sleeps at night misses its backups.
 
 > On CentOS/RHEL `dos2unix` lives in EPEL. If it did not install, that is not critical: the scripts fix line
 > endings with `sed`.
