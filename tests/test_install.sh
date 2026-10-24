@@ -61,6 +61,21 @@ if bash "$REPO/update.sh" -y --skip-validate --target "$U" --source "$REPO" > "$
 else bad "update.sh failed"; tail -n 20 "$W/update.log"; fi
 same_values "$U/backup.conf" "update"
 
+section "update.sh in a git clone, after git checkout (the files are in place already)"
+G="$W/opt/git"
+mkdir -p "$G"; cp -a "$REPO/." "$G/"; rm -rf "$G/.git"; mkdir "$G/.git"
+old_conf "$G/backup.conf"; chmod 600 "$G/backup.conf"
+rm -f /usr/local/bin/docker-backup-s3; ln -sfn "$G/menu.sh" /usr/local/bin/docker-backup
+if bash "$G/update.sh" -y --skip-validate --target "$G" > "$W/upd-git.log" 2>&1; then ok "update.sh exit 0"
+else bad "update.sh failed"; tail -n 20 "$W/upd-git.log"; fi
+same_values "$G/backup.conf" "in place"
+check "the command is docker-backup-s3" test "$(readlink /usr/local/bin/docker-backup-s3)" == "$G/menu.sh"
+check "the old name docker-backup is gone" test ! -e /usr/local/bin/docker-backup
+check "no backup copy of the folder (git has the history)" bash -c '! ls -d "$1".bak.* >/dev/null 2>&1' _ "$G"
+rm -rf "$W/nogit"; mkdir -p "$W/nogit"; cp -a "$REPO/." "$W/nogit/"; rm -rf "$W/nogit/.git"
+check "the same folder without git is still refused" bash -c 'bash "$1/update.sh" -y --skip-validate --target "$1" 2>&1 | grep -q "Source and target are the same"' _ "$W/nogit"
+rm -f /usr/local/bin/docker-backup-s3
+
 section "install.sh speaks up about a setting given twice and about encryption off"
 D="$W/opt/dup"
 mkdir -p "$D"; cp -a "$REPO/." "$D/"; rm -rf "$D/.git"

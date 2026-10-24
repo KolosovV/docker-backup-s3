@@ -58,6 +58,10 @@ The installed version: `docker-backup version` (or the `VERSION` file).
   secret is kept and who can read it.
 
 ### Fixed
+- **`update.sh` in a git clone.** Installed with `git clone` and switched with `git checkout`, the installation is
+  its own source, and `update.sh` refused to run: so the new `docker-backup-s3` command was not linked and the old
+  label was not looked for. Now it copies nothing there and does the rest (the command, the config's old names,
+  the old label, the options you don't set, `validate-config.sh`). README: after `git checkout`, run `update.sh`.
 - **Database dumps, checked on real servers** (a new test, `tests/databases/run.sh`: 3 Postgres, 3 MySQL, 2 MariaDB,
   Redis 6 and 7, Valkey, KeyDB, 3 MongoDB):
   - `*_FILE` secrets (`POSTGRES_PASSWORD_FILE`, `MARIADB_ROOT_PASSWORD_FILE`, `MONGO_INITDB_ROOT_PASSWORD_FILE`…)

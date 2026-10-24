@@ -391,13 +391,18 @@ sudo /tmp/new-version/update.sh
 ```
 
 If `/opt/docker-backup-s3` itself is a git clone (installed with `git clone --branch vX.Y.Z`), switch it to the new
-release there; your `backup.conf` is in `.gitignore` and stays untouched:
+release there, then run its `update.sh`; your `backup.conf` is in `.gitignore` and stays untouched:
 
 ```bash
 sudo git -C /opt/docker-backup-s3 fetch --tags --force
-sudo git -C /opt/docker-backup-s3 checkout v1.5.0          # the release you want
-sudo /opt/docker-backup-s3/update.sh --migrate-conf        # once, for a config with the old S3_* names
+sudo git -C /opt/docker-backup-s3 checkout v2.0.0          # the release you want; not while a backup runs
+sudo /opt/docker-backup-s3/update.sh                       # finishes it: the command, old names in the config, a check
 ```
+
+In a git clone `update.sh` copies nothing (the checkout has done that) and makes no backup copy (git has every
+version: to go back, check out the previous tag and run it again). It does the rest: links the `docker-backup-s3`
+command, renames the old `S3_*` names in `backup.conf`, lists containers with the old label, the options you don't
+set, and runs `validate-config.sh`.
 
 What it does:
 - Compares file versions and shows what will actually change

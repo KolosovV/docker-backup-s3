@@ -124,6 +124,27 @@ migrate_conf() {
     return "$rc"
 }
 
+# What follows new files in TARGET_DIR, however they got there (copied here or by git checkout)
+after_update() {
+    # The docker-backup-s3 command (the menu). Before 2.0.0 it was called docker-backup: that link is removed
+    # (only if it is ours — it points into this installation).
+    if [[ ! -e /usr/local/bin/docker-backup-s3 && -f "$TARGET_DIR/menu.sh" ]]; then
+        ln -sfn "$TARGET_DIR/menu.sh" /usr/local/bin/docker-backup-s3 && log_ok "New command: sudo docker-backup-s3 (the menu)"
+    fi
+    if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
+        rm -f /usr/local/bin/docker-backup && log_ok "The command is now called docker-backup-s3 (docker-backup is removed)"
+    fi
+    # The label that leaves a container out was renamed too: say which containers still carry the old one
+    local old
+    old="$(docker ps -a --filter label=docker-backup.skip --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+    if [[ -n "${old// /}" ]]; then
+        log_warn "These containers have the old label docker-backup.skip, which no longer works: ${old% }"
+        log_warn "  Rename it to docker-backup-s3.skip in their compose file / docker run and recreate them."
+    fi
+    # Storage names in backup.conf — after the new scripts: the old scripts don't understand PRIMARY_S3_*
+    migrate_conf || log_warn "backup.conf left with the old S3_* names — the new scripts understand them too"
+}
+
 # ==============================================================================
 # BANNER
 # ==============================================================================
@@ -193,8 +214,12 @@ if [[ ! -d "$TARGET_DIR" ]]; then
     fail "Target directory not found: $TARGET_DIR. Use install.sh for the initial installation."
 fi
 
-if [[ "$SOURCE_DIR" == "$TARGET_DIR" ]]; then
-    fail "Source and target are the same ($SOURCE_DIR). Put the new files into a separate folder and pass it with --source"
+# The installation itself is a git clone, switched with git checkout: the files are in place already,
+# only the steps that follow an update are left
+IN_PLACE=false
+if [[ "$(cd "$SOURCE_DIR" && pwd -P)" == "$(cd "$TARGET_DIR" && pwd -P)" ]]; then
+    [[ -d "$TARGET_DIR/.git" ]] || fail "Source and target are the same ($SOURCE_DIR). Put the new files into a separate folder and pass it with --source"
+    IN_PLACE=true
 fi
 
 # Check the required files in SOURCE
@@ -226,6 +251,30 @@ for f in "${REQUIRED_FILES[@]}"; do
         fail "The source is incomplete"
     fi
 done
+
+if [[ "$IN_PLACE" == "true" ]]; then
+    log_step "Finishing a git checkout"
+    log "Version: ${C_BOLD}$(cat "$TARGET_DIR/VERSION" 2>/dev/null || echo unknown)${C_RESET}  ($(git -C "$TARGET_DIR" describe --tags --always 2>/dev/null || echo "not a git checkout"))"
+    chmod +x "$TARGET_DIR"/*.sh 2>/dev/null || true
+    after_update
+    if [[ -f "$TARGET_DIR/backup.conf.example" && -f "$TARGET_DIR/backup.conf" ]]; then
+        ADDED_VARS=$(comm -23 <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$TARGET_DIR/backup.conf.example" | tr -d '=' | sort -u) \
+                              <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$TARGET_DIR/backup.conf" | tr -d '=' | sort -u) || true)
+    fi
+    if [[ "$SKIP_VALIDATE" != "true" ]]; then
+        log_step "Validation after the update"
+        if "$TARGET_DIR/validate-config.sh"; then log_ok "Validation passed"
+        else log_warn "Validation found errors — check the output above"; fi
+    fi
+    if [[ -n "${ADDED_VARS:-}" ]]; then
+        echo
+        echo "${C_YELLOW}⚠ Options of this version you don't set (they use the defaults):${C_RESET}"
+        echo "$ADDED_VARS" | sed 's/^/    /'
+    fi
+    echo
+    log "To go back: sudo git -C $TARGET_DIR checkout <the previous tag>, then sudo $0 again"
+    exit 0
+fi
 
 # ==============================================================================
 # COMPARISON — what will actually change
@@ -343,7 +392,7 @@ fi
 if [[ ${#CHANGED_FILES[@]} -eq 0 && ${#NEW_FILES[@]} -eq 0 ]]; then
     echo
     log_ok "Everything is up to date — nothing to update"
-    migrate_conf || true
+    after_update
     exit 0
 fi
 
@@ -395,23 +444,7 @@ fi
 chmod +x "$TARGET_DIR"/*.sh 2>/dev/null || true
 log_ok "dos2unix + chmod +x applied"
 
-# The docker-backup-s3 command (the menu). Before 1.5.1 it was called docker-backup: that link is removed
-# (only if it is ours — it points into this installation).
-if [[ ! -e /usr/local/bin/docker-backup-s3 && -f "$TARGET_DIR/menu.sh" ]]; then
-    ln -sfn "$TARGET_DIR/menu.sh" /usr/local/bin/docker-backup-s3 && log_ok "New command: sudo docker-backup-s3 (the menu)"
-fi
-if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
-    rm -f /usr/local/bin/docker-backup && log_ok "The command is now called docker-backup-s3 (docker-backup is removed)"
-fi
-# The label that leaves a container out was renamed too: say which containers still carry the old one
-OLD_LABELLED="$(docker ps -a --filter label=docker-backup.skip --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
-if [[ -n "${OLD_LABELLED// /}" ]]; then
-    log_warn "These containers have the old label docker-backup.skip, which no longer works: ${OLD_LABELLED% }"
-    log_warn "  Rename it to docker-backup-s3.skip in their compose file / docker run and recreate them."
-fi
-
-# Storage names in backup.conf — after the new scripts: the old scripts don't understand PRIMARY_S3_*
-migrate_conf || log_warn "backup.conf left with the old S3_* names — the new scripts understand them too"
+after_update
 
 # ==============================================================================
 # VALIDATION
