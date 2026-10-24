@@ -159,6 +159,22 @@ if s3_complete primary; then bad "a storage without a region counted as complete
 PRIMARY_S3_REGION=eu-1
 check "with a region: complete" s3_complete primary
 
+section "Ctrl+C stops a script (aws-cli catches it and exits with an ordinary error)"
+if command -v setsid >/dev/null 2>&1; then
+    # The child stands in for aws: it catches SIGINT and exits 1. Ctrl+C reaches the whole process group.
+    cat > "$W/int.sh" <<'EOF'
+touch "$1/int.conf"; source "$1/int.conf"; source "$2/lib.sh"
+( sleep 0.3; kill -INT -$$ ) &
+sh -c 'trap "exit 1" INT; sleep 3 & wait'
+echo "went on"
+EOF
+    out="$(setsid bash "$W/int.sh" "$W" "$REPO" 2>&1)"; rc=$?
+    check "the script stops (code 130)" test "$rc" -eq 130
+    check "and does not go on to the next check" test -z "$out"
+else
+    ok "SKIP: no setsid"
+fi
+
 section "logs.sh filters (plain awk)"
 y="$(date -d yesterday +%Y-%m-%d)"; t="$(date +%Y-%m-%d)"
 cat > "$W/b.log" <<EOF

@@ -22,6 +22,11 @@ conf_defaults() {
 }
 conf_defaults
 
+# Ctrl+C stops the script. aws-cli catches SIGINT itself and exits with an ordinary error code, so bash took it for
+# a failed command and went on ("Cannot write to the bucket"). Raised again, the signal also stops the script that
+# called this one (update.sh → validate-config.sh). A script with cleanup of its own sets its own trap after this.
+trap 'trap - INT; kill -INT $$' INT
+
 # aws-cli checksums — only where the S3 itself requires them.
 # Since 2.23 aws-cli sends a new-style checksum with every upload by default (a CRC trailer at the
 # end of the body). Not every S3-compatible storage understands it: some drop the

@@ -69,6 +69,9 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   its own source, and `update.sh` refused to run: so the new `docker-backup-s3` command was not linked. Now it
   copies nothing there and does the rest (the command, the options you don't set, `validate-config.sh`).
   README: after `git checkout`, run `update.sh`.
+- **Ctrl+C did not stop a script.** aws-cli catches it and exits with an ordinary error, so the script took it for a
+  failed check and went on (`validate-config.sh` said "Cannot write to the bucket"). Every script now stops, and so
+  does the one that called it (`update.sh` → `validate-config.sh`).
 - **A config without some options stopped the scripts.** A `backup.conf` written by hand, or kept from an older
   version, lacks lines, and a script stopped on the first one with `unbound variable`. Every option you don't set
   now takes its default from `backup.conf.example` (a new test runs every script with the README's minimal config).

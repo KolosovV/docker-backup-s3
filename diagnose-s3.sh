@@ -33,6 +33,8 @@ done
 [[ -f "$CONFIG_FILE" ]] || { echo "❌ No $CONFIG_FILE"; exit 1; }
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
+# Ctrl+C stops it: aws-cli catches SIGINT and exits with an ordinary error (the same trap as in lib.sh)
+trap 'trap - INT; kill -INT $$' INT
 
 # aws-cli is installed by the official installer (/usr/local/bin) or via snap (/snap/bin),
 # which may not be in PATH — this script doesn't source lib.sh, so add them manually.
