@@ -41,11 +41,6 @@ for _d in /usr/local/bin /snap/bin; do
 done
 command -v aws >/dev/null 2>&1 || { echo "❌ aws not found. Reinstall it: sudo ${SCRIPT_DIR}/install.sh"; exit 1; }
 
-# An old backup.conf (from older versions) calls the primary storage plain S3_*
-for _f in ACCESS_KEY SECRET_KEY ENDPOINT REGION BUCKET OPTS_EXTRA ADDRESSING_STYLE; do
-    _new="PRIMARY_S3_${_f}"; _old="S3_${_f}"
-    [[ -z "${!_new:-}" && -n "${!_old:-}" ]] && printf -v "$_new" '%s' "${!_old}"
-done
 # Same as in lib.sh: checksums only where the S3 itself requires them (the explanation is there).
 # Diagnostics must behave like the backup, otherwise they're green while the backup fails.
 export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"

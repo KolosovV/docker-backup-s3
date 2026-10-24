@@ -89,17 +89,12 @@ CONF_FILE="$TARGET_DIR/backup.conf"
 # The installer's questions. Cancel in a dialog stops the installation.
 ask_yn()     { ui_yesno "$@"; }
 ask_value()  { ui_input "$@"    || { echo "Cancelled." >&2; exit 130; }; }
-ask_secret() { ui_password "$@" || { echo "Cancelled." >&2; exit 130; }; }
-
-# Checks whether the minimum required fields in backup.conf hold real values
-# usage: is_conf_filled <path-to-conf>
-# returns: 0 if everything holds real values, 1 if something is a placeholder/empty
-# The settings of an earlier installation elsewhere: older versions lived in /opt/docker-backup, and
-# uninstall.sh leaves a copy in /root. Prints the path; 1 if there is none.
+# The settings of an earlier installation: uninstall.sh leaves a copy in /root. Prints the path; 1 if there is none.
 find_previous_conf() {
-    local c
-    for c in /opt/docker-backup/backup.conf $(ls -t /root/docker-backup.conf.saved-* 2>/dev/null); do
-        [[ -f "$c" && "$(realpath -m "$c")" != "$(realpath -m "$TARGET_DIR/backup.conf")" ]] && { printf '%s' "$c"; return 0; }
+    # The names end in the time (YYYYmmdd_HHMMSS): the glob sorts them oldest first, the newest is the last
+    local all=(/root/docker-backup.conf.saved-*) i
+    for (( i = ${#all[@]} - 1; i >= 0; i-- )); do
+        [[ -f "${all[i]}" ]] && { printf '%s' "${all[i]}"; return 0; }
     done
     return 1
 }
@@ -125,6 +120,7 @@ create_conf() {
     log_ok "backup.conf created from $(basename "$CONF_TEMPLATE") (needs filling in)"
 }
 
+# is_conf_filled <path-to-conf> — 0 if the minimum required fields hold real values, 1 if one is a placeholder or empty
 is_conf_filled() {
     local conf="$1"
     [[ -f "$conf" ]] || return 1
@@ -134,10 +130,10 @@ is_conf_filled() {
         # shellcheck disable=SC1090
         source "$conf" 2>/dev/null || exit 1
 
-        # Minimum required fields of the primary storage (an old config called them S3_*)
-        local key="${PRIMARY_S3_ACCESS_KEY:-${S3_ACCESS_KEY:-}}"
-        local secret="${PRIMARY_S3_SECRET_KEY:-${S3_SECRET_KEY:-}}"
-        local bucket="${PRIMARY_S3_BUCKET:-${S3_BUCKET:-}}"
+        # Minimum required fields of the primary storage
+        local key="${PRIMARY_S3_ACCESS_KEY:-}"
+        local secret="${PRIMARY_S3_SECRET_KEY:-}"
+        local bucket="${PRIMARY_S3_BUCKET:-}"
         [[ -n "$key" && -n "$secret" && -n "$bucket" ]] || exit 1
 
         # Placeholder check (YOUR_ACCESS_KEY; older templates had a non-English prefix with the same suffix)
@@ -586,19 +582,6 @@ log_ok "Scripts made executable (chmod +x)"
 #   - conf exists but is NOT filled in (placeholders) → offer to fill it in
 # ==============================================================================
 
-# Old names of the primary storage (S3_*, from older versions) → PRIMARY_S3_*. The edit itself is
-# s3_conf_migrate from lib.sh, in a separate bash, so lib.sh doesn't replace the log functions here.
-if [[ -f "$TARGET_DIR/backup.conf" ]]; then
-    _mig_rc=0
-    _mig_out="$(bash -c 'source "$1" && s3_conf_migrate "$2"' _ "$TARGET_DIR/lib.sh" "$TARGET_DIR/backup.conf" 2>&1)" || _mig_rc=$?
-    if [[ -n "$_mig_out" ]]; then
-        log_step "Storage names in backup.conf"
-        while IFS= read -r _l; do
-            if (( _mig_rc == 0 )); then log_ok "$_l"; else log_warn "$_l"; fi
-        done <<< "$_mig_out"
-    fi
-fi
-
 # Decide what to do with the config
 NEED_FILL_CONF="false"
 
@@ -809,10 +792,6 @@ if [[ -L "$CMD_LINK" || ! -e "$CMD_LINK" ]]; then
     log_ok "$CMD_LINK → $TARGET_DIR/menu.sh  (the menu: sudo docker-backup-s3)"
 else
     log_warn "$CMD_LINK already exists and is not our link — leaving it; the menu: sudo $TARGET_DIR/menu.sh"
-fi
-# Before 2.0.0 the command was called docker-backup: our old link goes
-if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
-    rm -f /usr/local/bin/docker-backup && log_ok "The old command name docker-backup is removed"
 fi
 
 # ==============================================================================

@@ -743,15 +743,6 @@ menu_channel() {
 # ==============================================================================
 # MAIN
 # ==============================================================================
-# Old names of the primary storage — offer the rename right away: the editor writes the new ones
-if grep -qE '^S3_(ACCESS_KEY|SECRET_KEY|ENDPOINT|BUCKET)=' "$CONFIG_FILE"; then
-    UI_TITLE="Old config names"
-    if ui_yesno "backup.conf names the primary storage the old way (S3_BUCKET…).\n\nRename it to PRIMARY_S3_* now? A copy is kept next to it." y; then
-        ui_msg "$(s3_conf_migrate "$CONFIG_FILE")"
-        reload_conf
-    fi
-fi
-
 choice="status"
 while true; do
     UI_TITLE="docker-backup-s3 $(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null) — $(uname -n)"

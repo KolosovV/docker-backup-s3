@@ -159,15 +159,6 @@ if s3_complete primary; then bad "a storage without a region counted as complete
 PRIMARY_S3_REGION=eu-1
 check "with a region: complete" s3_complete primary
 
-printf 'PRIMARY_S3_REGION="eu-1"\nSECONDARY_S3_ENABLED="true"\nSECONDARY_S3_REGION=""\nTERTIARY_S3_ENABLED="false"\nTERTIARY_S3_REGION=""\n' > "$W/reg.conf"
-out="$(_s3_region_fill "$W/reg.conf")"
-check "an enabled copy without a region gets the primary's, explicitly" grep -qx 'SECONDARY_S3_REGION="eu-1"' "$W/reg.conf"
-check "a disabled copy is left alone" grep -qx 'TERTIARY_S3_REGION=""' "$W/reg.conf"
-check "it says so" grep -q 'SECONDARY_S3_REGION was empty' <<< "$out"
-check "and keeps a copy" bash -c 'ls "$1".bak.* >/dev/null 2>&1' _ "$W/reg.conf"
-out="$(_s3_region_fill "$W/reg.conf")"
-check "run again: nothing to do" test -z "$out"
-
 section "logs.sh filters (plain awk)"
 y="$(date -d yesterday +%Y-%m-%d)"; t="$(date +%Y-%m-%d)"
 cat > "$W/b.log" <<EOF

@@ -12,10 +12,16 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
 ### Changed — action needed
 - **The command is `docker-backup-s3`**: `sudo docker-backup-s3`, `sudo docker-backup-s3 backup -p app`.
-  `update.sh` and `install.sh` link it and remove the old name. The scripts' file names, the logs
-  (`/var/log/docker-backup*.log`), `WORK_DIR` and the schedule stay as they are.
-- **The label is `docker-backup-s3.skip=true`.** `update.sh` lists the containers that still carry the old one:
-  rename it in their compose file or `docker run`, and recreate them.
+  `update.sh` and `install.sh` link it; remove the old link yourself: `sudo rm /usr/local/bin/docker-backup`.
+  The scripts' file names, the logs (`/var/log/docker-backup*.log`), `WORK_DIR` and the schedule stay as they are.
+- **The label is `docker-backup-s3.skip=true`.** Rename the old one in the compose file or `docker run` of each
+  container that carries it, and recreate them: `docker ps -a --filter label=docker-backup.skip` lists them.
+- **The primary storage is read only as `PRIMARY_S3_*`.** The old names `S3_ACCESS_KEY`, `S3_BUCKET`… are not read
+  any more, and `update.sh --migrate-conf` is gone; rename them before updating:
+  `sudo sed -i -E 's/^S3_(ACCESS_KEY|SECRET_KEY|ENDPOINT|REGION|BUCKET|OPTS_EXTRA|ADDRESSING_STYLE|RESTORE_ACCESS_KEY|RESTORE_SECRET_KEY)=/PRIMARY_S3_\1=/' backup.conf`.
+  `update.sh` no longer fills an empty region of an enabled copy with the primary's: set `SECONDARY_S3_REGION`
+  (`TERTIARY_S3_REGION`) yourself. `install.sh` no longer takes over the settings left in `/opt/docker-backup`;
+  the copy `uninstall.sh` keeps in `/root` is still taken over.
 
 ### Added
 - **Projects to leave out.** `EXCLUDE_PROJECTS` — not backed up at all; their backups already in the storages stay
@@ -60,9 +66,12 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 - **A Telegram message lost to one network hiccup.** With no answer from api.telegram.org (a timeout, a dropped
   connection) it is now sent again after 5 and then 15 seconds; a refusal from Telegram is not retried.
 - **`update.sh` in a git clone.** Installed with `git clone` and switched with `git checkout`, the installation is
-  its own source, and `update.sh` refused to run: so the new `docker-backup-s3` command was not linked and the old
-  label was not looked for. Now it copies nothing there and does the rest (the command, the config's old names,
-  the old label, the options you don't set, `validate-config.sh`). README: after `git checkout`, run `update.sh`.
+  its own source, and `update.sh` refused to run: so the new `docker-backup-s3` command was not linked. Now it
+  copies nothing there and does the rest (the command, the options you don't set, `validate-config.sh`).
+  README: after `git checkout`, run `update.sh`.
+- **A config without some options stopped the scripts.** A `backup.conf` written by hand, or kept from an older
+  version, lacks lines, and a script stopped on the first one with `unbound variable`. Every option you don't set
+  now takes its default from `backup.conf.example` (a new test runs every script with the README's minimal config).
 - **Database dumps, checked on real servers** (a new test, `tests/databases/run.sh`: 3 Postgres, 3 MySQL, 2 MariaDB,
   Redis 6 and 7, Valkey, KeyDB, 3 MongoDB):
   - `*_FILE` secrets (`POSTGRES_PASSWORD_FILE`, `MARIADB_ROOT_PASSWORD_FILE`, `MONGO_INITDB_ROOT_PASSWORD_FILE`…)

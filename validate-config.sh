@@ -85,13 +85,6 @@ section() { echo; echo "${C_BOLD}${C_CYAN}━━━ $* ━━━${C_RESET}"; }
 # ==============================================================================
 # 1. STORAGES — the primary always, copies (secondary, tertiary) if enabled
 # ==============================================================================
-# Old names (S3_BUCKET etc., from older versions) work, but update.sh renames them
-if grep -qE '^S3_(ACCESS_KEY|SECRET_KEY|ENDPOINT|BUCKET)=' "$CONFIG_FILE"; then
-    section "Configuration — old names"
-    warn "backup.conf names the primary storage the old way (S3_ACCESS_KEY, S3_BUCKET…)."
-    echo "    It works, but better rename to PRIMARY_S3_*: sudo $SCRIPT_DIR/update.sh --migrate-conf"
-fi
-
 for role in "${S3_ROLES[@]}"; do
     P="${role^^}_S3"
     if [[ "$role" != "primary" ]]; then

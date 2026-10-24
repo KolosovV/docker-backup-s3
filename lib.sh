@@ -5,6 +5,23 @@
 # Expects backup.conf to be loaded already
 # ==============================================================================
 
+# conf_defaults [template] — every option backup.conf leaves out gets the value backup.conf.example (next to
+# this file) gives it: the defaults the README documents, kept in one place. A config written by hand, or kept
+# from an older version, lacks lines; under set -u each one used bare would stop the script. Left out: the
+# primary storage's own settings — the template has placeholders there, not defaults.
+conf_defaults() {
+    local tpl="${1:-$(dirname "${BASH_SOURCE[0]}")/backup.conf.example}" line name
+    [[ -r "$tpl" ]] || return 0
+    while IFS= read -r line; do
+        [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
+        name="${BASH_REMATCH[1]}"
+        [[ "$name" == PRIMARY_S3_* || -n "${!name+x}" ]] && continue
+        eval "$line"
+    done < "$tpl"
+    return 0
+}
+conf_defaults
+
 # aws-cli checksums — only where the S3 itself requires them.
 # Since 2.23 aws-cli sends a new-style checksum with every upload by default (a CRC trailer at the
 # end of the body). Not every S3-compatible storage understands it: some drop the
@@ -207,55 +224,6 @@ _aws_config_init() {
 # its labels in s3_label and a block in backup.conf.example; the scripts walk the list on their own.
 # ==============================================================================
 S3_ROLES=(primary secondary tertiary)
-S3_FIELDS=(ACCESS_KEY SECRET_KEY ENDPOINT REGION BUCKET OPTS_EXTRA ADDRESSING_STYLE RESTORE_ACCESS_KEY RESTORE_SECRET_KEY)
-
-# Older versions named the main storage plain S3_* (S3_BUCKET etc.). An old backup.conf
-# still works: if PRIMARY_S3_<field> is not set, S3_<field> is used. update.sh renames them itself.
-_s3_compat() {
-    local f old new
-    for f in "${S3_FIELDS[@]}"; do
-        old="S3_${f}"; new="PRIMARY_S3_${f}"
-        [[ -z "${!new:-}" && -n "${!old:-}" ]] && printf -v "$new" '%s' "${!old}"
-    done
-    return 0
-}
-
-# s3_conf_migrate <backup.conf> — rename the main storage's S3_<field> to PRIMARY_S3_<field>,
-# together with ${S3_<field>} references inside the file (the template had one: export AWS_S3_ADDRESSING_STYLE).
-# Saves a copy <file>.bak.<time> before editing; if bash cannot parse the file afterwards,
-# puts the copy back. Prints what was done (nothing — nothing to change). 1 — failed.
-# Called by update.sh and install.sh: bash -c 'source lib.sh; s3_conf_migrate backup.conf'.
-s3_conf_migrate() {
-    local conf="$1" f alt bak
-    local -a renamed=()
-    _s3_region_fill "$conf" || return 1
-    for f in "${S3_FIELDS[@]}"; do
-        grep -q "^S3_${f}=" "$conf" && renamed+=("$f")
-    done
-    ((${#renamed[@]})) || return 0
-
-    bak="${conf}.bak.$(date +%Y%m%d_%H%M%S)"
-    cp -p "$conf" "$bak" || { printf 'Could not make a copy %s — leaving the config alone\n' "$bak"; return 1; }
-    for f in "${renamed[@]}"; do
-        if grep -q "^PRIMARY_S3_${f}=" "$conf"; then
-            # The new name already exists — comment out the old line so one field doesn't have two values
-            sed -i "s/^S3_${f}=/# replaced by PRIMARY_S3_${f}: S3_${f}=/" "$conf"
-        else
-            sed -i "s/^S3_${f}=/PRIMARY_S3_${f}=/" "$conf"
-        fi
-    done
-    alt="$(IFS='|'; printf '%s' "${S3_FIELDS[*]}")"
-    sed -i -E 's/\$\{S3_('"$alt"')\}/${PRIMARY_S3_\1}/g; s/\$S3_('"$alt"')([^A-Za-z0-9_]|$)/$PRIMARY_S3_\1\2/g' "$conf"
-
-    if ! bash -n "$conf" 2>/dev/null; then
-        cp -p "$bak" "$conf"
-        printf 'backup.conf does not parse after renaming — restored it as it was (%s)\n' "$bak"
-        return 1
-    fi
-    printf 'Main storage: S3_* → PRIMARY_S3_* (%s)\n' "$(IFS=' '; printf '%s' "${renamed[*]}")"
-    printf 'Copy before renaming: %s\n' "$bak"
-    return 0
-}
 
 # conf_duplicates <conf> [template] — variables assigned more than once (bash keeps the LAST one).
 # One line per variable, TAB-separated:
@@ -284,31 +252,6 @@ conf_duplicates() {
                 lost = ((k in def) && lv[k] == def[k] && ev != lv[k]) ? 1 : 0
                 print k, ll[k], lv[k], el, ev, lost } }
     ' "${2:-/dev/null}" "$1" | sort
-}
-
-# _s3_region_fill <conf> — an enabled copy with an empty region: write the primary's region in, explicitly.
-# Older versions used the primary's region for such a copy silently; now the region is required, and this keeps
-# a working config working. A copy of the file is kept. Prints what it did.
-_s3_region_fill() {
-    local conf="$1" role var primary bak=""
-    primary="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${PRIMARY_S3_REGION:-${S3_REGION:-}}"' _ "$conf")"
-    [[ -n "$primary" ]] || return 0
-    for role in "${S3_ROLES[@]:1}"; do
-        var="${role^^}_S3"
-        bash -c 'source "$1" >/dev/null 2>&1; n="$2_ENABLED"; r="$2_REGION"; [[ "${!n:-false}" == "true" && -z "${!r:-}" ]]' _ "$conf" "$var" || continue
-        if [[ -z "$bak" ]]; then
-            bak="${conf}.bak.$(date +%Y%m%d_%H%M%S)"
-            cp -p "$conf" "$bak" || { printf 'Could not make a copy %s — leaving the config alone\n' "$bak"; return 1; }
-        fi
-        if grep -q "^${var}_REGION=" "$conf"; then
-            sed -i "s|^${var}_REGION=.*|${var}_REGION=\"${primary}\"|" "$conf"
-        else
-            printf '%s_REGION="%s"\n' "$var" "$primary" >> "$conf"
-        fi
-        printf '%s_REGION was empty — set to the primary region "%s" (as it was used before). Check that it is right for this storage.\n' "$var" "$primary"
-    done
-    [[ -n "$bak" ]] && printf 'Copy before the change: %s\n' "$bak"
-    return 0
 }
 
 # Roles separated by spaces — for messages (the scripts run with IFS=$'\n\t', and ${S3_ROLES[*]} would print one per line)
@@ -377,7 +320,6 @@ s3_complete() {
 # s3_refresh — recompute after the config was re-sourced (the menu does that after editing storages)
 s3_refresh() {
     local r
-    _s3_compat
     S3_COPIES=()
     for r in "${S3_ROLES[@]:1}"; do
         s3_enabled "$r" && S3_COPIES+=("$r")

@@ -6,13 +6,13 @@
 # What it does:
 #   1. Backs up all current files to /opt/docker-backup-s3.bak.<timestamp>/
 #   2. Copies the new script versions over the old ones
-#   3. Does not overwrite backup.conf: shows new options and renames
-#      the old primary storage names S3_* → PRIMARY_S3_* (with a copy alongside)
+#   3. Does not overwrite backup.conf: shows the options of the new version you don't set
 #   4. dos2unix + chmod +x
 #   5. Runs validate-config.sh
+#   In a git clone switched with git checkout it copies nothing and does steps 3–5.
 #
 # What is NOT updated:
-#   - backup.conf (your settings are kept; only the names S3_* → PRIMARY_S3_* change)
+#   - backup.conf (your settings are kept as they are)
 #   - the cron job (stays as it was)
 #   - logrotate config
 #   - backups in S3
@@ -21,7 +21,6 @@
 #   sudo ./update.sh                          # from the unpacked archive
 #   sudo ./update.sh --target /opt/docker-backup-s3
 #   sudo ./update.sh --rollback               # roll back to the previous version
-#   sudo ./update.sh --migrate-conf           # only rename S3_* → PRIMARY_S3_* in backup.conf
 # ==============================================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -34,7 +33,6 @@ NON_INTERACTIVE="false"
 ROLLBACK="false"
 SKIP_VALIDATE="false"
 SKIP_BACKUP="false"
-MIGRATE_ONLY="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,7 +42,6 @@ while [[ $# -gt 0 ]]; do
         --rollback)         ROLLBACK="true"; shift ;;
         --skip-validate)    SKIP_VALIDATE="true"; shift ;;
         --skip-backup)      SKIP_BACKUP="true"; shift ;;
-        --migrate-conf)     MIGRATE_ONLY="true"; shift ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [options]
@@ -57,7 +54,6 @@ Updates an installed Docker Backup System (in place).
       --rollback       roll back to the latest backup copy
       --skip-validate  skip the final validation
       --skip-backup    do NOT make a backup copy (dangerous)
-      --migrate-conf   only rename S3_* → PRIMARY_S3_* in backup.conf and exit
 
   -h, --help           this help
 
@@ -106,43 +102,13 @@ ask_yn() {
     [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]
 }
 
-# Rename the primary storage in backup.conf: S3_* → PRIMARY_S3_* (names from older versions).
-# The edit itself is s3_conf_migrate from lib.sh next to this update.sh (the new version), in a separate bash,
-# so lib.sh doesn't replace the log functions here. It also makes the config copy.
-migrate_conf() {
-    local conf="$TARGET_DIR/backup.conf" lib="$SOURCE_DIR/lib.sh" out rc=0 line
-    [[ -f "$conf" ]] || return 0
-    [[ -f "$lib" ]] || { log_warn "No $lib — skipping the S3_* rename in backup.conf"; return 0; }
-    out="$(bash -c 'source "$1" && s3_conf_migrate "$2"' _ "$lib" "$conf" 2>&1)" || rc=$?
-    if [[ -z "$out" ]]; then
-        (( rc == 0 )) && return 0
-        log_err "Renaming S3_* in backup.conf failed (code $rc)"; return 1
-    fi
-    while IFS= read -r line; do
-        if (( rc == 0 )); then log_ok "$line"; else log_err "$line"; fi
-    done <<< "$out"
-    return "$rc"
-}
-
 # What follows new files in TARGET_DIR, however they got there (copied here or by git checkout)
 after_update() {
-    # The docker-backup-s3 command (the menu). Before 2.0.0 it was called docker-backup: that link is removed
-    # (only if it is ours — it points into this installation).
+    # The docker-backup-s3 command (the menu), if it is missing
     if [[ ! -e /usr/local/bin/docker-backup-s3 && -f "$TARGET_DIR/menu.sh" ]]; then
         ln -sfn "$TARGET_DIR/menu.sh" /usr/local/bin/docker-backup-s3 && log_ok "New command: sudo docker-backup-s3 (the menu)"
     fi
-    if [[ -L /usr/local/bin/docker-backup && "$(readlink /usr/local/bin/docker-backup)" == "$TARGET_DIR/menu.sh" ]]; then
-        rm -f /usr/local/bin/docker-backup && log_ok "The command is now called docker-backup-s3 (docker-backup is removed)"
-    fi
-    # The label that leaves a container out was renamed too: say which containers still carry the old one
-    local old
-    old="$(docker ps -a --filter label=docker-backup.skip --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
-    if [[ -n "${old// /}" ]]; then
-        log_warn "These containers have the old label docker-backup.skip, which no longer works: ${old% }"
-        log_warn "  Rename it to docker-backup-s3.skip in their compose file / docker run and recreate them."
-    fi
-    # Storage names in backup.conf — after the new scripts: the old scripts don't understand PRIMARY_S3_*
-    migrate_conf || log_warn "backup.conf left with the old S3_* names — the new scripts understand them too"
+    return 0
 }
 
 # ==============================================================================
@@ -154,17 +120,6 @@ ${C_BOLD}${C_BLUE}╔═══════════════════�
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
 
 EOF
-
-# ==============================================================================
-# CONFIG RENAME ONLY
-# ==============================================================================
-if [[ "$MIGRATE_ONLY" == "true" ]]; then
-    log_step "Renaming storages in backup.conf"
-    [[ -f "$TARGET_DIR/backup.conf" ]] || fail "Not found: $TARGET_DIR/backup.conf"
-    migrate_conf || exit 1
-    grep -qE '^S3_(ACCESS_KEY|BUCKET)=' "$TARGET_DIR/backup.conf" || log_ok "Storage names in backup.conf are the new ones (PRIMARY_S3_*)"
-    exit 0
-fi
 
 # ==============================================================================
 # ROLLBACK MODE
@@ -360,15 +315,7 @@ CONF_TEMPLATE="$SOURCE_DIR/backup.conf.example"
 if [[ -f "$CONF_TEMPLATE" && -f "$TARGET_DIR/backup.conf" ]]; then
     # Get the variable names from both files
     NEW_VARS=$(grep -oE '^[A-Z_][A-Z0-9_]*=' "$CONF_TEMPLATE" | tr -d '=' | sort -u)
-    # The old primary storage names (S3_BUCKET…) will become PRIMARY_S3_* after the update —
-    # compare against those, so as not to scare with "missing" and "new" options
-    OLD_VARS=$(grep -oE '^[A-Z_][A-Z0-9_]*=' "$TARGET_DIR/backup.conf" | tr -d '=' \
-        | sed -E 's/^S3_(ACCESS_KEY|SECRET_KEY|ENDPOINT|REGION|BUCKET|OPTS_EXTRA|ADDRESSING_STYLE|RESTORE_ACCESS_KEY|RESTORE_SECRET_KEY)$/PRIMARY_S3_\1/' \
-        | sort -u)
-    if grep -qE '^S3_(ACCESS_KEY|SECRET_KEY|ENDPOINT|BUCKET)=' "$TARGET_DIR/backup.conf"; then
-        echo "  ${C_YELLOW}⚠ The primary storage in backup.conf uses the old names (S3_*).${C_RESET}"
-        echo "  ${C_DIM}The update renames them to PRIMARY_S3_*, with a copy of the config alongside (backup.conf.bak.<time>).${C_RESET}"
-    fi
+    OLD_VARS=$(grep -oE '^[A-Z_][A-Z0-9_]*=' "$TARGET_DIR/backup.conf" | tr -d '=' | sort -u)
 
     ADDED_VARS=$(comm -23 <(echo "$NEW_VARS") <(echo "$OLD_VARS") || true)
     REMOVED_VARS=$(comm -13 <(echo "$NEW_VARS") <(echo "$OLD_VARS") || true)

@@ -155,7 +155,7 @@ The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arg
 
 Destructive actions (an in-place restore, `--prune`, writing to the primary from a copy) ask for confirmation first;
 the scripts themselves keep their own confirmations too. Before the first change to the config the menu
-saves a copy `backup.conf.bak.<time>`; if the config still uses the old `S3_*` names, it offers to rename them first.
+saves a copy `backup.conf.bak.<time>`.
 
 The menu uses `whiptail` (`install.sh` installs it: the `whiptail`, `newt` or `libnewt` package). Without it, or with
 `UI_PLAIN=true`, the same menu works as numbered prompts. Without a terminal (cron, pipes) there is no menu — use
@@ -269,9 +269,9 @@ The installer does everything itself:
    it offers to switch to the official one: snap updates aws-cli by itself, and such updates have broken uploads
    (new checksums some storages reject, a CA bundle without the GlobalSign root)
 3. Checks that Docker and the `docker compose` (v2) plugin are present (it does not install them)
-4. Copies the files (or works in-place if source = target). If there is no `backup.conf` yet but an earlier
-   installation left one (`/opt/docker-backup/backup.conf`, or the copy `uninstall.sh` keeps in `/root`), it
-   offers to take those settings over, and keeps a copy as it was (`backup.conf.imported-<time>`)
+4. Copies the files (or works in-place if source = target). If there is no `backup.conf` yet but `uninstall.sh`
+   kept a copy of one in `/root`, it offers to take those settings over, and keeps a copy as it was
+   (`backup.conf.imported-<time>`)
 5. `dos2unix` + `chmod +x` + `chmod 600 backup.conf`
 6. Asks for the settings interactively (in whiptail dialogs if whiptail is installed, plain prompts otherwise):
    - **Primary S3**: Access/Secret/Endpoint/Region/Bucket + addressing style (path/virtual); then checks the bucket and certificate trust itself (see below)
@@ -332,15 +332,13 @@ The installer handles the config carefully:
 
 | Config state | Behavior |
 |---|---|
-| **Does not exist** | If an earlier installation left its settings (`/opt/docker-backup/backup.conf`, or the copy `uninstall.sh` keeps in `/root`), offers to take them over; otherwise creates it from the template and runs the wizard |
+| **Does not exist** | If `uninstall.sh` kept a copy of the settings in `/root`, offers to take them over; otherwise creates it from the template and runs the wizard |
 | **Exists and is filled in** | Leaves it as is, no questions |
 | **Exists, but with placeholder values** (`YOUR_ACCESS_KEY`, an empty bucket/endpoint) | Interactive: asks "Fill in the settings now?" → runs the wizard. With `-y`: a warning + a hint |
 
 What counts as a "placeholder":
 - `PRIMARY_S3_ACCESS_KEY` or `PRIMARY_S3_SECRET_KEY` equal to `YOUR_...` or empty
 - `PRIMARY_S3_BUCKET` empty
-
-(in an old config — the same fields named `S3_*`; the installer renames them itself).
 
 This lets you work with a single command: put the files into `/opt/docker-backup-s3`, run `install.sh` from there — and it either finishes the installation or asks for whatever is missing.
 
@@ -398,19 +396,18 @@ release there, then run its `update.sh`; your `backup.conf` is in `.gitignore` a
 ```bash
 sudo git -C /opt/docker-backup-s3 fetch --tags --force
 sudo git -C /opt/docker-backup-s3 checkout v2.0.0          # the release you want; not while a backup runs
-sudo /opt/docker-backup-s3/update.sh                       # finishes it: the command, old names in the config, a check
+sudo /opt/docker-backup-s3/update.sh                       # finishes it: the command, new options, a check
 ```
 
 In a git clone `update.sh` copies nothing (the checkout has done that) and makes no backup copy (git has every
 version: to go back, check out the previous tag and run it again). It does the rest: links the `docker-backup-s3`
-command, renames the old `S3_*` names in `backup.conf`, lists containers with the old label, the options you don't
-set, and runs `validate-config.sh`.
+command if it is missing, lists the options you don't set, and runs `validate-config.sh`.
 
 What it does:
 - Compares file versions and shows what will actually change
 - Checks the syntax of the new files **before** replacing them (won't break the system with a broken script)
 - Backs up the current installation to `/opt/docker-backup-s3.bak.<timestamp>/`
-- Does not overwrite your `backup.conf`: shows which new options appeared in the template, and renames the old primary storage names `S3_*` → `PRIMARY_S3_*` (see below)
+- Does not overwrite your `backup.conf`: shows which new options appeared in the template (an option you don't set takes its default from `backup.conf.example`)
 - Refuses to update while a backup is running (checks the lock)
 - Runs `validate-config.sh` after the update
 
@@ -431,22 +428,7 @@ Rolls back to the latest backup copy. The current state (before the rollback) is
     --rollback       roll back to the latest backup copy
     --skip-validate  skip validation
     --skip-backup    do NOT make a backup copy (dangerous)
-    --migrate-conf   only rename S3_* → PRIMARY_S3_* in backup.conf and exit
 ```
-
-### Renaming the primary storage in `backup.conf`
-
-Older versions named the primary storage in the config plain `S3_*` (`S3_BUCKET`, `S3_ENDPOINT`…), and
-the secondary — `SECONDARY_S3_*`. Now all storages share one scheme: `PRIMARY_S3_*`, `SECONDARY_S3_*`,
-`TERTIARY_S3_*`.
-
-- An old config keeps working: if `PRIMARY_S3_<field>` is not set, the scripts take `S3_<field>`.
-- After replacing the scripts, `update.sh` renames the lines itself: `S3_ACCESS_KEY` → `PRIMARY_S3_ACCESS_KEY`
-  and so on, together with references like `${S3_ADDRESSING_STYLE}` inside the file. It puts a copy
-  `backup.conf.bak.<time>` alongside; if the file doesn't parse after the edit, it puts the copy back.
-- `install.sh` does the same with an existing config. To only rename: `sudo ./update.sh --migrate-conf`.
-- General aws settings (`S3_BANDWIDTH_LIMIT`, `S3_MULTIPART_THRESHOLD`, `S3_MAX_ATTEMPTS`) are not renamed —
-  they don't belong to a single storage.
 
 ### Cleaning up old backup copies
 
@@ -564,7 +546,6 @@ The script checks:
   but `ENCRYPT_BACKUPS` is not `true`
 - Access to each storage — the primary and the enabled copies (a test write + read + delete); on `CERTIFICATE_VERIFY_FAILED` — a check with the system CA bundle and a ready line for `backup.conf`
 - Each storage's read-only key, if set
-- Old `S3_*` names in the config (suggests `update.sh --migrate-conf`)
 - Free space
 - **Telegram bot** — by actually sending a test message, with error diagnostics
 - **Webhook** and **email** — by sending a test message, with hints for the common errors
@@ -1777,13 +1758,13 @@ The script shows exactly what auto-detection sees. Most likely the `cron` binary
 ### `install.sh` in-place doesn't offer to fill in the conf
 
 This depends on the state of `backup.conf`:
-- If `PRIMARY_S3_ACCESS_KEY`, `PRIMARY_S3_SECRET_KEY`, `PRIMARY_S3_BUCKET` (in an old config — `S3_*`) hold real values (not `YOUR_...`, not empty) — the installer considers the conf ready and doesn't ask
+- If `PRIMARY_S3_ACCESS_KEY`, `PRIMARY_S3_SECRET_KEY`, `PRIMARY_S3_BUCKET` hold real values (not `YOUR_...`, not empty) — the installer considers the conf ready and doesn't ask
 - If at least one field is a placeholder — in interactive mode it offers "Fill in the settings now?"
 - If run with `-y` — it only warns and doesn't intervene
 
 Check manually:
 ```bash
-sudo grep -E "^(PRIMARY_)?S3_(ACCESS_KEY|SECRET_KEY|BUCKET)=" /opt/docker-backup-s3/backup.conf
+sudo grep -E "^PRIMARY_S3_(ACCESS_KEY|SECRET_KEY|BUCKET)=" /opt/docker-backup-s3/backup.conf
 ```
 
 If you want to force a fresh fill-in — remove the conf and run install:

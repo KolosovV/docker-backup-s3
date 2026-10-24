@@ -16,8 +16,6 @@
 # Storages by role: PRIMARY — the main one, SECONDARY and TERTIARY — copies. The settings
 # are the same for all: <ROLE>_S3_ACCESS_KEY, _SECRET_KEY, _ENDPOINT, _REGION, _BUCKET,
 # _ADDRESSING_STYLE, _OPTS_EXTRA, _RESTORE_*; copies also have _ENABLED and _REQUIRED.
-# Older versions named the primary plain S3_* (S3_BUCKET…): such configs still work,
-# and update.sh renames them itself (keeping a copy alongside).
 # ==============================================================================
 
 # ==============================================================================

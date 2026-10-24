@@ -290,9 +290,7 @@ if [[ -f "$TARGET_DIR/backup.conf" ]]; then
     # shellcheck disable=SC1090,SC1091
     source "$TARGET_DIR/backup.conf" 2>/dev/null || true
 
-    # An old backup.conf (from older versions) calls the primary storage plain S3_*
-    : "${PRIMARY_S3_BUCKET:=${S3_BUCKET:-}}"
-    : "${PRIMARY_S3_ENDPOINT:=${S3_ENDPOINT:-}}"
+    : "${PRIMARY_S3_BUCKET:=}" "${PRIMARY_S3_ENDPOINT:=}"
 
     # A copy counts as "configured" if its bucket/keys/endpoint are set — regardless
     # of <ROLE>_S3_ENABLED: copies may remain even after the duplicate was turned off,
