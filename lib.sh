@@ -727,12 +727,12 @@ curl_url_cfg() {
 # timeout) is tried again after 5 and 15 seconds; an answer, even a refusal, is final.
 _tg_send() {
     local api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" try=1 pause
-    local -a mode=()
-    [[ -n "${2:-}" ]] && mode=(--data-urlencode "parse_mode=$2" --data-urlencode "disable_web_page_preview=true")
+    local -a pm=()
+    [[ -n "${2:-}" ]] && pm=(--data-urlencode "parse_mode=$2" --data-urlencode "disable_web_page_preview=true")
     while :; do
         TG_RESP="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=$1" ${mode[@]+"${mode[@]}"} 2>/dev/null || true)"
+            --data-urlencode "text=$1" ${pm[@]+"${pm[@]}"} 2>/dev/null || true)"
         [[ "$TG_RESP" == *'"ok":'* ]] && return 0
         (( try >= ${TG_SEND_TRIES:-3} )) && return 1
         pause=$(( 5 * 3 ** (try - 1) )); try=$((try + 1))
