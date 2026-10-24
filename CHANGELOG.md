@@ -67,6 +67,9 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   stopped with `None: unbound variable`. Now each project gets its own table; an empty answer from the storage
   is no longer read as a backup date or a size. A name the storage doesn't have is said so, with the names it
   has (a compose project may be named unlike its folder: mailcow is `mailcowdockerized`).
+- **A killed run left its work folder behind.** A run removes its folder in `WORK_DIR` on exit, but not when it is
+  killed with `-9` or the server goes down mid-run: the folder stayed, with archives of every project in it. The
+  next backup now removes such folders (and restore folders older than a day) and says so in the log.
 - **`docker-restore.sh --contents > file` saved nothing useful.** The report went to stderr with the log, and
   stdout got only aws's `download:` line, so two backups could not be compared with `diff`. The report now goes to
   stdout (dumps sorted by name), and aws's output goes to stderr.

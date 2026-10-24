@@ -248,6 +248,19 @@ log "${C_BOLD}${C_BLUE}=========================================================
 log "${C_BOLD}🚀 Starting Docker backup. Timestamp: ${TIMESTAMP}${C_RESET}"
 [[ "$DRY_RUN" == "true" ]] && log "${C_YELLOW}${C_BOLD}🧪 DRY-RUN: no real actions are performed${C_RESET}"
 [[ -n "$PROJECT_FILTER" ]] && log "${C_CYAN}${C_BOLD}🎯 Filter: $PROJECT_FILTER${C_RESET}"
+
+# The work folders of earlier runs. A run removes its own on exit, but not when it is killed with -9 or the
+# server goes down mid-run: then the folder stays, with archives of every project in it. Only a backup makes
+# such folders, and it holds the lock, so no other run is using them. A restore's folder (restore.*) may be
+# in use right now: those go only after a day.
+if [[ "$DRY_RUN" != "true" ]]; then
+    while IFS= read -r -d '' stale; do
+        log_warn "Removing the work folder of an unfinished run: $stale ($(du -sh "$stale" 2>/dev/null | cut -f1))"
+        rm -rf "$stale"
+    done < <(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d \
+        \( -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9]' ! -path "$BACKUP_ROOT" \
+           -o -name 'restore.*' -mmin +1440 \) -print0 2>/dev/null)
+fi
 log "${C_BOLD}${C_BLUE}===================================================================${C_RESET}"
 
 # ==============================================================================

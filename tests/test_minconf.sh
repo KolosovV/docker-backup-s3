@@ -43,7 +43,17 @@ clean() {   # clean <name> — no "unbound variable" (or other bash error) in it
 section "every script with the minimal config"
 run backup-dry  docker-backup.sh -c "$CONF" -n;        clean backup-dry
 check "the dry run gets to its plan" grep -q 'DRY-RUN END' "$W/backup-dry.out"
+# Leftovers of runs killed with -9 or by a reboot, in the work folder
+WD="$(bash -c 'source "$1"; source "$2/lib.sh"; printf %s "$WORK_DIR"' _ "$CONF" "$REPO" 2>/dev/null)"
+mkdir -p "$WD/2026-10-21_23-21-38/app" "$WD/restore.old1" "$WD/restore.new1" "$WD/mine"
+echo archive > "$WD/2026-10-21_23-21-38/app/x.tar.gz"; touch -d '2 days ago' "$WD/restore.old1"
 run backup      docker-backup.sh -c "$CONF";           clean backup
+check "a backup removes the work folder of an unfinished run" test ! -e "$WD/2026-10-21_23-21-38"
+check "and says so" grep -q 'Removing the work folder of an unfinished run' "$W/backup.out"
+check "a restore folder older than a day goes" test ! -e "$WD/restore.old1"
+check "a fresh one stays (a restore may be running)" test -d "$WD/restore.new1"
+check "a folder it did not make stays" test -d "$WD/mine"
+rm -rf "$WD/restore.new1" "$WD/mine"
 run backup-list docker-backup.sh -c "$CONF" --list;    clean backup-list
 run validate    validate-config.sh -c "$CONF";         clean validate
 run status      status.sh -c "$CONF";                  clean status
