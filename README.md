@@ -55,7 +55,7 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 - 🌐 **Remote databases** — a managed service or another server, streamed straight into the storages: no local copy, so its size does not matter ([details](#remote-databases))
 - 💾 **Full coverage** — named volumes, bind mounts, project folders with compose files
 - ☁️ **Multiple storages** — primary + up to two copies (secondary, tertiary); one archive goes to all of them, rotation cleans all of them
-- 🔄 **Storage synchronization** — `sync-s3.sh` aligns the copies with the primary if they drift apart
+- 🔄 **Storage synchronization** — `docker-backup-s3 sync` aligns the copies with the primary if they drift apart
 - ⚡ **Parallel volume backup**
 - 🎯 **Single-project backup** with `-p NAME` for urgent jobs
 - 🚦 **Bandwidth limit** for S3 uploads
@@ -73,13 +73,13 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 - 🔬 **Partial restore** — `--contents`, `--extract-to`, `--only-volume`: get a single dump or volume without touching the running project
 
 ### Management
-- 🧭 **`docker-backup-s3`** — one command with a menu for everything below (whiptail; plain prompts without it), plus subcommands for scripts
 - ⚙️ **`install.sh`** — installation from scratch with one command, supports in-place; its questions are whiptail dialogs too
-- 🔄 **`update.sh`** — update with a backup copy and `--rollback`
-- 🗑️ **`uninstall.sh`** — safe removal (backups in S3 are protected)
-- 🧪 **`verify-restore.sh`** — automatic restore verification
-- 📊 **`status.sh`** — a one-screen system overview
-- 📜 **`logs.sh`** — log viewing with filters
+- 🧭 **`docker-backup-s3`** — the command it installs. Without arguments it opens a menu for everything (whiptail; plain prompts without it); with a subcommand it runs that one job: `docker-backup-s3 backup`, `restore`, `sync` and the ones below
+- 🔄 **`docker-backup-s3 update`** — update with a backup copy and `--rollback`
+- 🗑️ **`docker-backup-s3 uninstall`** — safe removal (backups in S3 are protected)
+- 🧪 **`docker-backup-s3 verify`** — automatic restore verification
+- 📊 **`docker-backup-s3 status`** — a one-screen system overview
+- 📜 **`docker-backup-s3 logs`** — log viewing with filters
 
 ## Contents
 
