@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.0.0-2496ED" alt="version 2.0.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.0.1-2496ED" alt="version 2.0.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4.4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4.4+">
   <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20x86__64%20%7C%20arm64-FCC624?logo=linux&logoColor=black" alt="Linux · x86_64 | arm64">

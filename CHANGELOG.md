@@ -8,7 +8,7 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
-## [Unreleased]
+## [2.0.1] — 2026-10-25
 
 ### Security
 - **A hook from another user's folder ran as root.** `SCAN_DIRS` includes `/home`, and the backup ran any
@@ -475,6 +475,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[2.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.1
 [2.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.0
 [1.5.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.5.0
 [1.4.4]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.4
