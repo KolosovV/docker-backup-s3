@@ -275,14 +275,18 @@ check "no password in the log" test -z "$(grep -F -f "$SECRETS" "$LOG_FILE")"
 # ==============================================================================
 echo "== Loading the dumps into fresh servers"
 if [[ -n "${PG_DUMP:-}" ]] && start r-pg postgres:17-alpine -e POSTGRES_HOST_AUTH_METHOD=trust \
-   && retry 90 docker exec "${PFX}-r-pg" pg_isready -U postgres; then
-    gunzip -c "$PG_DUMP" | docker exec -i "${PFX}-r-pg" psql -q -U postgres -d postgres >/dev/null 2>&1
-    check "Postgres: the marker is back" test "$(docker exec "${PFX}-r-pg" psql -U postgres -d postgres -tAc 'select m from dbt' 2>/dev/null)" == m-pg17
+   && retry 90 docker exec "${PFX}-r-pg" pg_isready -h 127.0.0.1 -U postgres; then
+    gunzip -c "$PG_DUMP" | docker exec -i "${PFX}-r-pg" psql -q -U postgres -d postgres > "$W/load-pg.log" 2>&1
+    got="$(docker exec "${PFX}-r-pg" psql -U postgres -d postgres -tAc 'select m from dbt' 2>/dev/null)"
+    check "Postgres: the marker is back" test "$got" == m-pg17
+    [[ "$got" == m-pg17 ]] || tail -n 5 "$W/load-pg.log"
 fi
 if [[ -n "${MDB_DUMP:-}" ]] && start r-mdb mariadb:11.4 -e MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1 \
-   && retry 90 docker exec "${PFX}-r-mdb" mariadb -uroot -e 'select 1'; then
-    gunzip -c "$MDB_DUMP" | docker exec -i "${PFX}-r-mdb" mariadb -uroot >/dev/null 2>&1
-    check "MariaDB (app-user dump): the marker is back" test "$(docker exec "${PFX}-r-mdb" mariadb -uroot -N -B -e 'select m from appdb.dbt' 2>/dev/null)" == m-mdb114
+   && retry 90 docker exec "${PFX}-r-mdb" mariadb -h127.0.0.1 --protocol=tcp -uroot -e 'select 1'; then
+    gunzip -c "$MDB_DUMP" | docker exec -i "${PFX}-r-mdb" mariadb -uroot > "$W/load-mdb.log" 2>&1
+    got="$(docker exec "${PFX}-r-mdb" mariadb -uroot -N -B -e 'select m from appdb.dbt' 2>/dev/null)"
+    check "MariaDB (app-user dump): the marker is back" test "$got" == m-mdb114
+    [[ "$got" == m-mdb114 ]] || tail -n 5 "$W/load-mdb.log"
 fi
 if [[ -n "${REDIS_DUMP:-}" ]]; then
     mkdir -p "$W/rdata"; gunzip -c "$REDIS_DUMP" > "$W/rdata/dump.rdb"; chmod -R 777 "$W/rdata"
