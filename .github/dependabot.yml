@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # The actions CI uses (checkout, setup-qemu): a new major version comes as a pull request
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: CI

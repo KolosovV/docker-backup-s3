@@ -1,0 +1,20 @@
+name: Feature request
+description: Something docker-backup-s3 should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you need
+      description: The situation, not the solution yet. What do you back up, and what is missing or getting in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: An option, a command, a change of behaviour. What happens on servers that don't use it?
+  - type: textarea
+    id: other
+    attributes:
+      label: What you do now instead

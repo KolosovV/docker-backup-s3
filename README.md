@@ -1629,6 +1629,8 @@ sudo /opt/docker-backup-s3/uninstall.sh --purge-s3 --purge-logs
 
 ## Security
 
+Found a vulnerability? Report it privately, not in an issue: [SECURITY.md](SECURITY.md).
+
 ### Where your keys and passwords live
 
 **Everything stays on your server and in your own storages.** docker-backup-s3 has no server of its own,
@@ -1940,6 +1942,8 @@ On every push GitHub Actions runs ShellCheck (warnings and errors), the tests, t
 systemd test on its own VM. The tag of the current release (the one matching `VERSION` on main), a monthly run and
 manual runs also run the distro test for each distribution, the systemd test in each distribution's container, the database test and
 aarch64: see `.github/workflows/ci.yml`.
+
+To send a change: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

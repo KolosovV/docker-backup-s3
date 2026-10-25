@@ -33,7 +33,7 @@ jobs:
     outputs:
       heavy: ${{ steps.heavy.outputs.suites }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ShellCheck (warnings and errors)
         run: |
           shellcheck --version
@@ -68,7 +68,7 @@ jobs:
   tests:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Dependencies
         run: |
           command -v jq || sudo apt-get install -y jq
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Tools
         run: |
           docker version --format 'docker {{.Server.Version}}'
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scheduling on a real init
         run: sudo DBT_SRC="$PWD" tests/systemd/check.sh
 
@@ -125,7 +125,7 @@ jobs:
           - archlinux:latest
           - alpine:3.20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install.sh, tests and the integration test on ${{ matrix.image }}
         run: tests/distros/run.sh "${{ matrix.image }}"
 
@@ -148,7 +148,7 @@ jobs:
           - opensuse/leap:15.6
           - archlinux:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scheduling with systemd on ${{ matrix.image }}
         run: tests/systemd/run.sh "${{ matrix.image }}"
 
@@ -168,8 +168,8 @@ jobs:
           - rockylinux:9
           - alpine:3.20
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
       - name: ${{ matrix.image }} on aarch64
@@ -183,6 +183,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Database dumps
         run: tests/databases/run.sh

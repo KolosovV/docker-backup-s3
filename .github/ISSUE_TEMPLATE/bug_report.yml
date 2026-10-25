@@ -1,0 +1,43 @@
+name: Bug report
+description: Something does not work as the README says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security problem? Not here — report it privately: see SECURITY.md.
+        Remove keys, passwords, tokens and hostnames from everything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`docker-backup-s3 version`"
+      placeholder: "2.0.1"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and Docker
+      description: "`. /etc/os-release; echo $PRETTY_NAME; docker --version; aws --version`"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The command you ran and what it did.
+    validations:
+      required: true
+  - type: textarea
+    id: validate
+    attributes:
+      label: validate-config.sh
+      description: "`sudo /opt/docker-backup-s3/validate-config.sh`"
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: The log
+      description: "`sudo /opt/docker-backup-s3/logs.sh -l` (the last run) or `logs.sh -e -s today` (errors)"
+      render: text
