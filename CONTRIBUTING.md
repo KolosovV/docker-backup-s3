@@ -1,6 +1,7 @@
 # Contributing
 
 Thanks for taking the time. Bug reports, fixes and new database or distribution support are all welcome.
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Before you start
 
