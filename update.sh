@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # update.sh
-# Updates Docker Backup System in place, keeping backup.conf and pre/post hooks.
+# Updates docker-backup-s3 in place, keeping backup.conf and pre/post hooks.
 #
 # What it does:
 #   1. Backs up all current files to /opt/docker-backup-s3.bak.<timestamp>/
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
             cat <<EOF
 Usage: $0 [options]
 
-Updates an installed Docker Backup System (in place).
+Updates an installed docker-backup-s3 (in place).
 
   -t, --target DIR     where to install (default: /opt/docker-backup-s3)
   -s, --source DIR     where to take the new files from (default: next to the script)
@@ -116,7 +116,7 @@ after_update() {
 # ==============================================================================
 cat <<EOF
 ${C_BOLD}${C_BLUE}╔═══════════════════════════════════════════════════════════════╗
-║   Docker Backup System — Updater                              ║
+║   docker-backup-s3 — Updater                                  ║
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
 
 EOF

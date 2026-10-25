@@ -673,7 +673,8 @@ backup_volume() {
     local rc=0
     # tar | gzip, and the exit code is tar's (kept in a file — not relying on pipefail in busybox sh),
     # so a tar error is not hidden behind gzip's; a gzip failure counts as 2. The level falls back to
-    # gzip's default if this busybox gzip has no -1..-9.
+    # gzip's default if this busybox gzip has no -1..-9. "socket ignored" is dropped from tar's
+    # messages, as on the host (TAR_QUIET): busybox tar has no option to stay quiet about sockets.
     docker run --rm \
         -v "${volume_name}:/source:ro" \
         -v "${dest_dir}:/backup" \
@@ -681,7 +682,8 @@ backup_volume() {
         alpine:latest \
         sh -c 'gzip -"$LVL" </dev/null >/dev/null 2>&1 || LVL=""
                cd /source || exit 2
-               { tar -cf - .; echo $? > /tmp/tar_rc; } | gzip ${LVL:+-$LVL} > "$OUT" || exit 2
+               { tar -cf - . 2>/tmp/tar_err; echo $? > /tmp/tar_rc; } | gzip ${LVL:+-$LVL} > "$OUT" || exit 2
+               grep -v ": socket ignored$" /tmp/tar_err >&2
                exit "$(cat /tmp/tar_rc)"' \
         || rc=$?
 

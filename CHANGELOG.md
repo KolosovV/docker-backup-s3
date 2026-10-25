@@ -8,7 +8,7 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
-## [Unreleased]
+## [2.0.0] — 2026-10-25
 
 ### Changed — action needed
 - **The command is `docker-backup-s3`**: `sudo docker-backup-s3`, `sudo docker-backup-s3 backup -p app`.
@@ -132,7 +132,8 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 - **Deleting old backups was not retried** on a storage's transient error (`OperationAborted` on `DeleteObject`):
   the backup stayed until the next run. Deletes are now retried like uploads (`S3_UPLOAD_TRIES`), in the rotation,
   `sync-s3.sh --prune` and `drop-project.sh`.
-- tar no longer logs "socket ignored": a socket cannot be archived, and the program recreates it on start.
+- tar no longer logs "socket ignored" (a mail server's volume gave dozens a night): a socket cannot be
+  archived, and the program recreates it on start.
 - The menu showed the command it runs one word per line. The same slip — a list joined with the scripts' newline
   `IFS` — split the installer's "Installing: …", the run summary's "Errors: N (project, project)" and the
   restore's project lists over several lines. Lists are now joined on one line everywhere.
@@ -151,7 +152,8 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 - MariaDB is called MariaDB in the log (it said "Mariadb"), PostgreSQL — PostgreSQL. The dry run's database lines
   carry a timestamp like the rest. `validate-config.sh` lists a folder once when the log and the lock share it.
 - The boxes around the installer's, the updater's, the uninstaller's and `status.sh`'s titles were one column
-  too wide: an emoji takes two.
+  too wide: an emoji takes two. They now say `docker-backup-s3`, and `status.sh` and the installer show the
+  version under the box. `status.sh` shows a finished run's result line, not the closing rule.
 
 ### Changed
 - Menus and lists get wider when a line needs it (a long endpoint), up to the terminal's width; the storage list
@@ -453,6 +455,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[2.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.0
 [1.5.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.5.0
 [1.4.4]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.4
 [1.4.3]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.4.3

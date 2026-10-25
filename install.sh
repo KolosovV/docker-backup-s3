@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # install.sh
-# Installs Docker Backup System from scratch on a clean server.
+# Installs docker-backup-s3 from scratch on a clean server.
 #
 # What it does:
 #   1. Installs dependencies (the distro's package manager); aws-cli v2 — with the official
@@ -150,9 +150,10 @@ is_conf_filled() {
 clear 2>/dev/null || true
 cat <<EOF
 ${C_BOLD}${C_BLUE}╔═══════════════════════════════════════════════════════════════╗
-║   Docker Backup System — Installer                            ║
+║   docker-backup-s3 — Installer                                ║
 ║   Backup of compose projects to S3 with database auto-dump    ║
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
+${C_DIM}  Version: $(cat "${SOURCE_DIR}/VERSION" 2>/dev/null || echo unknown)${C_RESET}
 
 EOF
 

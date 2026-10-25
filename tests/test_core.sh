@@ -218,6 +218,20 @@ out="$(bash "$REPO/status.sh" -c "$W/logs.conf" 2>&1 || true)"
 check "status: says the log was just rotated" grep -q 'just rotated' <<< "$out"
 check "status: the errors of last night's run" grep -q 'Upload to secondary S3 failed' <<< "$out"
 check "status: \"0 failed\" is not an error" bash -c '! grep -q "0 failed" <<< "$1"' _ "$out"
+c=$'\033[1m\033[34m'; r=$'\033[0m'
+cat > "$W/b.log" <<EOF
+[$t 22:10:00] ${c}===================================================================${r}
+[$t 22:10:00] ✅ Backup finished. Timestamp: ${t}_22-00-01
+[$t 22:10:00]     Projects:  3/3
+[$t 22:10:00]     Time:      10m 0s
+[$t 22:10:00] ${c}===================================================================${r}
+
+EOF
+out="$(bash "$REPO/status.sh" -c "$W/logs.conf" 2>&1 || true)"
+check "status: a finished run shows its result line, not the separator" grep -q "└ .*Backup finished. Timestamp: ${t}_22-00-01" <<< "$out"
+printf '[%s 22:01:00]   📦 Project: web\n' "$t" >> "$W/b.log"
+out="$(bash "$REPO/status.sh" -c "$W/logs.conf" 2>&1 || true)"
+check "status: a run under way shows its latest line" grep -q "└ .*Project: web" <<< "$out"
 
 section "helpers"
 check "join_list: one line, comma-separated (IFS has a newline here)" test "$(join_list a b 'c d')" == "a, b, c d"

@@ -86,9 +86,9 @@ age_human() {
 clear 2>/dev/null || true
 cat <<EOF
 ${C_BOLD}${C_BLUE}╔═══════════════════════════════════════════════════════════════╗
-║   📊  Docker Backup System — Status                           ║
+║   📊  docker-backup-s3 — Status                               ║
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
-${C_DIM}  Host: $(uname -n)    Date: $(date '+%Y-%m-%d %H:%M:%S')${C_RESET}
+${C_DIM}  Version: $(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo unknown)    Host: $(uname -n)    Date: $(date '+%Y-%m-%d %H:%M:%S')${C_RESET}
 
 EOF
 
@@ -473,7 +473,11 @@ for log_path in "${LOG_FILE:-/var/log/docker-backup.log}" /var/log/docker-backup
         size=$(stat -c %s "$log_path" 2>/dev/null || echo 0)
         last_modified=$(stat -c %Y "$log_path" 2>/dev/null || echo 0)
         # Right after logrotate the log is empty: the last run is in the part moved aside (log_generations)
-        last_line=$(log_generations "$log_path" | grep -v '^[[:space:]]*$' | tail -1 || true)
+        # Separators and empty lines say nothing; a finished run is shown by its result line, not by "Time: …"
+        last_line=$(log_generations "$log_path" | sed 's/\x1b\[[0-9;]*m//g' \
+            | grep -vE '^(\[[0-9: -]+\])?[[:space:]=━─]*$' | tail -n 5 \
+            | awk '/Backup finished/ { r = $0; next } !/^\[[^]]*\]     [A-Z][a-z]+: / { r = "" } { l = $0 }
+                   END { print (r != "" ? r : l) }' || true)
         rotated=""
         [[ "$size" -eq 0 && ( -f "$log_path.1" || -f "$log_path.1.gz" ) ]] \
             && rotated=", just rotated: the lines below are from ${log_path##*/}.1"

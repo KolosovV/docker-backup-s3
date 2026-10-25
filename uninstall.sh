@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # uninstall.sh
-# Clean removal of Docker Backup System.
+# Clean removal of docker-backup-s3.
 #
 # What is removed:
 #   ✓ Files in /opt/docker-backup-s3/ (or the given --target)
@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
             cat <<EOF
 Usage: $0 [options]
 
-Removes Docker Backup System.
+Removes docker-backup-s3.
 
   -t, --target DIR     what to remove (default: /opt/docker-backup-s3)
   -y, --yes            no confirmations (remove everything except logs and S3)
@@ -144,7 +144,7 @@ do_action() {
 clear 2>/dev/null || true
 cat <<EOF
 ${C_BOLD}${C_BLUE}╔═══════════════════════════════════════════════════════════════╗
-║   Docker Backup System — Uninstaller                          ║
+║   docker-backup-s3 — Uninstaller                              ║
 ╚═══════════════════════════════════════════════════════════════╝${C_RESET}
 
 EOF
@@ -261,7 +261,7 @@ if [[ "$FOUND_TARGET" == "false" && "$FOUND_CRON" == "false" && \
       "$FOUND_CMD" == "false" && "$FOUND_LOGS" == "false" && \
       "$FOUND_LOCK" == "false" && "$FOUND_WORK_DIR" == "false" ]]; then
     echo
-    log "${C_GREEN}Docker Backup System does not seem to be installed. Nothing to remove.${C_RESET}"
+    log "${C_GREEN}docker-backup-s3 does not seem to be installed. Nothing to remove.${C_RESET}"
     exit 0
 fi
 

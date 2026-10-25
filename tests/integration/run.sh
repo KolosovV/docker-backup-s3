@@ -144,6 +144,9 @@ wait_pg || die "Postgres did not start"
 psql_q "create table t(id int primary key, v text); insert into t select g, md5(g::text) from generate_series(1, 5000) g;" >/dev/null
 mdb_q "create database it; create table it.t(id int primary key, v varchar(40)); insert into it.t select seq, md5(seq) from seq_1_to_3000;" >/dev/null
 app_sh 'head -c 3000000 /dev/urandom > /data/big.bin; echo note > /data/note.txt'
+# A socket in a volume (mail servers keep them there): busybox tar's "socket ignored" stays out of the log
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
+    "$(docker volume inspect -f '{{.Mountpoint}}' "${PROJ}_appdata")/app.sock"
 fingerprint > "$IT/before.txt"
 cat "$IT/before.txt"
 ok "project up with data"
@@ -198,6 +201,7 @@ check "the archive is encrypted (.gpg)" grep -q "${PROJ}.*\.tar\.gz\.gpg$" "$IT/
 check "a sha256 manifest next to it" grep -q '\.sha256$' "$IT/primary.ls"
 check "aws is pinned to the classic transfer client" grep -q 'preferred_transfer_client = classic' "$IT/work/aws-cli.conf"
 check "no transfer-client warning from aws" bash -c "! grep -q \"Using the 'classic' s3 transfer client\" '$IT/backup.out'"
+check "no \"socket ignored\" for the socket in the volume" bash -c "! grep -q 'socket ignored' '$IT/backup.out' '$IT/backup.log'"
 check "the secondary got nothing (disabled)" test -z "$(s3 s3 ls --recursive s3://secondary/ 2>/dev/null)"
 check "webhook: backup done, worded right" grep -qE '^success\|backup done\|Saved 1 project in the primary storage \(127\.0\.0\.1:[0-9]+\)\. / [0-9.]+ [MG]B in ' <<< "$(hook_msgs)"
 check "the containers run again after the backup" test "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter status=running | wc -l)" -eq 3

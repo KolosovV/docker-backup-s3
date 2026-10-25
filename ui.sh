@@ -12,7 +12,7 @@
 # ==============================================================================
 
 UI_TTY="${UI_TTY:-/dev/tty}"
-UI_BACKTITLE="${UI_BACKTITLE:-Docker Backup System}"
+UI_BACKTITLE="${UI_BACKTITLE:-docker-backup-s3}"
 UI_TITLE=""      # title of the following dialogs (ui_title sets it)
 # Text shown at the top of the next dialog (ui_note adds to it). A file, not a variable: dialogs run
 # inside $(…), and a variable cleared there would stay set in the script. Created by ui_init with
