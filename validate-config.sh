@@ -133,6 +133,12 @@ ok "PARALLEL_JOBS = ${PARALLEL_JOBS:-1}"
 ok "ENCRYPT_BACKUPS = ${ENCRYPT_BACKUPS:-false}"
 ok "SCAN_DIRS = ${SCAN_DIRS:-(not set)}"
 ok "NOTIFY_ON = ${NOTIFY_ON:-error}"
+while IFS= read -r _l; do
+    case "${_l%,}" in
+        ""|success|warn|error) ;;
+        *) err "NOTIFY_SILENT: unknown level '${_l}' (success, warn, error)" ;;
+    esac
+done < <(split_words "${NOTIFY_SILENT-success}")
 
 if [[ ! "$RETENTION_DAYS" =~ ^[0-9]+$ ]]; then
     err "RETENTION_DAYS must be an integer ≥ 0 (0 = rotation off)"

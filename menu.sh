@@ -510,6 +510,15 @@ notify_line() {
     esac
 }
 
+notify_quiet() {
+    case "${NOTIFY_SILENT-success}" in
+        "")             printf 'none, every message rings' ;;
+        success)        printf 'successful runs' ;;
+        "success warn") printf 'successful runs and warnings' ;;
+        *)              printf '%s' "$NOTIFY_SILENT" ;;
+    esac
+}
+
 notify_when() {
     case "${NOTIFY_ON:-error}" in
         none)   printf 'never' ;;
@@ -677,7 +686,8 @@ menu_notify() {
             telegram "Telegram — $(notify_line telegram)" \
             webhook  "Webhook — $(notify_line webhook)" \
             email    "Email — $(notify_line email)" \
-            test     "Send a test message to every channel")" || return 0
+            test     "Send a test message to every channel" \
+            quiet    "Without a sound: $(notify_quiet)")" || return 0
         case "$choice" in
             when)
                 v="$(UI_DEFAULT="${NOTIFY_ON:-error}" ui_menu "When to send a message?" \
@@ -685,6 +695,14 @@ menu_notify() {
                     always "Every run, the successful ones too" \
                     none   "Never")" || continue
                 backup_conf_once; conf_set NOTIFY_ON "$v"; reload_conf ;;
+            quiet)
+                case "${NOTIFY_SILENT-success}" in "") v=none ;; "success warn") v=success-warn ;; *) v=success ;; esac
+                v="$(UI_DEFAULT="$v" ui_menu "Which messages arrive without a sound? Telegram and Discord deliver them silently, other channels as usual." \
+                    success      "Successful runs (recommended)" \
+                    success-warn "Successful runs and warnings" \
+                    none         "None, every message rings")" || continue
+                case "$v" in none) v="" ;; success-warn) v="success warn" ;; esac
+                backup_conf_once; conf_set NOTIFY_SILENT "$v" --allow-empty; reload_conf ;;
             name)
                 v="$(ui_input "Server name in messages (empty — the hostname)" "${NOTIFY_NAME:-}")" || continue
                 backup_conf_once; conf_set NOTIFY_NAME "$(trim "$v")" --allow-empty; reload_conf ;;

@@ -368,6 +368,11 @@ GPG_PASSPHRASE_FILE="/root/.docker-backup-passphrase"
 #   always   — every run (success + errors)
 NOTIFY_ON="error"
 
+# Levels that arrive WITHOUT A SOUND (Telegram and Discord; other channels have no such thing):
+# space-separated, from success / warn / error. Empty — every message rings.
+# The default keeps a routine "backup done" quiet next to the alerts in the same chat.
+NOTIFY_SILENT="success"
+
 # How to name the server in messages: "🔴 Server <name>: …". Empty — the hostname.
 NOTIFY_NAME=""
 

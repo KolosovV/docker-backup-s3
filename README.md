@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.0.1-2496ED" alt="version 2.0.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.1.0-2496ED" alt="version 2.1.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4.4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4.4+">
   <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20x86__64%20%7C%20arm64-FCC624?logo=linux&logoColor=black" alt="Linux · x86_64 | arm64">
@@ -151,7 +151,7 @@ The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arg
 | Logs | the last lines, errors, the last run, today's errors, one project, follow live |
 | Scheduled runs | the current setup, a method (cron / systemd timer) and a preset or your own schedule, removal |
 | Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key |
-| Notifications | when to notify (problems only / every run / never), the server name in messages, and Telegram, the webhook and email: set up, test, turn off; every change is checked with a test message |
+| Notifications | when to notify (problems only / every run / never), the server name in messages, which of them arrive without a sound, and Telegram, the webhook and email: set up, test, turn off; every change is checked with a test message |
 
 Destructive actions (an in-place restore, `--prune`, writing to the primary from a copy) ask for confirmation first;
 the scripts themselves keep their own confirmations too. Before the first change to the config the menu
@@ -505,6 +505,7 @@ Everything else has sensible defaults.
 | `ENCRYPT_BACKUPS` | `false` | GPG encryption |
 | `GPG_PASSPHRASE_FILE` | `/root/.docker-backup-passphrase` | passphrase file |
 | `NOTIFY_ON` | `error` | none / error (errors and warnings) / always |
+| `NOTIFY_SILENT` | `success` | levels that arrive without a sound in Telegram and Discord: success / warn / error, space-separated; empty — all ring |
 | `NOTIFY_NAME` | empty | the server's name in messages; empty — the hostname |
 | `TELEGRAM_BOT_TOKEN` | empty | bot token |
 | `TELEGRAM_CHAT_ID` | empty | recipient ID |
@@ -1133,7 +1134,14 @@ Without the passphrase, encrypted backups are lost for good. **Keep a copy of th
 ## Notifications
 
 The easiest way: `sudo docker-backup-s3` → **Notifications**. Each channel is set up there with a test message, and
-the same wizards run in `install.sh`. By hand, in `backup.conf`:
+the same wizards run in `install.sh`.
+
+**Without a sound.** With `NOTIFY_ON="always"` a routine "backup done" shares the chat with the alerts.
+`NOTIFY_SILENT` (default `success`) lists the levels Telegram and Discord deliver silently, so only errors and
+warnings ring; `"success warn"` quiets warnings too, `""` makes every message ring. Slack, a custom webhook and email
+have no silent delivery. A test message always rings: it checks that an alert would be heard.
+
+By hand, in `backup.conf`:
 
 ### Telegram
 

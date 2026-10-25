@@ -8,6 +8,16 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
+## [2.1.0] — 2026-10-25
+
+### Added
+- **Messages without a sound** — `NOTIFY_SILENT`, the levels that arrive silently (Telegram
+  `disable_notification`, Discord `SUPPRESS_NOTIFICATIONS`; Slack, a custom webhook and email have no such
+  thing). The default is `success`: with `NOTIFY_ON=always` a routine "backup done" no longer rings next to the
+  alerts in the same chat, while errors and warnings still do. Empty — every message rings, as before. In the
+  menu: Notifications → Without a sound. `validate-config.sh` reports an unknown level. A test message always
+  rings: it checks that an alert would be heard.
+
 ## [2.0.1] — 2026-10-25
 
 ### Security
@@ -475,6 +485,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[2.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.1.0
 [2.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.1
 [2.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.0
 [1.5.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v1.5.0

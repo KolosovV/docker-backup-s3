@@ -671,7 +671,7 @@ notify_send() {
         notify_configured "$ch" || { [[ -n "$only" ]] && { NOTIFY_ERR="not configured"; return 1; }; continue; }
         NOTIFY_ERR=""
         case "$ch" in
-            telegram) _notify_telegram "$full" ;;
+            telegram) _notify_telegram "$full" "$level" ;;
             webhook)  _notify_webhook "$level" "$name" "$title" "$full" "$plain_body" ;;
             email)    _notify_email "$subject" "$full" ;;
         esac && continue
@@ -679,6 +679,17 @@ notify_send() {
         [[ -z "$only" ]] && log_warn "Could not send the notification to ${ch}: ${NOTIFY_ERR:-unknown error}"
     done
     return "$rc"
+}
+
+# notify_silent <level> — this level arrives without a sound (NOTIFY_SILENT, a list of levels; unset —
+# "success"). A routine "backup done" in the same chat as the alerts should not ring like one of them.
+# Telegram and Discord can deliver silently; Slack, a custom webhook and email have no such thing.
+notify_silent() {
+    local l
+    while IFS= read -r l; do
+        [[ -n "$l" && "${l%,}" == "$1" ]] && return 0
+    done < <(split_words "${NOTIFY_SILENT-success}")
+    return 1
 }
 
 # notify_configured <telegram|webhook|email> — the channel's settings are filled in.
@@ -692,8 +703,9 @@ notify_configured() {
 }
 
 # notify_test <channel> — a test message to one channel (validate-config, install). Prints the result.
+# It rings whatever NOTIFY_SILENT says: it checks that an alert would be heard.
 notify_test() {
-    if notify_send success "test message" "Sent by $(html_esc "${0##*/}") at $(date -u '+%Y-%m-%d %H:%M UTC'). If you see it, $(html_esc "$1") notifications work." "$1"; then
+    if NOTIFY_SILENT="" notify_send success "test message" "Sent by $(html_esc "${0##*/}") at $(date -u '+%Y-%m-%d %H:%M UTC'). If you see it, $(html_esc "$1") notifications work." "$1"; then
         return 0
     fi
     printf '%s\n' "${NOTIFY_ERR:-unknown error}" >&2
@@ -725,12 +737,13 @@ curl_url_cfg() {
     printf 'url = "%s"\n' "$u"
 }
 
-# _tg_send <text> [HTML] — one sendMessage; the answer in TG_RESP. No answer at all (the network, a
+# _tg_send <text> [HTML] [silent] — one sendMessage; the answer in TG_RESP. No answer at all (the network, a
 # timeout) is tried again after 5 and 15 seconds; an answer, even a refusal, is final.
 _tg_send() {
     local api="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" try=1 pause
     local -a pm=()
     [[ -n "${2:-}" ]] && pm=(--data-urlencode "parse_mode=$2" --data-urlencode "disable_web_page_preview=true")
+    [[ -n "${3:-}" ]] && pm+=(--data-urlencode "disable_notification=true")
     while :; do
         TG_RESP="$(curl -s -m 10 -X POST -K <(curl_url_cfg "$api") \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
@@ -745,12 +758,13 @@ _tg_send() {
 # Telegram: HTML; if the markup is rejected — as plain text, so the alert isn't lost over a tag.
 # A message is at most 4096 characters: a longer one goes as plain text, cut on a line.
 _notify_telegram() {
-    local full="$1" resp
+    local full="$1" resp quiet=""
+    notify_silent "${2:-}" && quiet=1
     if (( ${#full} <= 4000 )); then
-        _tg_send "$full" HTML || { NOTIFY_ERR="no response from api.telegram.org"; return 1; }
+        _tg_send "$full" HTML "$quiet" || { NOTIFY_ERR="no response from api.telegram.org"; return 1; }
         [[ "$TG_RESP" == *'"ok":true'* ]] && return 0
     fi
-    _tg_send "$(_cut_lines "$(html_plain "$full")" 4000)" || true
+    _tg_send "$(_cut_lines "$(html_plain "$full")" 4000)" "" "$quiet" || true
     resp="$TG_RESP"
     [[ "$resp" == *'"ok":true'* ]] && return 0
     NOTIFY_ERR="$(printf '%s' "$resp" | jq -r '.description // empty' 2>/dev/null || true)"
@@ -781,7 +795,9 @@ _notify_webhook() {
             # **bold**, `code`; a message is at most 2000 characters.
             payload="$(printf '%s' "$full" | sed -e 's#</\{0,1\}b>#**#g' -e 's#</\{0,1\}code>#`#g')"
             payload="$(_cut_lines "$(html_plain "$payload")" 1990)"
-            payload="$(jq -n --arg t "$payload" '{content: $t, allowed_mentions: {parse: []}}')" ;;
+            # flags 4096 — SUPPRESS_NOTIFICATIONS: delivered without a push or a sound (NOTIFY_SILENT).
+            local flags=0; notify_silent "$level" && flags=4096
+            payload="$(jq -n --arg t "$payload" --argjson f "$flags" '{content: $t, allowed_mentions: {parse: []}} + (if $f > 0 then {flags: $f} else {} end)')" ;;
         slack)
             # *bold*, `code`; & < > stay escaped, as Slack wants them.
             payload="$(printf '%s' "$full" | sed -e 's#</\{0,1\}b>#*#g' -e 's#</\{0,1\}code>#`#g' -e 's/<[^>]*>//g')"

@@ -80,6 +80,26 @@ export MOCK_TG=silent; reset; notify error "x" "y" >>"$LOG_FILE" 2>&1; unset MOC
 check "never an answer: 3 tries, pauses 5 and 15 s" bash -c '[[ "$(tr "\n" " " < "$1/sleeps")" == "5 15 " && $(wc -l < "$1/calls") == 3 ]]' _ "$MOCK_DIR"
 check "then logged as no response" grep -q "to telegram: no response from api.telegram.org" "$LOG_FILE"
 rm -f "$W/bin/sleep"
+
+section "telegram: without a sound"
+NOTIFY_ON=always
+reset; notify success "backup done" "x"
+check "success is silent by default" grep -qx 'disable_notification=true' "$MOCK_DIR/args.1"
+reset; notify error "backup with errors" "$BODY"
+check "an error rings" bash -c '! grep -q disable_notification "$1"' _ "$MOCK_DIR/args.1"
+reset; notify warn "check the settings" "x"
+check "a warning rings by default" bash -c '! grep -q disable_notification "$1"' _ "$MOCK_DIR/args.1"
+NOTIFY_SILENT="success warn"; reset; notify warn "check the settings" "x"
+check "NOTIFY_SILENT=\"success warn\" — a warning is silent too" grep -qx 'disable_notification=true' "$MOCK_DIR/args.1"
+NOTIFY_SILENT=""; reset; notify success "backup done" "x"
+check "NOTIFY_SILENT empty — success rings" bash -c '! grep -q disable_notification "$1"' _ "$MOCK_DIR/args.1"
+unset NOTIFY_SILENT
+reset; notify success "long" "$LONG"
+check "the plain-text fallback is silent as well" grep -qx 'disable_notification=true' "$MOCK_DIR/args.1"
+reset; notify_test telegram >/dev/null 2>&1
+check "a test message rings (it checks that an alert is heard)" bash -c '! grep -q disable_notification "$1"' _ "$MOCK_DIR/args.1"
+check "and NOTIFY_SILENT is back afterwards" test "${NOTIFY_SILENT-unset}" == unset
+NOTIFY_ON=error
 TELEGRAM_BOT_TOKEN=""; TELEGRAM_CHAT_ID=""
 
 section "webhook: discord"
@@ -94,6 +114,9 @@ check "mentions disabled" test "$(jq -c .allowed_mentions "$MOCK_DIR/body.1")" =
 check "the webhook URL (its secret) is not on curl's command line" bash -c '! grep -q "webhooks/1/abc" "$1"' _ "$MOCK_DIR/args.1"
 reset; notify error "long" "$LONG"
 check "≤ 2000 characters" test "$(jq -r .content "$MOCK_DIR/body.1" | wc -m)" -le 2000
+check "an error has no flags (it rings)" test "$(jq -c .flags "$MOCK_DIR/body.1")" == null
+NOTIFY_ON=always; reset; notify success "backup done" "x"; NOTIFY_ON=error
+check "success goes with SUPPRESS_NOTIFICATIONS" test "$(jq -c .flags "$MOCK_DIR/body.1")" == 4096
 
 section "webhook: slack"
 NOTIFY_WEBHOOK_URL="https://hooks.slack.com/services/T/B/X"
