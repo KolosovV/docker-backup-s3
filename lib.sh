@@ -192,11 +192,34 @@ check_free_space() {
 # aws command, and clearing S3_BANDWIDTH_LIMIT did not remove the old limit.
 # So aws CLI is pointed at its own config file: it is recreated
 # on every run, and whatever isn't in it simply doesn't apply.
+# work_dir_ready — WORK_DIR exists, is ours and only ours (700). The default sits in /var/tmp, which every user
+# of the host can write to: a folder someone else made there in advance would be theirs, and they could read
+# the archives, swap them, or plant a link (aws-cli.conf → /etc/shadow, and the run would empty that file).
+# So a WORK_DIR that is a link or belongs to another user stops the script. On failure: WORK_DIR_ERR.
+WORK_DIR_ERR=""
+work_dir_ready() {
+    local d="${WORK_DIR:-/var/tmp/docker-backup}" owner
+    WORK_DIR_ERR=""
+    if [[ -L "$d" ]]; then
+        WORK_DIR_ERR="WORK_DIR $d is a symbolic link: not using it, someone could point it anywhere. Remove it, or set WORK_DIR to a folder of root's"
+        return 1
+    fi
+    (umask 077; mkdir -p "$d") 2>/dev/null
+    [[ -d "$d" && ! -L "$d" ]] || { WORK_DIR_ERR="Cannot create WORK_DIR $d"; return 1; }
+    owner="$(stat -c %u "$d" 2>/dev/null)"
+    if [[ "$owner" != "$(id -u)" ]]; then
+        WORK_DIR_ERR="WORK_DIR $d belongs to another user (uid ${owner:-?}): they could read or swap the archives in it. Remove it (sudo rm -rf $d), or set WORK_DIR to a folder of root's"
+        return 1
+    fi
+    chmod 700 "$d" 2>/dev/null || { WORK_DIR_ERR="Cannot chmod 700 WORK_DIR $d"; return 1; }
+    return 0
+}
+
 _AWS_CONFIG_READY=""
 _aws_config_init() {
     [[ -n "$_AWS_CONFIG_READY" ]] && return 0
     local dir="${WORK_DIR:-/var/tmp/docker-backup}"
-    mkdir -p "$dir" 2>/dev/null || true
+    work_dir_ready || { log_err "$WORK_DIR_ERR"; exit 1; }
     AWS_CONFIG_FILE="${dir}/aws-cli.conf"
     export AWS_CONFIG_FILE
     : > "$AWS_CONFIG_FILE" 2>/dev/null || true
@@ -1212,8 +1235,12 @@ keep_local_dumps() {
 prune_old_dumps() {
     local dir="$1" pattern="$2" keep="$3"
     [[ -d "$dir" ]] || return 0
-    # shellcheck disable=SC2012,SC2086 # $pattern is a glob on purpose; dump names have no spaces
-    ls -t "$dir"/$pattern 2>/dev/null | tail -n +$((keep + 1)) | xargs -r rm -f || true   # no match is fine
+    # One path per line, not xargs: a project folder may have a space in its name. ls -t sorts by time.
+    local -a all=()
+    # shellcheck disable=SC2012,SC2086 # $pattern is a glob on purpose
+    mapfile -t all < <(ls -t "$dir"/$pattern 2>/dev/null)
+    (( ${#all[@]} > keep )) && rm -f -- "${all[@]:keep}"
+    return 0
 }
 
 dump_postgres() {

@@ -241,6 +241,7 @@ RUN_DONE=false
 # Everything this run writes is the projects' data: .env files, docker inspect with the containers'
 # environment (their passwords too), database dumps. Only root reads it: files 600, folders 700.
 umask 077
+work_dir_ready || { log_err "$WORK_DIR_ERR"; exit 1; }
 mkdir -p "$BACKUP_ROOT"
 chmod 700 "$BACKUP_ROOT"
 
@@ -251,15 +252,17 @@ log "${C_BOLD}🚀 Starting Docker backup. Timestamp: ${TIMESTAMP}${C_RESET}"
 
 # The work folders of earlier runs. A run removes its own on exit, but not when it is killed with -9 or the
 # server goes down mid-run: then the folder stays, with archives of every project in it. Only a backup makes
-# such folders, and it holds the lock, so no other run is using them. A restore's folder (restore.*) may be
-# in use right now: those go only after a day.
+# such folders, and it holds the lock, so no other run is using them. The folders of a restore, a check, a sync
+# and a remote database dump (restore.*, verify.*, sync.*, remote-db.*) may be in use right now: those go only
+# after a day.
 if [[ "$DRY_RUN" != "true" ]]; then
     while IFS= read -r -d '' stale; do
         log_warn "Removing the work folder of an unfinished run: $stale ($(du -sh "$stale" 2>/dev/null | cut -f1))"
         rm -rf "$stale"
     done < <(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d \
         \( -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9]' ! -path "$BACKUP_ROOT" \
-           -o -name 'restore.*' -mmin +1440 \) -print0 2>/dev/null)
+           -o \( -name 'restore.*' -o -name 'verify.*' -o -name 'sync.*' -o -name 'remote-db.*' \) -mmin +1440 \) \
+        -print0 2>/dev/null)
 fi
 log "${C_BOLD}${C_BLUE}===================================================================${C_RESET}"
 
@@ -495,9 +498,11 @@ if [[ "$DRY_RUN" == "true" ]]; then
         fi
 
         # Hook
-        if [[ -x "${PROJECTS[$proj]}/pre-backup-hook.sh" ]]; then
-            log "   ${C_GREEN}↳ pre-backup-hook.sh will be run${C_RESET}"
-        fi
+        for h in pre-backup-hook.sh post-backup-hook.sh; do
+            [[ -x "${PROJECTS[$proj]}/$h" ]] || continue
+            if hook_trusted "${PROJECTS[$proj]}/$h"; then log "   ${C_GREEN}↳ $h will be run${C_RESET}"
+            else log_warn "   $h will NOT be run: $HOOK_ERR"; fi
+        done
 
         # Database auto-dump
         if [[ "${AUTO_DUMP_DATABASES:-true}" == "true" ]] && in_project_list "$proj" "${DB_DUMP_EXCLUDE_PROJECTS:-}"; then
@@ -750,9 +755,34 @@ backup_bind_mount() {
 # ==============================================================================
 # 5. PRE/POST HOOK EXECUTION
 # ==============================================================================
+# hook_trusted <hook> — a hook runs as root, so only one that no one but root can change: the file and its
+# folder are root's, and neither is writable by the group or others. SCAN_DIRS includes /home: without this,
+# any user of the host could put a compose file and a pre-backup-hook.sh in their home folder and have it run as
+# root that night. On failure: HOOK_ERR.
+HOOK_ERR=""
+hook_trusted() {
+    local hook="$1" p st me
+    me="$(id -u)"; HOOK_ERR=""
+    for p in "$hook" "$(dirname "$hook")"; do
+        st="$(stat -L -c '%u %a' "$p" 2>/dev/null)" || { HOOK_ERR="cannot stat $p"; return 1; }
+        if [[ "${st% *}" != "$me" ]]; then
+            HOOK_ERR="$p belongs to uid ${st% *}, not root"; return 1
+        fi
+        if (( 8#${st#* } & 8#022 )); then
+            HOOK_ERR="$p is writable by the group or others (mode ${st#* })"; return 1
+        fi
+    done
+    [[ -L "$hook" ]] && { HOOK_ERR="$hook is a symbolic link"; return 1; }
+    return 0
+}
+
 run_hook() {
     local dir="$1" hook_name="$2" proj="$3"
     local hook="${dir}/${hook_name}"
+    if [[ -x "$hook" ]] && ! hook_trusted "$hook"; then
+        log_warn "  Not running $hook_name for $proj: $HOOK_ERR. A hook runs as root: sudo chown root: $hook $dir; sudo chmod go-w $hook $dir"
+        return 1
+    fi
     if [[ -x "$hook" ]]; then
         log "  ${C_MAGENTA}🪝${C_RESET}  Running $hook_name for $proj"
         (

@@ -37,6 +37,30 @@ tar tzf "$W"/out/bind_1_*.tar.gz > "$W/blist"
 check "the kept folder is archived" grep -q 'bind/keep/x' "$W/blist"
 if grep -q 'skip1\|skip2' "$W/blist"; then bad "excluded folders were archived"; else ok "both excluded folders left out"; fi
 
+section "WORK_DIR and hooks: only what no one but root can change"
+WORK_DIR="$W/wd"; work_dir_ready; rc=$?
+check "a new WORK_DIR is made, 700" test "$rc:$(stat -c %a "$W/wd")" == "0:700"
+chmod 755 "$W/wd"; work_dir_ready
+check "an existing one of ours is set to 700" test "$(stat -c %a "$W/wd")" == 700
+ln -s "$W/wd" "$W/wd-link"; WORK_DIR="$W/wd-link"
+if work_dir_ready; then bad "a link as WORK_DIR was used"; else ok "a link as WORK_DIR stops: $WORK_DIR_ERR"; fi
+eval "$(sed -n '/^hook_trusted() {/,/^}/p' "$REPO/docker-backup.sh")"
+mkdir -p "$W/hp"; chmod 755 "$W/hp"; printf '#!/bin/sh\n' > "$W/hp/pre-backup-hook.sh"; chmod 755 "$W/hp/pre-backup-hook.sh"
+check "a hook of ours in a folder of ours runs" hook_trusted "$W/hp/pre-backup-hook.sh"
+chmod 775 "$W/hp/pre-backup-hook.sh"
+if hook_trusted "$W/hp/pre-backup-hook.sh"; then bad "a group-writable hook ran"; else ok "a group-writable hook does not run"; fi
+chmod 755 "$W/hp/pre-backup-hook.sh"; chmod 777 "$W/hp"
+if hook_trusted "$W/hp/pre-backup-hook.sh"; then bad "a hook in a folder anyone writes to ran"; else ok "nor one in a folder anyone can write to"; fi
+chmod 755 "$W/hp"; ln -s "$W/hp/pre-backup-hook.sh" "$W/hp/post-backup-hook.sh"
+if hook_trusted "$W/hp/post-backup-hook.sh"; then bad "a hook that is a link ran"; else ok "nor a link"; fi
+if [[ "$(id -u)" == 0 ]]; then
+    chown 65534 "$W/hp/pre-backup-hook.sh"
+    if hook_trusted "$W/hp/pre-backup-hook.sh"; then bad "another user's hook ran as root"; else ok "nor another user's (a home folder in SCAN_DIRS)"; fi
+    mkdir -p "$W/wd-other"; chown 65534 "$W/wd-other"; WORK_DIR="$W/wd-other"
+    if work_dir_ready; then bad "another user's WORK_DIR was used"; else ok "another user's WORK_DIR stops"; fi
+fi
+WORK_DIR="$W/wd"
+
 section "bind archive name → path (docker-restore.sh)"
 # The matching rule from docker-restore.sh: the longest BIND_MAP key the archive name ends with.
 eval "$(sed -n '/^bind_target_for() {/,/^}/p' "$REPO/docker-restore.sh")"

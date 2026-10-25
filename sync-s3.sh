@@ -187,7 +187,7 @@ show_sample() {  # $1=title, then the keys
 # Working folder for temporary files
 # ==============================================================================
 WORK_DIR="${WORK_DIR:-/var/tmp/docker-backup}"
-mkdir -p "$WORK_DIR"
+work_dir_ready || { log_err "$WORK_DIR_ERR"; exit 1; }
 TMP_DIR="$(mktemp -d "${WORK_DIR}/sync.XXXXXX")"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT

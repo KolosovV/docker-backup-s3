@@ -701,7 +701,7 @@ restore_one_project() {
     # In WORK_DIR, like the backup, not in /tmp: volume archives are mounted into a helper container from here,
     # and Docker from snap (and rootless or remote setups) does not see the host's /tmp
     local TMP_DIR work="${WORK_DIR:-/var/tmp/docker-backup}"
-    mkdir -p "$work" || { log_err "Cannot create WORK_DIR $work"; return 1; }
+    work_dir_ready || { log_err "$WORK_DIR_ERR"; return 1; }
     TMP_DIR="$(mktemp -d "${work}/restore.XXXXXX")" || { log_err "Cannot create a temporary folder in $work"; return 1; }
     # shellcheck disable=SC2064
     trap "rm -rf '$TMP_DIR'" RETURN

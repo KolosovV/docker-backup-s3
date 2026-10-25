@@ -265,6 +265,9 @@ check "a file of the user's own hook stays, and so does the folder" test -f "$D/
 rm -f "$D/hook-dump.sql"; keep_run T4 0; rm -f "$R"; keep_run T5 0 "$R"
 DB_DUMPS_RETENTION_COUNT=0 keep_local_dumps "$R"
 check "nothing else in it: the folder goes too" test ! -e "$D"
+P="$W/p keep"; D="$P/db-dumps"; mkdir -p "$P"; keep_run T1 2; keep_run T2 2; rm -f "$R"; keep_run T3 2 "$R"
+DB_DUMPS_RETENTION_COUNT=1 keep_local_dumps "$R"
+check "a project folder with a space: the old dumps go all the same" test "$(ls "$D")" == "postgres_pg_T3.sql.gz"
 
 section "no secret on a command line we build"
 check "docker exec never got a password as an argument" bash -c '! grep -q -e rootpw -e apppw -e from-file -e bitnami-pw -e env-pw -e "conf pw" "$1"' _ "$F/argv.log"

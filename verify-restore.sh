@@ -83,7 +83,7 @@ SRC_BUCKET="$S3_CUR_BUCKET"
 # /tmp/verify-restore-PID could be created in advance by another user of the host, and the data would land in it.
 WORK_DIR="${WORK_DIR:-/var/tmp/docker-backup}"
 umask 077
-mkdir -p "$WORK_DIR" || fail "Cannot create WORK_DIR $WORK_DIR"
+work_dir_ready || fail "$WORK_DIR_ERR"
 VERIFY_DIR="$(mktemp -d "${WORK_DIR}/verify.XXXXXX")" || fail "Cannot create a temporary folder in $WORK_DIR"
 trap 'rm -rf "$VERIFY_DIR"' EXIT
 

@@ -818,6 +818,11 @@ sudo chmod +x pre-backup-hook.sh
 sudo nano pre-backup-hook.sh
 ```
 
+A hook runs as root, so it runs only if no one but root can change it: the hook and the project folder must
+belong to root and not be writable by the group or others (`sudo chown root: <file> <folder>`,
+`sudo chmod go-w <file> <folder>`), and the hook must not be a symbolic link. Otherwise the log says why it was
+skipped: `SCAN_DIRS` includes `/home`, and any user could otherwise put a hook there that would run as root.
+
 The hook runs **after** the auto-dump of the standard databases. Available variables:
 - `COMPOSE_PROJECT` — project name
 - `PROJECT_DIR` — path to the folder
@@ -1649,7 +1654,7 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 | Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
 | Remote database passwords | `backup.conf`, or the file `REMOTE_DB_<NAME>_PASSWORD_FILE` points to | root only (`600`) |
 | Database dumps | `<project>/db-dumps/` | root only: the folder is `700`, the dumps are `600` |
-| An archive being built, downloaded or checked | `WORK_DIR` (`/var/tmp/docker-backup`) | root only: each run works in its own `700` folder, removed afterwards |
+| An archive being built, downloaded or checked | `WORK_DIR` (`/var/tmp/docker-backup`) | root only: `WORK_DIR` is `700` and must belong to root (a link, or a folder another user made in `/var/tmp` beforehand, stops the scripts); each run works in its own `700` folder, removed afterwards |
 
 **Never on a command line.** Any user of a Linux host can see every process's command line (`ps aux`),
 so no secret is ever passed as an argument:

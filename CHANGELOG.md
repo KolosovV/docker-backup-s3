@@ -8,6 +8,26 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
+## [Unreleased]
+
+### Security
+- **A hook from another user's folder ran as root.** `SCAN_DIRS` includes `/home`, and the backup ran any
+  executable `pre-backup-hook.sh` / `post-backup-hook.sh` next to a compose file it found: any user of the host
+  could have their code run as root that night, without access to Docker. A hook now runs only if it and the
+  project folder belong to root and are not writable by the group or others, and it is not a link; otherwise the
+  log says why it was skipped and how to fix it (`chown root:`, `chmod go-w`). The dry run says it too.
+- **`WORK_DIR` in `/var/tmp` could be someone else's.** `/var/tmp` is writable by every user, and the scripts
+  used `/var/tmp/docker-backup` whoever had made it: another user could create it in advance and read or swap the
+  archives, or leave a link in it that made the backup empty a file of root's (`aws-cli.conf` → `/etc/shadow`).
+  A `WORK_DIR` that is a link or belongs to another user now stops the scripts; an existing one is set to `700`.
+- `validate-config.sh` reports a config or an installation folder that someone besides root can change (it all
+  runs as root), and a `WORK_DIR` that is not root's.
+
+### Fixed
+- Old database dumps stayed on the server when the project folder had a space in its name.
+- A check, a sync or a remote database dump killed mid-run left its folder in `WORK_DIR` (`verify.*`, `sync.*`,
+  `remote-db.*`): the next backup removes those older than a day, as it does with a restore's.
+
 ## [2.0.0] — 2026-10-25
 
 ### Changed — action needed

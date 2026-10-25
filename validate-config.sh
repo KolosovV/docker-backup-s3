@@ -205,6 +205,15 @@ if [[ "$config_perms" != "600" && "$config_perms" != "400" ]]; then
 else
     ok "$CONFIG_FILE: chmod $config_perms"
 fi
+# The config and the scripts run as root: whoever else can change them runs code as root. The config is an
+# error; the scripts' folder a warning — a clone of a user's own, run with sudo, is theirs to judge.
+for p in "$CONFIG_FILE" "$SCRIPT_DIR"; do
+    st="$(stat -c '%u %a' "$p" 2>/dev/null)" || continue
+    if [[ "${st% *}" != "$(id -u)" ]] || (( 8#${st#* } & 8#022 )); then
+        msg="$p: owner uid ${st% *}, mode ${st#* }: someone besides root can change what runs as root. Fix: sudo chown -R root: $p; sudo chmod -R go-w $p"
+        if [[ "$p" == "$CONFIG_FILE" ]]; then err "$msg"; else warn "$msg"; fi
+    fi
+done
 
 for sh in "${SCRIPT_DIR}/docker-backup.sh" "${SCRIPT_DIR}/docker-restore.sh"; do
     if [[ -f "$sh" ]]; then
@@ -372,6 +381,7 @@ for d in "$WORK_DIR" "$(dirname "$LOG_FILE")" "$(dirname "${LOCK_FILE:-/var/run/
         warn "$d does not exist — it will be created on the first run"
     fi
 done
+if [[ -e "$WORK_DIR" || -L "$WORK_DIR" ]] && ! work_dir_ready; then err "$WORK_DIR_ERR"; fi
 
 # Free space
 if [[ -d "$WORK_DIR" ]]; then
