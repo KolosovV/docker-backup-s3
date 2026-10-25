@@ -472,9 +472,13 @@ for log_path in "${LOG_FILE:-/var/log/docker-backup.log}" /var/log/docker-backup
     if [[ -f "$log_path" ]]; then
         size=$(stat -c %s "$log_path" 2>/dev/null || echo 0)
         last_modified=$(stat -c %Y "$log_path" 2>/dev/null || echo 0)
-        last_line=$(tail -1 "$log_path" 2>/dev/null || echo "")
+        # Right after logrotate the log is empty: the last run is in the part moved aside (log_generations)
+        last_line=$(log_generations "$log_path" | grep -v '^[[:space:]]*$' | tail -1 || true)
+        rotated=""
+        [[ "$size" -eq 0 && ( -f "$log_path.1" || -f "$log_path.1.gz" ) ]] \
+            && rotated=", just rotated: the lines below are from ${log_path##*/}.1"
 
-        echo "  ${C_BOLD}$log_path${C_RESET}  ($(human_size "$size"), modified $(age_human "$last_modified"))"
+        echo "  ${C_BOLD}$log_path${C_RESET}  ($(human_size "$size"), modified $(age_human "$last_modified")${rotated})"
         if [[ -n "$last_line" ]]; then
             # Trim a long line
             if (( ${#last_line} > 90 )); then
@@ -483,8 +487,8 @@ for log_path in "${LOG_FILE:-/var/log/docker-backup.log}" /var/log/docker-backup
             echo "    ${C_DIM}└ $last_line${C_RESET}"
         fi
 
-        # Look for recent errors (last 100 lines) — grep || true so as not to fail under set -e
-        recent_errors=$(tail -100 "$log_path" 2>/dev/null | grep -iE 'ERROR|❌|FAIL' | tail -3 || true)
+        # Recent errors (last 100 lines). Not a bare "fail": "2 succeeded, 0 failed" is not an error.
+        recent_errors=$(log_generations "$log_path" | tail -100 | grep -E -- "$LOG_ERRORS_RE" | tail -3 || true)
         if [[ -n "$recent_errors" ]]; then
             echo "    ${C_RED}Recent errors:${C_RESET}"
             while IFS= read -r line; do

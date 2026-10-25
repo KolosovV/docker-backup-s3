@@ -177,8 +177,8 @@ fi
 
 section "a backup's age, by the calendar"
 check "this morning: today" test "$(ts_age "$(date +%F)_00-00-01")" == today
-check "late last night, nearly a day ago: 1 day ago" test "$(ts_age "$(date -d yesterday +%F)_23-59-59")" == "1 day ago"
-check "early yesterday: 1 day ago" test "$(ts_age "$(date -d yesterday +%F)_00-00-01")" == "1 day ago"
+check "late last night: yesterday" test "$(ts_age "$(date -d yesterday +%F)_23-59-59")" == yesterday
+check "early yesterday: yesterday" test "$(ts_age "$(date -d yesterday +%F)_00-00-01")" == yesterday
 check "a week ago: 7 days ago" test "$(ts_age "$(date -d '7 days ago' +%F)_12-00-00")" == "7 days ago"
 check "not a date: code 1" bash -c 'source "$1/lib.sh"; ! ts_age None' _ "$REPO"
 
@@ -202,6 +202,22 @@ check "not yesterday's" bash -c '! grep -q "backups/old" <<< "$1"' _ "$out"
 check "\"0 failed\" and \"socket ignored\" are not errors" bash -c '! grep -qE "0 failed|socket ignored" <<< "$1"' _ "$out"
 out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -e -p nothing-like-this 2>&1)"; rc=$?
 check "no matches is not a failure" test "$rc" -eq 0
+
+# Right after logrotate: the log is empty, last night's run is in .1, an older week in .2.gz
+mv "$W/b.log" "$W/b.log.1"; : > "$W/b.log"
+printf '[2000-01-01 22:00:01] 🚀 Starting Docker backup. Timestamp: ancient\n[2000-01-01 22:00:02] ❌ ancient error\n' \
+    | gzip > "$W/b.log.2.gz"
+out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -e -s yesterday 2>&1)"
+check "after a rotation: -e -s yesterday still finds last night's errors (in .1)" grep -q 'Upload to secondary S3 failed' <<< "$out"
+check "and leaves out what --since excludes (.2.gz)" bash -c '! grep -q "ancient" <<< "$1"' _ "$out"
+out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -e -n 0 2>&1)"
+check "-n 0: the older rotated parts too" grep -q 'ancient error' <<< "$out"
+out="$(bash "$REPO/logs.sh" -c "$W/logs.conf" -b -l 2>&1)"
+check "-l: the last run, from .1" grep -q 'Timestamp: new' <<< "$out"
+out="$(bash "$REPO/status.sh" -c "$W/logs.conf" 2>&1 || true)"
+check "status: says the log was just rotated" grep -q 'just rotated' <<< "$out"
+check "status: the errors of last night's run" grep -q 'Upload to secondary S3 failed' <<< "$out"
+check "status: \"0 failed\" is not an error" bash -c '! grep -q "0 failed" <<< "$1"' _ "$out"
 
 section "helpers"
 check "join_list: one line, comma-separated (IFS has a newline here)" test "$(join_list a b 'c d')" == "a, b, c d"

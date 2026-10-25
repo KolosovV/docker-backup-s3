@@ -144,9 +144,8 @@ colorize() {
 # ==============================================================================
 # Filters (optional)
 # ==============================================================================
-# An error or a warning: our ❌/⚠/✗ lines and what aws and other tools print when they fail. Not a bare
-# "fail"/"error": "2 succeeded, 0 failed" and a path such as ./private/error are not errors.
-ERRORS_RE='❌|⚠|✗|ERROR|WARN|[Ff]ailed:|An error occurred|[Ff]atal error|Traceback|No space left'
+# An error (LOG_ERRORS_RE in lib.sh) or a warning
+ERRORS_RE="⚠|WARN|${LOG_ERRORS_RE}"
 
 # --since: the log's timestamps ([YYYY-MM-DD HH:MM:SS]) sort as text, so they are compared as text —
 # plain POSIX awk (mawk on Debian/Ubuntu, busybox), no date call per line. A line without a timestamp
@@ -186,11 +185,11 @@ extract_last_run() {
 
     # Find the last "🚀 ... Docker" start marker from the end of the file (new and old logs alike)
     # awk keeps lines from the start and resets on every start
-    awk '
+    log_generations "$log" | awk '
         /🚀 .*Docker/ { buffer = ""; collecting = 1 }
         collecting { buffer = buffer $0 "\n" }
         END { printf "%s", buffer }
-    ' "$log"
+    '
 }
 
 if [[ "$LAST_RUN" == "true" ]]; then
@@ -242,13 +241,16 @@ desc="last $N_LINES lines"
 echo "${C_BOLD}${C_CYAN}━━━ docker-backup-s3 logs ($desc) ━━━${C_RESET}"
 echo
 
+# The last rotated part is always read (the newest lines may be there, right after a rotation); the older ones —
+# for "all lines" and for --since, which may reach back further than a week
+gens=""; [[ "$N_LINES" == "0" || -n "$SINCE_TS" ]] && gens=all
 for log in "${existing_logs[@]}"; do
     echo "${C_BOLD}${log}:${C_RESET}"
     echo "${C_DIM}─────────────────────────────────────────────────────${C_RESET}"
     if [[ "$N_LINES" == "0" ]]; then
-        filter_lines < "$log" | colorize
+        log_generations "$log" "$gens" | filter_lines | colorize
     else
-        filter_lines < "$log" | tail -n "$N_LINES" | colorize
+        log_generations "$log" "$gens" | filter_lines | tail -n "$N_LINES" | colorize
     fi
     echo
 done

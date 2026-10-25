@@ -262,12 +262,34 @@ conf_duplicates() {
 # Roles separated by spaces — for messages (the scripts run with IFS=$'\n\t', and ${S3_ROLES[*]} would print one per line)
 s3_roles_txt() { local IFS=' '; printf '%s' "${S3_ROLES[*]}"; }
 
-# days_ago N — "today", "1 day ago", "N days ago"
+# days_ago N — "today", "yesterday", "N days ago"
 days_ago() {
-    case "$1" in 0) printf 'today' ;; 1) printf '1 day ago' ;; *) printf '%s days ago' "$1" ;; esac
+    case "$1" in 0) printf 'today' ;; 1) printf 'yesterday' ;; *) printf '%s days ago' "$1" ;; esac
 }
 
-# ts_age <YYYY-mm-dd_HH-MM-SS> — a backup's age by the calendar (days_ago): last night's is "1 day ago" even
+# An error line in our logs: our ❌/✗ lines and what aws and other tools print when they fail. Not a bare
+# "fail"/"error": "2 succeeded, 0 failed" and a path such as ./private/error are not errors. (logs.sh -e adds warnings.)
+# shellcheck disable=SC2034 # used by logs.sh and status.sh
+LOG_ERRORS_RE='❌|✗|ERROR|[Ff]ailed:|An error occurred|[Ff]atal error|Traceback|No space left'
+
+# log_generations <log> [all] — a log with what logrotate moved aside, oldest first: the last rotated part
+# (<log>.1, or .1.gz) and the log itself; with "all" — every older part too (.2.gz, .3.gz…). The rotation empties
+# the log (weekly, on Sunday night): read alone, it said "no errors" and "no run" about last night's backup.
+log_generations() {
+    local f="$1" all="${2:-}" i
+    if [[ "$all" == all ]]; then
+        for (( i = 52; i >= 2; i-- )); do
+            if [[ -f "$f.$i.gz" ]]; then gzip -dc "$f.$i.gz" 2>/dev/null || true
+            elif [[ -f "$f.$i" ]]; then cat "$f.$i"; fi
+        done
+    fi
+    if [[ -f "$f.1.gz" ]]; then gzip -dc "$f.1.gz" 2>/dev/null || true
+    elif [[ -f "$f.1" ]]; then cat "$f.1"; fi
+    [[ -f "$f" ]] && cat "$f"
+    return 0
+}
+
+# ts_age <YYYY-mm-dd_HH-MM-SS> — a backup's age by the calendar (days_ago): last night's is "yesterday" even
 # 20 hours later, not "today". 1 if the name is not a date. +12 h: a day around a DST change is 23 or 25 hours.
 ts_age() {
     local day now

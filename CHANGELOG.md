@@ -67,6 +67,11 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   stopped with `None: unbound variable`. Now each project gets its own table; an empty answer from the storage
   is no longer read as a backup date or a size. A name the storage doesn't have is said so, with the names it
   has (a compose project may be named unlike its folder: mailcow is `mailcowdockerized`).
+- **After the weekly log rotation the log tools saw nothing.** logrotate empties the log on Sunday night, and
+  `logs.sh -e`, `logs.sh -l` and the log section of `status.sh` read only the new, empty file: "no errors" and
+  "no run marker" about the night's backup. They now read the part moved aside too (`.1`, and with `--since` or
+  `-n 0` the older `.gz` parts); `status.sh` says the log was just rotated. Its "recent errors" no longer take
+  "2 succeeded, 0 failed" for an error. Last night's backup is "yesterday", not "1 day ago".
 - **A killed run left its work folder behind.** A run removes its folder in `WORK_DIR` on exit, but not when it is
   killed with `-9` or the server goes down mid-run: the folder stayed, with archives of every project in it. The
   next backup now removes such folders (and restore folders older than a day) and says so in the log.
