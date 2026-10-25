@@ -56,10 +56,16 @@ s3() { AWS_ACCESS_KEY_ID=itkey AWS_SECRET_ACCESS_KEY=itsecret AWS_DEFAULT_REGION
 psql_q() { docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T db psql -U postgres -d itdb -tAc "$1"; }
 app_sh() { docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T app sh -c "$1"; }
 mdb_q() { docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T mdb mariadb -uroot -pitpass -N -B -e "$1"; }
+# The images first run a temporary server for their setup (socket or localhost only), then restart it: a check
+# over the socket can pass on the temporary one, and what is written then gets cut off. TCP answers only the
+# final server.
 wait_pg() {   # Postgres and MariaDB both answer
     local _
     for _ in $(seq 1 90); do
-        psql_q 'select 1' >/dev/null 2>&1 && mdb_q 'select 1' >/dev/null 2>&1 && return 0
+        docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T db pg_isready -q -h 127.0.0.1 >/dev/null 2>&1 \
+            && docker compose -p "$PROJ" -f "$PDIR/compose.yaml" exec -T mdb \
+                mariadb -h127.0.0.1 --protocol=tcp -uroot -pitpass -e 'select 1' >/dev/null 2>&1 \
+            && return 0
         sleep 1
     done
     return 1
@@ -312,8 +318,13 @@ r_fp() {
     echo "mo: $(r_mo 'db.getSiblingDB("app").c.countDocuments()')"
     echo "re: $(r_re get k)"
 }
+# Ready means the final server (see wait_pg): TCP, or Mongo on the container's own address (its setup server
+# listens on localhost only)
 for _ in $(seq 1 90); do
-    r_pg 'select 1' >/dev/null 2>&1 && r_my 'select 1' >/dev/null 2>&1 && r_mo '1' >/dev/null 2>&1 && [[ "$(r_re ping 2>/dev/null)" == PONG ]] && break
+    docker exec "$RPG" pg_isready -q -h 127.0.0.1 >/dev/null 2>&1 \
+        && docker exec "$RMY" mariadb -h127.0.0.1 --protocol=tcp -uroot "-p$RMW" -e 'select 1' >/dev/null 2>&1 \
+        && docker exec "$RMO" sh -c 'set -- $(hostname -i); mongosh --quiet --host "$1" --eval 1' >/dev/null 2>&1 \
+        && [[ "$(r_re ping 2>/dev/null)" == PONG ]] && break
     sleep 1
 done
 for c in "$RPG" "$RMY" "$RMO" "$RRE"; do
