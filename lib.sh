@@ -5,12 +5,13 @@
 # Expects backup.conf to be loaded already
 # ==============================================================================
 
-# conf_defaults [template] — every option backup.conf leaves out gets the value backup.conf.example (next to
-# this file) gives it: the defaults the README documents, kept in one place. A config written by hand, or kept
-# from an older version, lacks lines; under set -u each one used bare would stop the script. Left out: the
-# primary storage's own settings — the template has placeholders there, not defaults.
+# conf_defaults — every option backup.conf leaves out gets the value backup.conf.example (next to this file)
+# gives it: the defaults the README documents, kept in one place. A config written by hand, or kept from an
+# older version, lacks lines; under set -u each one used bare would stop the script. Left out: the primary
+# storage's own settings — the template has placeholders there, not defaults.
 conf_defaults() {
-    local tpl="${1:-$(dirname "${BASH_SOURCE[0]}")/backup.conf.example}" line name
+    local tpl line name
+    tpl="$(dirname "${BASH_SOURCE[0]}")/backup.conf.example"
     [[ -r "$tpl" ]] || return 0
     while IFS= read -r line; do
         [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
