@@ -722,7 +722,9 @@ When a backup runs, for each project the script:
 3. Checks that the container really runs that database server and has its dump tool: an exporter,
    an admin UI or a backup sidecar whose image name matched (`postgres-exporter`, `redis_exporter`,
    `mongo-express`…) is skipped with a note, not counted as a failure
-4. Saves the dump into the `db-dumps/` subfolder inside the project (`700`, the files `600`)
+4. Saves the dump into the `db-dumps/` subfolder inside the project (`700`, the files `600`). If an image is
+   built from the project folder (`build: .` with `COPY . .`), add `db-dumps/` to its `.dockerignore`: a
+   build runs as root, sees the dumps and would bake them into the image
 5. The dump goes into the archive with the project folder — only this run's: earlier dumps kept on the server
    are left out, they are in earlier archives already
 6. Once the archive is in the storage, deletes the dumps on the server, or keeps the last
@@ -1663,7 +1665,7 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 | The GPG passphrase | `GPG_PASSPHRASE_FILE` (`/root/.docker-backup-passphrase`) | root only (`600`); gpg reads it from the file, never from an argument |
 | Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
 | Remote database passwords | `backup.conf`, or the file `REMOTE_DB_<NAME>_PASSWORD_FILE` points to | root only (`600`) |
-| Database dumps | `<project>/db-dumps/` | root only: the folder is `700`, the dumps are `600` |
+| Database dumps | `<project>/db-dumps/` | root only: the folder is `700`, the dumps are `600`. An image built from the project folder takes them in unless `.dockerignore` lists `db-dumps/` |
 | An archive being built, downloaded or checked | `WORK_DIR` (`/var/tmp/docker-backup`) | root only: `WORK_DIR` is `700` and must belong to root (a link, or a folder another user made in `/var/tmp` beforehand, stops the scripts); each run works in its own `700` folder, removed afterwards |
 
 **Never on a command line.** Any user of a Linux host can see every process's command line (`ps aux`),
