@@ -10,7 +10,7 @@
 #   4. Checks tar integrity and file sizes
 #   5. Checks that database dumps are valid (headers, gzip integrity)
 #   6. Cleans up after itself
-#   7. Sends a Telegram notification if something is wrong
+#   7. Sends a notification if something is wrong
 #
 # Usage:
 #   sudo ./verify-restore.sh                  # check the latest backup of every project
@@ -28,6 +28,7 @@ PROJECT_FILTER=""
 MODE="standard"   # quick | standard
 NOTIFY="true"
 FROM_ROLE="primary"
+WAIT_FOR_BACKUP="true"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --quick)        MODE="quick"; shift ;;
         --no-notify)    NOTIFY="false"; shift ;;
         --from)         FROM_ROLE="$2"; shift 2 ;;
+        --no-wait)      WAIT_FOR_BACKUP="false"; shift ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [options]
@@ -47,7 +49,11 @@ Checks that backups can be restored.
       --quick          only the object's presence and size in S3, no download
       --no-notify      don't send a notification
       --from ROLE      which storage to check: primary (default), secondary, tertiary
+      --no-wait        don't wait for a backup under way (by default the check waits up to
+                       VERIFY_WAIT_MINUTES, 180, so it covers the copy being made)
   -h, --help           this help
+
+The output also goes to LOG_FILE, as the backup's does. On a schedule: setup-cron.sh -v.
 
 CHECK LEVELS:
   quick:    head-object — the object is there and non-empty (downloads nothing)
@@ -69,8 +75,36 @@ source "$CONFIG_FILE"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
+# The log: to the screen (or the cron log) and to LOG_FILE, so logs.sh and the notification's
+# "Details" line find it next to the backup's
+LOG_FILE="${LOG_FILE:-/var/log/docker-backup.log}"
+VR_LOG_PID=""
+if mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && touch "$LOG_FILE" 2>/dev/null; then
+    exec 2> >(exec tee -a "$LOG_FILE" >&2)
+    VR_LOG_PID=$!
+fi
+
+# A check that could not even start (no storage access, no tool, no space) says so: on a schedule
+# nobody watches its output. The reason is the last fail() message.
+VR_DONE="false"
+VR_FAIL_MSG=""
+fail() { VR_FAIL_MSG="$*"; log_err "$*"; exit 1; }
+VERIFY_DIR=""
+_vr_exit() {
+    local rc=$?
+    [[ -n "$VERIFY_DIR" ]] && rm -rf "$VERIFY_DIR"
+    if (( rc != 0 )) && [[ "$VR_DONE" != "true" && "$NOTIFY" == "true" ]]; then
+        notify error "restore check did not run" "$(html_esc "${VR_FAIL_MSG:-verify-restore.sh stopped with exit code $rc}")"$'\n'"$(notify_log_hint)" || true
+    fi
+    # Let tee write the last lines: under systemd the leftover processes are killed when the script exits
+    if [[ -n "$VR_LOG_PID" ]]; then exec 2>&-; wait "$VR_LOG_PID" 2>/dev/null || true; fi
+    return "$rc"
+}
+trap _vr_exit EXIT
+
 require_cmd docker tar gzip aws jq
 [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && require_cmd gpg
+notify_any && require_cmd curl
 
 # The storage to check; the read-only key, if set
 s3_is_role "$FROM_ROLE" || fail "Unknown storage: $FROM_ROLE (available: $(s3_roles_txt))"
@@ -85,7 +119,22 @@ WORK_DIR="${WORK_DIR:-/var/tmp/docker-backup}"
 umask 077
 work_dir_ready || fail "$WORK_DIR_ERR"
 VERIFY_DIR="$(mktemp -d "${WORK_DIR}/verify.XXXXXX")" || fail "Cannot create a temporary folder in $WORK_DIR"
-trap 'rm -rf "$VERIFY_DIR"' EXIT
+
+# A backup under way: wait for it, so the check covers the copy it is making, and the two don't share
+# the disk and the network. An archive appears in the storage only whole, so a check that does not wait
+# (--no-wait, or after VERIFY_WAIT_MINUTES) takes the latest complete one.
+if [[ "$WAIT_FOR_BACKUP" == "true" ]] && bpid="$(backup_running_pid)"; then
+    max_wait=$(( ${VERIFY_WAIT_MINUTES:-180} * 60 )); waited=0
+    log "⏳ A backup is under way (PID $bpid) — waiting for it to finish (up to ${VERIFY_WAIT_MINUTES:-180} min)"
+    while backup_running_pid >/dev/null; do
+        if (( waited >= max_wait )); then
+            log_warn "The backup is still running after ${VERIFY_WAIT_MINUTES:-180} min — checking the copies already in the storage"
+            break
+        fi
+        sleep 30; waited=$((waited + 30))
+    done
+    (( waited < max_wait )) && log_ok "The backup finished — checking"
+fi
 
 # --- Global statistics ---
 TOTAL_PROJECTS=0
@@ -547,7 +596,18 @@ done
 # ==============================================================================
 # SUMMARY
 # ==============================================================================
+VR_DONE="true"   # from here the summary reports the result itself
 TOTAL_DURATION=$(($(date +%s) - SESSION_START))
+
+# The result of a whole check, for status.sh (and an external monitor, by the file's age)
+LAST_VERIFY_FILE="${LAST_VERIFY_FILE:-/var/lib/docker-backup/last-verify.json}"
+if [[ -z "$PROJECT_FILTER" ]] && mkdir -p "$(dirname "$LAST_VERIFY_FILE")" 2>/dev/null; then
+    printf '{"finished":"%s","ok":%s,"checked":%d,"failed":%d,"mode":"%s","from":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ "$TOTAL_FAIL" -eq 0 ]] && echo true || echo false)" \
+        "$TOTAL_PROJECTS" "$TOTAL_FAIL" "$MODE" "$FROM_ROLE" > "${LAST_VERIFY_FILE}.tmp" \
+        && mv "${LAST_VERIFY_FILE}.tmp" "$LAST_VERIFY_FILE"
+    chmod 644 "$LAST_VERIFY_FILE" 2>/dev/null || true
+fi
 
 log ""
 log "${C_BOLD}${C_BLUE}═══════════════════════════════════════════════════════════════${C_RESET}"

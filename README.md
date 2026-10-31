@@ -66,7 +66,8 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 - ✅ **Completeness control** — if a volume or bind mount didn't make it into the archive, the project is marked as failed, not as a "success"
 - 🗂 **GFS rotation** (day/week/month) and the `KEEP_MIN_BACKUPS` floor — the latest copies are never deleted
 - 🔒 **Lock** against a double start (via an atomic mkdir)
-- 📡 **Notifications** to Telegram, email (your SMTP) and a webhook (Discord, Slack, Mattermost or your own JSON receiver) — an interrupted run (Ctrl+C, a kill, a shutdown) is reported too
+- 📡 **Notifications** to email (your SMTP), Slack, PagerDuty (an incident opened by a failure and resolved by the next good run), a webhook (Discord, Mattermost or your own JSON receiver) and Telegram — an interrupted run (Ctrl+C, a kill, a shutdown) is reported too
+- 🧪 **Restore checks on a schedule** — the latest archive of every project downloaded, unpacked and its database dumps checked, weekly by default
 - 🧪 **Dry-run** for safe testing
 - 🔑 **Read-only S3 key** for restore (protection against deletion from dev/staging)
 - 🛟 **Restore from any storage** — `--from secondary|tertiary` (or the interactive choice) pulls from a copy if the primary is unavailable
@@ -149,9 +150,9 @@ The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arg
 | Synchronize storages | the plan, all copies, one copy, with `--prune`, or restoring the primary from a copy |
 | Checks and diagnostics | `validate-config.sh`, quick/full restore verification (of any storage, all projects or one), `diagnose-s3.sh`, `diagnose-cron.sh` |
 | Logs | the last lines, errors, the last run, today's errors, one project, follow live |
-| Scheduled runs | the current setup, a method (cron / systemd timer) and a preset or your own schedule, removal |
+| Scheduled runs | the current setup, a method (cron / systemd timer) and a preset or your own schedule, the restore check on a schedule, removal |
 | Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key |
-| Notifications | when to notify (problems only / every run / never), the server name in messages, which of them arrive without a sound, and Telegram, the webhook and email: set up, test, turn off; every change is checked with a test message |
+| Notifications | when to notify (problems only / every run / never), the server name in messages, which of them arrive without a sound, and email, Slack, PagerDuty, the webhook and Telegram: set up, test, turn off; every change is checked with a test message (PagerDuty's after a question: it pages) |
 
 Destructive actions (an in-place restore, `--prune`, writing to the primary from a copy) ask for confirmation first;
 the scripts themselves keep their own confirmations too. Before the first change to the config the menu
@@ -282,12 +283,12 @@ The installer does everything itself:
    - **Encryption**: with the passphrase file already on the server, if there is one; otherwise it offers to
      generate one (copy it off the server: without it the backups cannot be restored)
    - The server's name in notifications (`NOTIFY_NAME`)
-   - Telegram token and chat_id, with a real check via a test message
-   - Webhook URL (optional), with a test message
-   - Email: recipients, SMTP server, security, login, sender (optional), with a test email
+   - Notifications, each optional and checked with a test message: email (recipients, SMTP server, security,
+     login, sender), Slack (the webhook URL), PagerDuty (the integration key, the region), a webhook, Telegram
+     (token and chat_id)
 7. Optionally sets up logrotate; links the `docker-backup-s3` command
 8. Runs `validate-config.sh`
-9. Optionally runs `setup-cron.sh` for scheduled runs
+9. Optionally runs `setup-cron.sh` for scheduled runs and the weekly restore check
 
 #### S3 certificate check during installation
 
@@ -507,21 +508,26 @@ Everything else has sensible defaults.
 | `NOTIFY_ON` | `error` | none / error (errors and warnings) / always |
 | `NOTIFY_SILENT` | `success` | levels that arrive without a sound in Telegram and Discord: success / warn / error, space-separated; empty — all ring |
 | `NOTIFY_NAME` | empty | the server's name in messages; empty — the hostname |
-| `TELEGRAM_BOT_TOKEN` | empty | bot token |
-| `TELEGRAM_CHAT_ID` | empty | recipient ID |
-| `NOTIFY_WEBHOOK_URL` | empty | webhook URL |
-| `NOTIFY_WEBHOOK_FORMAT` | `auto` | auto/discord/slack/json — the payload shape |
 | `EMAIL_TO` | empty | email recipients, space- or comma-separated |
 | `SMTP_HOST` | empty | SMTP server |
 | `SMTP_SECURITY` | `starttls` | starttls (587) / tls (465) / none (25) |
 | `SMTP_PORT` | empty | port; empty — the one of `SMTP_SECURITY` |
 | `SMTP_USER` / `SMTP_PASSWORD` | empty | SMTP login; empty — without login |
 | `SMTP_FROM` | empty | sender address; empty — `SMTP_USER` |
+| `SLACK_WEBHOOK_URL` | empty | a Slack incoming webhook |
+| `PAGERDUTY_ROUTING_KEY` | empty | the Events API v2 integration key of a PagerDuty service |
+| `PAGERDUTY_REGION` | `us` | us / eu — the account's service region |
+| `NOTIFY_WEBHOOK_URL` | empty | webhook URL |
+| `NOTIFY_WEBHOOK_FORMAT` | `auto` | auto/discord/slack/json — the payload shape |
+| `TELEGRAM_BOT_TOKEN` | empty | bot token |
+| `TELEGRAM_CHAT_ID` | empty | recipient ID |
 | `COLOR_OUTPUT` | `auto` | auto/on/off |
 | `LOCK_FILE` | `/var/run/docker-backup.lock` | base path for the lock; the lock itself is a `<LOCK_FILE>.d` directory with the PID inside (atomic `mkdir`) |
 | `WORK_DIR` | `/var/tmp/docker-backup` | temporary folder |
 | `LOG_FILE` | `/var/log/docker-backup.log` | log path |
 | `LAST_RUN_FILE` | `/var/lib/docker-backup/last-run.json` | the last run's result, for an external monitor |
+| `LAST_VERIFY_FILE` | `/var/lib/docker-backup/last-verify.json` | the last whole restore check's result (`status.sh` shows it) |
+| `VERIFY_WAIT_MINUTES` | `180` | how long the restore check waits for a backup still running |
 
 ### Backup modes (`BACKUP_MODE`)
 
@@ -549,7 +555,8 @@ The script checks:
 - Each storage's read-only key, if set
 - Free space
 - **Telegram bot** — by actually sending a test message, with error diagnostics
-- **Webhook** and **email** — by sending a test message, with hints for the common errors
+- **Email**, **Slack** and the **webhook** — by sending a test message, with hints for the common errors
+- **PagerDuty** — the key's format and region, and a change event that pages no one
 - The cron job and which `aws` it will find with its `PATH` (warns if it's from snap)
 
 ---
@@ -1050,23 +1057,32 @@ sudo /opt/docker-backup-s3/verify-restore.sh --from tertiary
 - ✅ The integrity of the DB dumps:
   - PostgreSQL: gzip + magic header (`PostgreSQL database dump`)
   - MySQL/MariaDB: gzip + the `mysqldump`/`mariadb-dump` header (MariaDB 10.11.8+/11 start with a sandbox line first)
-  - Redis: gzip + RDB magic (`REDIS`)
-  - MongoDB: gzip
+  - Redis: gzip + RDB magic (`REDIS`, `VALKEY` in Valkey 9+)
+  - MongoDB: gzip + the mongodump archive magic
 
-### Setting up a regular check
+### On a schedule
 
-Once a week via cron:
+`setup-cron.sh` puts the check next to the backup job: **weekly, Sunday 06:00** for a new setup, in the same
+crontab block or as its own systemd timer (`docker-backup-verify.timer`). Change it, or turn it off:
 
-```cron
-0 4 * * 0  /opt/docker-backup-s3/verify-restore.sh --quick >> /var/log/docker-backup-verify.log 2>&1
+```bash
+sudo /opt/docker-backup-s3/setup-cron.sh -v daily -y          # every day at 06:00
+sudo /opt/docker-backup-s3/setup-cron.sh -v '30 5 * * *' -y   # your own time, in the method's format
+sudo /opt/docker-backup-s3/setup-cron.sh -v off -y            # no scheduled check
 ```
 
-Or once a month with a detailed check:
-```cron
-0 5 1 * *  /opt/docker-backup-s3/verify-restore.sh >> /var/log/docker-backup-verify.log 2>&1
-```
+`-v` alone changes only the check: the backups keep their method and schedule. The menu has the same under
+**Scheduled runs → Restore check on a schedule**.
 
-On an error it sends a notification to the configured channels.
+- **It waits for a backup still running** (up to `VERIFY_WAIT_MINUTES`, 180), so it checks the copy being made and
+  the two don't share the disk and the network. An archive appears in the storage only whole, so even a check
+  that stops waiting takes the latest complete one. `--no-wait` checks at once.
+- **It is a full check**: each project's latest archive is downloaded. Several servers writing to one storage
+  are best given different times.
+- **It reports**: a failure — "a backup does not restore"; a check that could not even start (no storage
+  access, no space) — "restore check did not run", with the reason; with `NOTIFY_ON="always"` a pass too.
+  The output goes to the backup log and the cron log; `status.sh` shows the schedule and the last result
+  (`/var/lib/docker-backup/last-verify.json`, `LAST_VERIFY_FILE`).
 
 ---
 
@@ -1136,14 +1152,72 @@ Without the passphrase, encrypted backups are lost for good. **Keep a copy of th
 ## Notifications
 
 The easiest way: `sudo docker-backup-s3` → **Notifications**. Each channel is set up there with a test message, and
-the same wizards run in `install.sh`.
+the same wizards run in `install.sh`. Any channels can be on at once: email, Slack, PagerDuty, a webhook (Discord,
+Mattermost, your own receiver) and Telegram.
 
 **Without a sound.** With `NOTIFY_ON="always"` a routine "backup done" shares the chat with the alerts.
 `NOTIFY_SILENT` (default `success`) lists the levels Telegram and Discord deliver silently, so only errors and
-warnings ring; `"success warn"` quiets warnings too, `""` makes every message ring. Slack, a custom webhook and email
-have no silent delivery. A test message always rings: it checks that an alert would be heard.
+warnings ring; `"success warn"` quiets warnings too, `""` makes every message ring. Slack, PagerDuty, a custom webhook
+and email have no silent delivery. A test message always rings: it checks that an alert would be heard.
 
 By hand, in `backup.conf`:
+
+### Email (SMTP)
+
+curl sends the message straight to your SMTP server, so no mail server is needed on the host. Any account works: your
+own mail server, a mail service, Gmail or Outlook with an app password.
+
+```bash
+EMAIL_TO="admin@example.com ops@example.com"
+SMTP_HOST="smtp.example.com"
+SMTP_SECURITY="starttls"     # starttls (587), tls (465) or none (25)
+SMTP_USER="backup@example.com"
+SMTP_PASSWORD="..."
+SMTP_FROM="backup@example.com"
+```
+
+The subject is the notification line (`🔴 Server web-1: backup with errors`), and the body has a plain-text and an
+HTML part. The password goes to curl in a temporary file, not on the command line. `validate-config.sh` sends a test
+email. Many hosting providers block outgoing port 25, so use 587 or 465.
+
+### Slack
+
+In Slack: [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **Incoming Webhooks** → on →
+**Add New Webhook** → pick the channel → copy the URL.
+
+```bash
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T000/B000/XXXX"
+```
+
+Messages use Slack markup (bold head line, `code`), cut on a line under 3,900 characters. It is a channel of its
+own, so Slack and a Discord webhook can be on together. A `NOTIFY_WEBHOOK_URL` of Slack's from an older setup keeps
+working.
+
+### PagerDuty
+
+For on-call: a failed run **opens an incident**, the next good run **resolves it**. There is one incident per server
+and job — the backup, the restore check, the storage sync (`dedup_key` `docker-backup-s3/<server>/<script>`) — so a
+backup failing night after night stays one incident instead of a new page each time.
+
+In PagerDuty: **Services** → your service → **Integrations** → **Add an integration** → **Events API V2** → copy the
+**Integration Key**.
+
+```bash
+PAGERDUTY_ROUTING_KEY="0123456789abcdef0123456789abcdef"
+PAGERDUTY_REGION="us"        # eu for an account at <name>.eu.pagerduty.com
+```
+
+| Run | Event | Severity |
+|---|---|---|
+| failed, interrupted, did not start | trigger | `error` |
+| done, but with a warning (a copy did not get everything) | trigger | `warning` |
+| done | resolve | — |
+
+A resolve is sent whatever `NOTIFY_ON` says (`none` turns PagerDuty off as well): it is not a message, it closes
+what a failure opened. The summary is the notification line, the details go to `custom_details`; the routing key goes
+to jq and curl in their environment and on stdin, never as an argument. `validate-config.sh` checks the key with a
+**change event**, which pages no one; a real test incident (opened and resolved at once — whoever is on call gets
+paged) is sent from the menu, after a question.
 
 ### Telegram
 
@@ -1180,7 +1254,7 @@ The script sends a test message and shows the result, with diagnostics if someth
 | `bot is not a member` | A group without the bot | Add it as an admin |
 | `Unauthorized` | Invalid token | Get a new one via `@BotFather` |
 
-### Webhook (Discord, Slack, Mattermost, custom)
+### Webhook (Discord, Mattermost, custom)
 
 ```bash
 NOTIFY_WEBHOOK_URL="https://discord.com/api/webhooks/123/abc"
@@ -1193,29 +1267,11 @@ gets `json`:
 | Format | Payload | For |
 |---|---|---|
 | `discord` | `{"content": "..."}` with **bold** and `code` | Discord |
-| `slack` | `{"text": "..."}` with Slack markup | Slack, Mattermost, Rocket.Chat |
+| `slack` | `{"text": "..."}` with Slack markup | Mattermost, Rocket.Chat (for Slack itself — [`SLACK_WEBHOOK_URL`](#slack)) |
 | `json` | `{"text", "level", "server", "title", "details", "time"}` | your own receiver |
 
 `level` is `error`, `warn` or `success`, and `time` is UTC. A reply other than 2xx counts as a failure and goes to the log;
 the other channels are still sent.
-
-### Email (SMTP)
-
-curl sends the message straight to your SMTP server, so no mail server is needed on the host. Any account works: your
-own mail server, a mail service, Gmail or Outlook with an app password.
-
-```bash
-EMAIL_TO="admin@example.com ops@example.com"
-SMTP_HOST="smtp.example.com"
-SMTP_SECURITY="starttls"     # starttls (587), tls (465) or none (25)
-SMTP_USER="backup@example.com"
-SMTP_PASSWORD="..."
-SMTP_FROM="backup@example.com"
-```
-
-The subject is the notification line (`🔴 Server web-1: backup with errors`), and the body has a plain-text and an
-HTML part. The password goes to curl in a temporary file, not on the command line. `validate-config.sh` sends a test
-email. Many hosting providers block outgoing port 25, so use 587 or 465.
 
 ### Notification levels
 
@@ -1231,7 +1287,8 @@ email. Many hosting providers block outgoing port 25, so use 587 or 465.
 sudo /opt/docker-backup-s3/setup-cron.sh
 ```
 
-An interactive wizard: you pick the method (cron / systemd timer) and a schedule preset.
+An interactive wizard: you pick the method (cron / systemd timer), a schedule preset, and when to check that the
+latest backups restore ([on a schedule](#on-a-schedule): weekly by default).
 
 ### Presets
 
@@ -1248,9 +1305,13 @@ An interactive wizard: you pick the method (cron / systemd timer) and a schedule
 ```bash
 sudo /opt/docker-backup-s3/setup-cron.sh -m cron -s daily -y
 sudo /opt/docker-backup-s3/setup-cron.sh -m systemd -s '*-*-* 04:30:00' -y
+sudo /opt/docker-backup-s3/setup-cron.sh -v daily -y   # the restore check only
 sudo /opt/docker-backup-s3/setup-cron.sh --status    # current status
-sudo /opt/docker-backup-s3/setup-cron.sh --remove    # remove
+sudo /opt/docker-backup-s3/setup-cron.sh --remove    # remove both jobs
 ```
+
+The restore check with `-y` and no `-v`: a setup that has one keeps it (a change of method gets the weekly preset,
+since a cron expression is not an OnCalendar); a setup without one stays without; a new setup gets the weekly one.
 
 If scheduled runs are already set up (cron or a systemd timer — either one):
 
@@ -1271,7 +1332,8 @@ daily one) — the schedule changes only with an explicit `setup-cron.sh` call.
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 MAILTO=""
-0 3 * * * /opt/docker-backup-s3/docker-backup.sh >> /var/log/docker-backup-cron.log 2>&1
+0 3 * * * nice -n 10 ionice -c2 -n7 /opt/docker-backup-s3/docker-backup.sh >> /var/log/docker-backup-cron.log 2>&1
+0 6 * * 0 nice -n 10 ionice -c2 -n7 /opt/docker-backup-s3/verify-restore.sh >> /var/log/docker-backup-cron.log 2>&1
 # === /Docker backup ===
 ```
 
@@ -1652,7 +1714,7 @@ only to the addresses you put into `backup.conf`.
 | Where to | What | When |
 |---|---|---|
 | Your S3 storages (the endpoints you set) | The backup archives (encrypted with your passphrase if `ENCRYPT_BACKUPS=true`), their `.sha256` manifests | Backup, rotation, sync, restore, checks |
-| Your Telegram bot, webhook or SMTP server — only the ones you set | The text of a notification: project names, sizes, times, error reasons. Never a key, a password or file contents | After a run, when a notification is due |
+| Your SMTP server, Slack, PagerDuty, webhook or Telegram bot — only the ones you set | The text of a notification: project names, sizes, times, error reasons. Never a key, a password or file contents | After a run, when a notification is due |
 | `awscli.amazonaws.com`, your distribution's package mirrors | Nothing of yours: `install.sh` downloads aws-cli and packages from there | Installation |
 
 Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` lists every address in the code.
@@ -1661,7 +1723,7 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 
 | Secret | Where | Who can read it |
 |---|---|---|
-| S3 keys, the Telegram token, the webhook URL, the SMTP password | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
+| S3 keys, the SMTP password, the Slack and webhook URLs, the PagerDuty key, the Telegram token | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
 | The GPG passphrase | `GPG_PASSPHRASE_FILE` (`/root/.docker-backup-passphrase`) | root only (`600`); gpg reads it from the file, never from an argument |
 | Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
 | Remote database passwords | `backup.conf`, or the file `REMOTE_DB_<NAME>_PASSWORD_FILE` points to | root only (`600`) |
@@ -1672,8 +1734,9 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 so no secret is ever passed as an argument:
 
 - S3 keys go to `aws` through its environment (readable by root only), not as options.
-- The Telegram token and the webhook URL (Discord and Slack put their secret in it) go to `curl` as a config
-  on a pipe (`curl -K <(…)`); the SMTP password — in a temporary `600` config file, removed right after.
+- The Telegram token and the Slack and webhook URLs (Slack and Discord put their secret in them) go to `curl` as a
+  config on a pipe (`curl -K <(…)`); the PagerDuty key — to jq in its environment and to curl in the body, on
+  stdin; the SMTP password — in a temporary `600` config file, removed right after.
 - Database passwords are read and used **inside the database container**, by a short `sh` script run with
   `docker exec`: from the same variables the image uses (`POSTGRES_PASSWORD`, `MYSQL_ROOT_PASSWORD`,
   `MONGO_INITDB_ROOT_PASSWORD`…) or the files their `*_FILE` twins point to (Docker secrets), and handed to
@@ -1888,10 +1951,12 @@ given twice. `test_dbdump` runs the database dump scripts against a `docker` stu
 system's own `sh`: dash, busybox): which account and password each one picks, the skips, the reasons in the log, and
 that no password reaches the log or a command line. `test_remotedb` covers remote databases against `docker` and
 `aws` stubs: the settings checks, the client's command line (never a password in it), the stream, encryption, the
-part size, a failed dump that must leave nothing, the retries and the copies. `test_notify` covers every notification channel and format, `test_menu` drives the menu's notification,
-project and remote database sections end to end from a file of answers, and `test_install` checks that install, update, uninstall and a reinstall
-keep every value of a config, and that the installer's wizard asks about encryption. `test_menu` and `test_install`
-need root (they use `sudo` or skip themselves), and `test_install` runs only in a container or in CI.
+part size, a failed dump that must leave nothing, the retries and the copies. `test_notify` covers every notification channel and format (PagerDuty's open and resolve too), `test_menu` drives the menu's notification,
+project and remote database sections end to end from a file of answers, `test_cron` runs `setup-cron.sh` against a
+`crontab` stub (the backup job, the restore check next to it, what `-y` keeps, `-v` alone, the admin's own lines), and
+`test_install` checks that install, update, uninstall and a reinstall keep every value of a config, and that the
+installer's wizard asks about encryption. `test_menu`, `test_cron` and `test_install` need root (they use `sudo` or
+skip themselves), and `test_install` runs only in a container or in CI.
 
 The integration test runs everything for real: Docker, a compose project with Postgres, MariaDB 11, named volumes
 and bind mounts (one with an excluded folder), not named after its folder, and S3 in a container (Versity Gateway):

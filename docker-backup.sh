@@ -11,7 +11,7 @@
 #   - lock against a double start
 #   - free space check
 #   - bandwidth limit
-#   - notifications (Telegram + webhook)
+#   - notifications (email, Slack, PagerDuty, a webhook, Telegram)
 #   - dry-run mode
 #   - colored output
 # ==============================================================================
@@ -107,7 +107,7 @@ while IFS=$'\t' read -r _dup _ll _lv _el _ev _lost; do
     log_warn "$_dup: your ${_ev} (line ${_el} of $CONFIG_FILE) is overridden by the default ${_lv} further down (line ${_ll})"
     CONF_WARNINGS+="${CONF_WARNINGS:+$'\n'}⚠️ <code>$(html_esc "$_dup")</code>: your <code>$(html_esc "$_ev")</code> (line ${_el} of backup.conf) is overridden by the default <code>$(html_esc "$_lv")</code> further down (line ${_ll}), so the default is used."
 done < <(conf_duplicates "$CONFIG_FILE" "${SCRIPT_DIR}/backup.conf.example")
-{ notify_configured telegram || notify_configured webhook || notify_configured email; } && require_cmd curl
+notify_any && require_cmd curl
 
 # --- Emergency exit ---
 # Which project is currently stopped/paused. Needed to bring its containers back
@@ -1436,7 +1436,7 @@ else
 fi
 log "${C_BOLD}${C_BLUE}===================================================================${C_RESET}"
 
-# Run summary — one line in a file (LAST_RUN_FILE). The backup reports its own errors to Telegram,
+# Run summary — one line in a file (LAST_RUN_FILE). The backup reports its own errors to the channels,
 # but it can't report that it never started (cron broken, the server down at the scheduled time) — an external
 # monitor can see that by this file's age. A separate file rather than the log:
 # the monitor doesn't need access to /var/log, which holds other logs too.
@@ -1448,7 +1448,7 @@ if mkdir -p "$(dirname "$LAST_RUN_FILE")" 2>/dev/null; then
     chmod 644 "$LAST_RUN_FILE" 2>/dev/null || true
 fi
 
-# Summary to Telegram: what was saved, where, and what is missing. After last-run.json — a failure here must not
+# Summary to the channels: what was saved, where, and what is missing. After last-run.json — a failure here must not
 # leave the monitor without a summary.
 RUN_DONE=true
 _join() { html_esc "$(join_list "$@")"; }

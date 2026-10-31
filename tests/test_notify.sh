@@ -33,6 +33,10 @@ case "$url" in
     smtp*://*)
         [[ "${MOCK_SMTP:-ok}" == ok ]] && exit 0
         echo "curl: (67) Login denied" >&2; exit 67 ;;
+    *pagerduty.com*)
+        # The answer as curl -w '\n%{http_code}' prints it: the body, a newline, the code
+        if [[ "${MOCK_PD:-ok}" == ok ]]; then printf '{"status":"success","message":"Event processed"}\n202'
+        else printf '{"status":"invalid event","message":"Event object is invalid","errors":["Length of '"'"'routing_key'"'"' is incorrect (should be 32 characters)"]}\n400'; fi ;;
     *)
         printf '%s' "${MOCK_CODE:-204}"; [[ "${MOCK_CODE:-204}" == 000 ]] && exit 7; exit 0 ;;
 esac
@@ -191,6 +195,88 @@ SMTP_SECURITY=starttls; SMTP_PORT=""; SMTP_USER=u; export MOCK_SMTP=fail; reset
 notify_test email 2>"$W/e"; rc=$?
 check "an SMTP failure: rc 1 with curl's reason" test "$rc:$(cat "$W/e")" == "1:(67) Login denied"
 unset MOCK_SMTP
+
+EMAIL_TO=""; SMTP_HOST=""
+
+section "slack"
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T/B/SECRET"
+reset; notify error "backup with errors" "$BODY"
+s="$(jq -r .text "$MOCK_DIR/body.1")"
+check "its own channel, Slack markup" test "${s%%$'\n'*}" == "🔴 *Server web-1: backup with errors*"
+check "the URL (its secret) is not on curl's command line" bash -c '! grep -q SECRET "$1"' _ "$MOCK_DIR/args.1"
+check "it is in the config curl reads" grep -q 'url = "https://hooks.slack.com/services/T/B/SECRET"' "$MOCK_DIR/cfg.1"
+reset; notify error "long" "$LONG"
+check "a long message is cut on a line, under 3900 characters" test "$(jq -r .text "$MOCK_DIR/body.1" | wc -m)" -le 3900
+NOTIFY_WEBHOOK_URL="https://discord.com/api/webhooks/1/abc"
+reset; notify error "x" "y"
+check "Slack and a Discord webhook at once" test "$(calls)" == 2
+NOTIFY_WEBHOOK_URL=""
+export MOCK_CODE=404; reset; notify error "x" "y" >>"$LOG_FILE" 2>&1; unset MOCK_CODE
+check "a refusal is logged with the code" grep -q "to slack: Slack replied HTTP 404" "$LOG_FILE"
+reset; notify_test slack >/dev/null 2>&1
+check "the test message goes to Slack" test "$(jq -r '.text|split("\n")[0]' "$MOCK_DIR/body.1")" == "🟢 *Server web-1: test message*"
+SLACK_WEBHOOK_URL=""
+
+section "pagerduty"
+PAGERDUTY_ROUTING_KEY="0123456789abcdef0123456789abcdef"
+reset; notify error "backup with errors" "$BODY"
+p="$MOCK_DIR/body.1"
+check "an error triggers an incident" test "$(jq -r .event_action "$p")" == trigger
+check "to the US endpoint by default" grep -q ' https://events.pagerduty.com/v2/enqueue$' "$MOCK_DIR/calls"
+check "one incident per server and script" test "$(jq -r .dedup_key "$p")" == "docker-backup-s3/web-1/$(basename "$0" .sh)"
+check "severity error, the summary is the message line" \
+    test "$(jq -r '[.payload.severity, .payload.summary, .payload.source] | join("|")' "$p")" == "error|Server web-1: backup with errors|web-1"
+check "the details in plain text" test "$(jq -r .payload.custom_details.details "$p")" == "Saved nowhere: app&db."$'\n'"Details: tail -n 80 /var/log/docker-backup.log"
+check "the routing key is in the body" test "$(jq -r .routing_key "$p")" == "$PAGERDUTY_ROUTING_KEY"
+check "and on no command line (curl's)" bash -c '! grep -q "$2" "$1"' _ "$MOCK_DIR/args.1" "$PAGERDUTY_ROUTING_KEY"
+reset; notify warn "check the settings" "x"
+check "a warning — severity warning" test "$(jq -r .payload.severity "$MOCK_DIR/body.1")" == warning
+reset; notify success "backup done" "x"
+check "a success resolves it, even with NOTIFY_ON=error" \
+    test "$(jq -c '[.event_action, .dedup_key, has("payload")]' "$MOCK_DIR/body.1")" == "[\"resolve\",\"docker-backup-s3/web-1/$(basename "$0" .sh)\",false]"
+check "and only PagerDuty hears of it" test "$(calls)" == 1
+NOTIFY_ON=always; TELEGRAM_BOT_TOKEN="1:abc"; TELEGRAM_CHAT_ID="42"
+reset; notify success "backup done" "x"
+check "NOTIFY_ON=always: one resolve, and the message to the others" \
+    test "$(grep -c pagerduty "$MOCK_DIR/calls"):$(calls)" == "1:2"
+TELEGRAM_BOT_TOKEN=""; TELEGRAM_CHAT_ID=""
+NOTIFY_ON=none; reset; notify error "x" "y"; notify success "x" "y"
+check "NOTIFY_ON=none: nothing, PagerDuty included" test "$(calls)" == 0
+NOTIFY_ON=error
+PAGERDUTY_REGION=eu; reset; notify error "x" "y"
+check "PAGERDUTY_REGION=eu → the EU endpoint" grep -q ' https://events.eu.pagerduty.com/v2/enqueue$' "$MOCK_DIR/calls"
+PAGERDUTY_REGION=mars; reset; notify error "x" "y" >>"$LOG_FILE" 2>&1
+check "an unknown region is reported" grep -q "to pagerduty: PAGERDUTY_REGION must be us or eu" "$LOG_FILE"
+check "and nothing is sent" test "$(calls)" == 0
+unset PAGERDUTY_REGION
+reset; notify_test pagerduty >/dev/null 2>&1
+check "the test: a test incident, opened and resolved" \
+    test "$(jq -r '[.event_action, .dedup_key, .payload.severity] | join(" ")' "$MOCK_DIR/body.1")|$(jq -r '[.event_action, .dedup_key] | join(" ")' "$MOCK_DIR/body.2")" \
+    == "trigger docker-backup-s3/web-1/test info|resolve docker-backup-s3/web-1/test"
+check "PD_TEST does not stay set" test "${PD_TEST-unset}" == unset
+export MOCK_PD=bad; reset; notify_test pagerduty 2>"$W/e" >/dev/null; rc=$?; unset MOCK_PD
+check "a refusal: rc 1 with PagerDuty's own reason" \
+    bash -c '[[ $2 == 1 ]] && grep -q "PagerDuty replied HTTP 400 (Event object is invalid: Length of .routing_key. is incorrect" "$1"' _ "$W/e" "$rc"
+reset; pagerduty_check 2>/dev/null
+check "the config check is a change event (it pages no one)" \
+    bash -c 'grep -q " https://events.pagerduty.com/v2/change/enqueue$" "$1" && [[ "$(jq -c "[has(\"event_action\"), .payload.source]" "$2")" == "[false,\"web-1\"]" ]]' _ "$MOCK_DIR/calls" "$MOCK_DIR/body.1"
+PAGERDUTY_ROUTING_KEY=""
+
+section "notify_any, backup_running_pid"
+if notify_any; then bad "notify_any with nothing set up"; else ok "notify_any: nothing set up"; fi
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T/B/X"
+check "notify_any: Slack alone counts" notify_any
+SLACK_WEBHOOK_URL=""
+LOCK_FILE="$W/lock"
+if backup_running_pid >/dev/null; then bad "a backup without a lock"; else ok "no lock — no backup"; fi
+mkdir -p "$W/lock.d"; echo $$ > "$W/lock.d/pid"
+check "a lock of a live process — its PID" test "$(backup_running_pid)" == "$$"
+echo 999999 > "$W/lock.d/pid"
+if backup_running_pid >/dev/null; then bad "a stale lock counted"; else ok "a stale lock does not count"; fi
+rm -rf "$W/lock.d"; unset LOCK_FILE
+
+EMAIL_TO="a@example.com, b@example.com"; SMTP_HOST="smtp.example.com"; SMTP_SECURITY=starttls
+SMTP_USER=u; SMTP_FROM="noreply@example.com"
 
 section "all channels, one failing"
 TELEGRAM_BOT_TOKEN="1:abc"; TELEGRAM_CHAT_ID="42"; NOTIFY_WEBHOOK_URL="https://example.com/hook"

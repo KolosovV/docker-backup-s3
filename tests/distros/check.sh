@@ -53,6 +53,8 @@ if "$T/setup-cron.sh" -y -m cron -s daily > "$LOGS/cron.log" 2>&1 && crontab -l 
 else
     bad "no cron job"; tail -n 15 "$LOGS/cron.log"
 fi
+if crontab -l 2>/dev/null | grep -qF "$T/verify-restore.sh"; then ok "the restore check is scheduled next to it"
+else bad "no restore check in the crontab"; crontab -l 2>/dev/null | tail -n 5; fi
 if "$T/setup-cron.sh" --remove -y > "$LOGS/cron-remove.log" 2>&1 && ! crontab -l 2>/dev/null | grep -q "docker-backup-s3"; then
     ok "and removed"
 else

@@ -92,8 +92,11 @@ check "the timer is enabled" systemctl is-enabled --quiet docker-backup.timer
 check "the timer is active" systemctl is-active --quiet docker-backup.timer
 next="$(systemctl show -p NextElapseUSecRealtime --value docker-backup.timer 2>/dev/null)"
 check "the timer has a next run (${next:-none})" test -n "$next"
-verify_out="$(systemd-analyze verify /etc/systemd/system/docker-backup.service /etc/systemd/system/docker-backup.timer 2>&1 \
-    | grep -v '^$' | grep -vi 'docker.service\|network-online' | grep -iE 'docker-backup\.(service|timer)' \
+check "the restore-check timer came along (install.sh set a weekly check)" systemctl is-enabled --quiet docker-backup-verify.timer
+check "and is active" systemctl is-active --quiet docker-backup-verify.timer
+check "weekly, Sunday 06:00" grep -qx 'OnCalendar=Sun \*-\*-\* 06:00:00' /etc/systemd/system/docker-backup-verify.timer
+verify_out="$(systemd-analyze verify /etc/systemd/system/docker-backup{,-verify}.service /etc/systemd/system/docker-backup{,-verify}.timer 2>&1 \
+    | grep -v '^$' | grep -vi 'docker.service\|network-online' | grep -iE 'docker-backup(-verify)?\.(service|timer)' \
     | grep -iE 'error|warn|fail|invalid|unknown|ignor|bad|not' || true)"
 if [[ -z "$verify_out" ]]; then ok "systemd-analyze verify: nothing about our units"
 else bad "systemd-analyze verify complains"; printf '    %s\n' "$verify_out" | head -n 10; fi
@@ -110,10 +113,22 @@ check "the service wrote its log" grep -q "$PROJ" /var/log/docker-backup-cron.lo
 grep -q "$PROJ" /var/log/docker-backup-cron.log || { ls -la /var/log/docker-backup*; tail -n 5 /var/log/docker-backup-cron.log; journalctl -u docker-backup.service --no-pager -n 15; }
 check "the S3 container was left out by its label" grep -q "Skipped (label docker-backup-s3.skip=true): $S3C" /var/log/docker-backup-cron.log
 
+step "the restore-check service checks it"
+if timeout 300 systemctl start docker-backup-verify.service; then ok "systemctl start docker-backup-verify.service"
+else bad "the check failed"; systemctl status docker-backup-verify.service --no-pager -l 2>&1 | tail -n 15; tail -n 25 /var/log/docker-backup-cron.log; fi
+check "Result=success" test "$(systemctl show -p Result --value docker-backup-verify.service)" == success
+check "it wrote ALL CHECKS PASSED to the cron log" grep -q "ALL CHECKS PASSED" /var/log/docker-backup-cron.log
+check "and to the backup log" grep -q "ALL CHECKS PASSED" /var/log/docker-backup.log
+check "last-verify.json says ok" test "$(jq -r .ok /var/lib/docker-backup/last-verify.json 2>/dev/null)" == true
+"$T/status.sh" > "$IT/status-verify.out" 2>&1 || true
+check "status shows the timer and the last check" bash -c 'grep -q "Restore check: timer" "$1" && grep -q "Last check: .* restore (primary)" "$1"' _ "$IT/status-verify.out"
+
 step "cron runs a real backup on its own"
 if "$T/setup-cron.sh" -y -m cron -s '* * * * *' > "$IT/cron.log" 2>&1; then ok "setup-cron.sh -m cron exit 0"
 else bad "setup-cron.sh -m cron failed"; tail -n 20 "$IT/cron.log"; fi
 check "the timer was replaced (gone)" bash -c '! systemctl is-enabled --quiet docker-backup.timer'
+check "the restore-check timer too" test ! -e /etc/systemd/system/docker-backup-verify.timer
+check "the check moved to cron, weekly" bash -c 'crontab -l | grep -F "$1/verify-restore.sh" | grep -q "^0 6 \* \* 0 "' _ "$T"
 before="$(backups)"
 # A backup timestamp has seconds, so two runs in a row never collide; give cron up to 3 minutes
 for _ in $(seq 1 36); do (( $(backups) > before )) && break; sleep 5; done
@@ -137,6 +152,7 @@ step "removal"
 for _ in $(seq 1 60); do pgrep -f "$T/docker-backup.sh" >/dev/null || break; sleep 2; done
 check "no cron job left" bash -c '! crontab -l 2>/dev/null | grep -q docker-backup-s3'
 check "no timer left" test ! -e /etc/systemd/system/docker-backup.timer
+check "no restore-check timer left" test ! -e /etc/systemd/system/docker-backup-verify.timer
 if bash "$T/uninstall.sh" -y > "$IT/uninstall.log" 2>&1; then ok "uninstall.sh exit 0"; else bad "uninstall.sh failed"; tail -n 20 "$IT/uninstall.log"; fi
 check "the installation is gone" test ! -e "$T/docker-backup.sh"
 [[ -e "$T/docker-backup.sh" ]] && tail -n 25 "$IT/uninstall.log"

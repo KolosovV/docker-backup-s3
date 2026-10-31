@@ -508,8 +508,9 @@ s3_cert_check() {
 # The wizards keep the answers in NT[VAR] (VAR = the backup.conf name); notify_save writes them.
 # A test message goes through lib.sh in a separate bash with only these settings (NOTIFY_LIB — its path).
 # ==============================================================================
-NT_KEYS=(TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID NOTIFY_WEBHOOK_URL NOTIFY_WEBHOOK_FORMAT
-         EMAIL_TO SMTP_HOST SMTP_SECURITY SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM)
+NT_KEYS=(EMAIL_TO SMTP_HOST SMTP_SECURITY SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
+         SLACK_WEBHOOK_URL PAGERDUTY_ROUTING_KEY PAGERDUTY_REGION
+         NOTIFY_WEBHOOK_URL NOTIFY_WEBHOOK_FORMAT TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID)
 declare -A NT=()
 
 # notify_load — the current values (from the sourced config) into NT
@@ -518,7 +519,18 @@ notify_load() {
     for k in "${NT_KEYS[@]}"; do NT[$k]="${!k:-}"; done
     NT[NOTIFY_WEBHOOK_FORMAT]="${NT[NOTIFY_WEBHOOK_FORMAT]:-auto}"
     NT[SMTP_SECURITY]="${NT[SMTP_SECURITY]:-starttls}"
+    NT[PAGERDUTY_REGION]="${NT[PAGERDUTY_REGION]:-us}"
     return 0
+}
+
+PD_TEST_ASK="Send a test incident to PagerDuty? It is resolved at once, but whoever is on call gets paged."
+
+# notify_label <channel> — its name for people
+notify_label() {
+    case "$1" in
+        email) printf 'Email' ;; slack) printf 'Slack' ;; pagerduty) printf 'PagerDuty' ;;
+        webhook) printf 'Webhook' ;; telegram) printf 'Telegram' ;; *) printf '%s' "$1" ;;
+    esac
 }
 
 # notify_save — NT into CONF_FILE (empty values too: that is how a channel is turned off)
@@ -527,14 +539,16 @@ notify_save() {
     for k in "${NT_KEYS[@]}"; do conf_set "$k" "${NT[$k]:-}" --allow-empty; done
 }
 
-# _nt_clear <telegram|webhook|email> — turn a channel off in NT
+# _nt_clear <channel> — turn a channel off in NT
 _nt_clear() {
     local k
     case "$1" in
-        telegram) NT[TELEGRAM_BOT_TOKEN]=""; NT[TELEGRAM_CHAT_ID]="" ;;
-        webhook)  NT[NOTIFY_WEBHOOK_URL]=""; NT[NOTIFY_WEBHOOK_FORMAT]="auto" ;;
-        email)    for k in EMAIL_TO SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM; do NT[$k]=""; done
-                  NT[SMTP_SECURITY]="starttls" ;;
+        email)     for k in EMAIL_TO SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM; do NT[$k]=""; done
+                   NT[SMTP_SECURITY]="starttls" ;;
+        slack)     NT[SLACK_WEBHOOK_URL]="" ;;
+        pagerduty) NT[PAGERDUTY_ROUTING_KEY]=""; NT[PAGERDUTY_REGION]="us" ;;
+        webhook)   NT[NOTIFY_WEBHOOK_URL]=""; NT[NOTIFY_WEBHOOK_FORMAT]="auto" ;;
+        telegram)  NT[TELEGRAM_BOT_TOKEN]=""; NT[TELEGRAM_CHAT_ID]="" ;;
     esac
 }
 
@@ -563,6 +577,12 @@ notify_hint() {
             ui_note "💡 The token is wrong or revoked: copy it again from @BotFather." ;;
         telegram:*blocked*|telegram:*Forbidden*|telegram:*"not a member"*)
             ui_note "💡 The bot is blocked, or it is not in the group: unblock it, or add it to the group." ;;
+        slack:*"HTTP 403"*|slack:*"HTTP 404"*|slack:*"HTTP 410"*)
+            ui_note "💡 The webhook URL is wrong, or it was removed (or its channel archived): add a new one in the Slack app." ;;
+        pagerduty:*"HTTP 400"*)
+            ui_note "💡 PagerDuty rejected the event: the integration key is wrong. It is the Events API v2 key of a service integration." ;;
+        pagerduty:*"HTTP 429"*)
+            ui_note "💡 PagerDuty limits how often events come in: try again in a minute." ;;
         webhook:*"HTTP 400"*)
             ui_note "💡 The receiver rejected the payload: pick its format explicitly (discord / slack / json)." ;;
         webhook:*"HTTP 401"*|webhook:*"HTTP 403"*|webhook:*"HTTP 404"*)
@@ -594,6 +614,44 @@ _nt_verify() {
 }
 
 # The wizards: 0 when done (an empty first answer turns the channel off), 1 if cancelled.
+slack_wizard() {
+    local url
+    ui_title "Slack"
+    ui_note "api.slack.com/apps → Create New App → Incoming Webhooks → on → Add New Webhook → pick the channel → copy the URL."
+    while true; do
+        url="$(ui_input "  Webhook URL (empty — no Slack)" "${NT[SLACK_WEBHOOK_URL]:-}")" || return 1
+        url="$(trim "$url")"
+        [[ -z "$url" ]] && { _nt_clear slack; return 0; }
+        if ! [[ "$url" == https://hooks.slack.com/* ]]; then
+            ui_note "✗ A Slack webhook URL starts with https://hooks.slack.com/ (for Mattermost or another receiver use the webhook)"
+            [[ "${NON_INTERACTIVE:-false}" == "true" ]] && { _nt_clear slack; return 0; }
+            continue
+        fi
+        NT[SLACK_WEBHOOK_URL]="$url"
+        _nt_verify slack "the Slack channel" && return 0
+    done
+}
+
+pagerduty_wizard() {
+    local key region
+    ui_title "PagerDuty"
+    ui_note "Services → your service → Integrations → Add an integration → Events API V2 → copy the Integration Key."
+    ui_note "A failed run opens an incident, the next good run resolves it: one incident per server and job, not one per night."
+    while true; do
+        key="$(ui_input "  Integration key (empty — no PagerDuty)" "${NT[PAGERDUTY_ROUTING_KEY]:-}")" || return 1
+        key="$(trim "$key")"
+        [[ -z "$key" ]] && { _nt_clear pagerduty; return 0; }
+        [[ "$key" =~ ^[A-Za-z0-9]{32}$ ]] || ui_note "⚠ An unusual key: an Events API v2 integration key is 32 letters and digits."
+        region="$(UI_DEFAULT="${NT[PAGERDUTY_REGION]:-us}" ui_menu "Service region of the PagerDuty account" \
+            us "US — the account opens at <name>.pagerduty.com" \
+            eu "EU — the account opens at <name>.eu.pagerduty.com")" || return 1
+        NT[PAGERDUTY_ROUTING_KEY]="$key"; NT[PAGERDUTY_REGION]="$region"
+        [[ "${NON_INTERACTIVE:-false}" == "true" ]] && return 0
+        ui_yesno "$PD_TEST_ASK" y || return 0
+        _nt_verify pagerduty "PagerDuty: the test incident, already resolved" && return 0
+    done
+}
+
 tg_wizard() {
     local token chat
     ui_title "Telegram"
@@ -618,7 +676,7 @@ webhook_wizard() {
     local url fmt
     ui_title "Webhook"
     ui_note "Discord: channel settings → Integrations → Webhooks → Copy Webhook URL."
-    ui_note "Slack and Mattermost: an incoming webhook. Any other URL gets JSON: text, level, server, title, details, time."
+    ui_note "Mattermost, Rocket.Chat: an incoming webhook. Any other URL gets JSON: text, level, server, title, details, time."
     while true; do
         url="$(ui_input "  Webhook URL (empty — no webhook)" "${NT[NOTIFY_WEBHOOK_URL]:-}")" || return 1
         url="$(trim "$url")"

@@ -245,6 +245,21 @@ if run verify verify-restore.sh -c "$CONF" -p "$PROJ"; then ok "verify-restore e
 check "the MariaDB dump is recognized (no false 'doesn't look like' warning)" bash -c '! grep -q "look like" "$1"' _ "$IT/verify.out"
 check "it says MySQL/MariaDB for it" grep -q 'mariadb_.*(MySQL' "$IT/verify.out"
 check "webhook: backups restore fine" grep -q '^success|backups restore fine|' <<< "$(hook_msgs)"
+check "its output is in the backup log too" grep -q "ALL CHECKS PASSED" "$(bash -c 'source "$1"; printf %s "${LOG_FILE:-/var/log/docker-backup.log}"' _ "$CONF")"
+
+# A backup under way (its lock, held by a live process) — the check waits for it, then checks
+LOCKF="$(bash -c 'source "$1"; printf %s "${LOCK_FILE:-/var/run/docker-backup.lock}"' _ "$CONF")"
+mkdir -p "${LOCKF}.d"; sleep 5 & holder=$!; echo "$holder" > "${LOCKF}.d/pid"
+if run verify-wait verify-restore.sh -c "$CONF" -p "$PROJ"; then ok "verify-restore during a backup: exit 0"
+else bad "verify-restore during a backup failed"; show_tail verify-wait; fi
+wait "$holder" 2>/dev/null; rm -rf "${LOCKF}.d"
+check "it waited for the backup" grep -q "A backup is under way (PID $holder)" "$IT/verify-wait.out"
+check "and checked once it was over" grep -q "The backup finished — checking" "$IT/verify-wait.out"
+
+# A check that cannot start says so: on a schedule nobody reads its output
+if run verify-nostart verify-restore.sh -c "$CONF" --from tertiary; then bad "a check of a storage that is off passed"
+else ok "a check of a storage that is off fails"; fi
+check "webhook: restore check did not run, with the reason" grep -q '^error|restore check did not run|.*is not enabled' <<< "$(hook_msgs)"
 
 # ------------------------------------------------------------------------------
 step "BACKUP_MODE=stop: the project's containers are stopped and started again"

@@ -614,6 +614,13 @@ acquire_lock() {
     echo $$ > "$lockdir/pid"
 }
 
+# backup_running_pid — the PID of a backup under way (its lock is held by a live process); 1 if none
+backup_running_pid() {
+    local pid
+    pid="$(cat "${LOCK_FILE:-/var/run/docker-backup.lock}.d/pid" 2>/dev/null || true)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && printf '%s' "$pid"
+}
+
 release_lock() {
     local lockdir="${LOCK_FILE:-/var/run/docker-backup.lock}.d"
 
@@ -636,21 +643,32 @@ release_lock() {
 #   level: error 🔴 — no backup or an incomplete one; warn 🟠 — the primary copy is there, but something is off;
 #          success 🟢 — everything went fine (only with NOTIFY_ON=always).
 #   Details are already HTML: escape substituted names with html_esc.
-#   Goes to every configured channel: Telegram, the webhook, email. A channel that fails is logged
-#   and does not stop the others.
+#   Goes to every configured channel: email, Slack, PagerDuty, the webhook, Telegram. A channel that
+#   fails is logged and does not stop the others.
 notify() {
     local level="$1" title="$2" body="${3:-}"
 
     case "${NOTIFY_ON:-error}" in
         none)   return 0 ;;
-        error)  [[ "$level" == "success" ]] && return 0 ;;
+        error)
+            # For PagerDuty a success is not a message: it resolves the incident a failure opened, so it
+            # goes whatever NOTIFY_ON says.
+            if [[ "$level" == "success" ]]; then
+                if notify_configured pagerduty && ! notify_send success "$title" "$body" pagerduty; then
+                    log_warn "Could not send the notification to pagerduty: ${NOTIFY_ERR:-unknown error}"
+                fi
+                return 0
+            fi ;;
         always) ;;
     esac
     notify_send "$level" "$title" "$body"
 }
 
+# NOTIFY_CHANNELS — every channel, in the order they are sent and listed
+NOTIFY_CHANNELS=(email slack pagerduty webhook telegram)
+
 # notify_send <level> <title> <details, HTML> [channel] — build the message and send it, without the
-# NOTIFY_ON filter. With a channel (telegram|webhook|email) — only there; exit code 1 if it failed,
+# NOTIFY_ON filter. With a channel (one of NOTIFY_CHANNELS) — only there; exit code 1 if it failed,
 # the reason is in NOTIFY_ERR. Without one — to every configured channel, failures go to the log.
 notify_send() {
     local level="$1" title="$2" body="${3:-}" only="${4:-}"
@@ -666,14 +684,16 @@ notify_send() {
     local plain_body=""; [[ -n "$body" ]] && plain_body="$(html_plain "$body")"
     local subject="${icon} Server ${name}: ${title}"
     local ch rc=0
-    for ch in telegram webhook email; do
+    for ch in "${NOTIFY_CHANNELS[@]}"; do
         [[ -n "$only" && "$ch" != "$only" ]] && continue
         notify_configured "$ch" || { [[ -n "$only" ]] && { NOTIFY_ERR="not configured"; return 1; }; continue; }
         NOTIFY_ERR=""
         case "$ch" in
-            telegram) _notify_telegram "$full" "$level" ;;
-            webhook)  _notify_webhook "$level" "$name" "$title" "$full" "$plain_body" ;;
-            email)    _notify_email "$subject" "$full" ;;
+            email)     _notify_email "$subject" "$full" ;;
+            slack)     _http_post "$SLACK_WEBHOOK_URL" "$(_slack_payload "$full")" "Slack" ;;
+            pagerduty) _notify_pagerduty "$level" "$name" "$title" "$plain_body" ;;
+            webhook)   _notify_webhook "$level" "$name" "$title" "$full" "$plain_body" ;;
+            telegram)  _notify_telegram "$full" "$level" ;;
         esac && continue
         rc=1
         [[ -z "$only" ]] && log_warn "Could not send the notification to ${ch}: ${NOTIFY_ERR:-unknown error}"
@@ -683,7 +703,7 @@ notify_send() {
 
 # notify_silent <level> — this level arrives without a sound (NOTIFY_SILENT, a list of levels; unset —
 # "success"). A routine "backup done" in the same chat as the alerts should not ring like one of them.
-# Telegram and Discord can deliver silently; Slack, a custom webhook and email have no such thing.
+# Telegram and Discord can deliver silently; Slack, PagerDuty, a custom webhook and email have no such thing.
 notify_silent() {
     local l
     while IFS= read -r l; do
@@ -692,20 +712,30 @@ notify_silent() {
     return 1
 }
 
-# notify_configured <telegram|webhook|email> — the channel's settings are filled in.
+# notify_configured <channel> — the channel's settings are filled in.
 notify_configured() {
     case "$1" in
-        telegram) [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]] ;;
-        webhook)  [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]] ;;
-        email)    [[ -n "${EMAIL_TO:-}" && -n "${SMTP_HOST:-}" ]] ;;
-        *)        return 1 ;;
+        email)     [[ -n "${EMAIL_TO:-}" && -n "${SMTP_HOST:-}" ]] ;;
+        slack)     [[ -n "${SLACK_WEBHOOK_URL:-}" ]] ;;
+        pagerduty) [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]] ;;
+        webhook)   [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]] ;;
+        telegram)  [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]] ;;
+        *)         return 1 ;;
     esac
 }
 
+# notify_any — at least one channel is set up
+notify_any() {
+    local ch
+    for ch in "${NOTIFY_CHANNELS[@]}"; do notify_configured "$ch" && return 0; done
+    return 1
+}
+
 # notify_test <channel> — a test message to one channel (validate-config, install). Prints the result.
-# It rings whatever NOTIFY_SILENT says: it checks that an alert would be heard.
+# It rings whatever NOTIFY_SILENT says: it checks that an alert would be heard. In PagerDuty it is a test
+# incident, opened and resolved at once (PD_TEST): an incident is the only thing PagerDuty sends on.
 notify_test() {
-    if NOTIFY_SILENT="" notify_send success "test message" "Sent by $(html_esc "${0##*/}") at $(date -u '+%Y-%m-%d %H:%M UTC'). If you see it, $(html_esc "$1") notifications work." "$1"; then
+    if PD_TEST=1 NOTIFY_SILENT="" notify_send success "test message" "Sent by $(html_esc "${0##*/}") at $(date -u '+%Y-%m-%d %H:%M UTC'). If you see it, $(html_esc "$1") notifications work." "$1"; then
         return 0
     fi
     printf '%s\n' "${NOTIFY_ERR:-unknown error}" >&2
@@ -789,7 +819,7 @@ webhook_format() {
 }
 
 _notify_webhook() {
-    local level="$1" server="$2" title="$3" full="$4" details="$5" payload code
+    local level="$1" server="$2" title="$3" full="$4" details="$5" payload
     case "$(webhook_format)" in
         discord)
             # **bold**, `code`; a message is at most 2000 characters.
@@ -799,9 +829,7 @@ _notify_webhook() {
             local flags=0; notify_silent "$level" && flags=4096
             payload="$(jq -n --arg t "$payload" --argjson f "$flags" '{content: $t, allowed_mentions: {parse: []}} + (if $f > 0 then {flags: $f} else {} end)')" ;;
         slack)
-            # *bold*, `code`; & < > stay escaped, as Slack wants them.
-            payload="$(printf '%s' "$full" | sed -e 's#</\{0,1\}b>#*#g' -e 's#</\{0,1\}code>#`#g' -e 's/<[^>]*>//g')"
-            payload="$(jq -n --arg t "$payload" '{text: $t}')" ;;
+            payload="$(_slack_payload "$full")" ;;
         json)
             payload="$(jq -n --arg t "$(html_plain "$full")" --arg l "$level" --arg s "$server" --arg ti "$title" \
                 --arg d "$details" --arg tm "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -809,12 +837,86 @@ _notify_webhook() {
         *)
             NOTIFY_ERR="NOTIFY_WEBHOOK_FORMAT must be auto, discord, slack or json"; return 1 ;;
     esac
-    code="$(printf '%s' "$payload" | curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST \
-        -H 'Content-Type: application/json' --data-binary @- -K <(curl_url_cfg "$NOTIFY_WEBHOOK_URL") 2>/dev/null)" || true
+    _http_post "$NOTIFY_WEBHOOK_URL" "$payload" "the webhook"
+}
+
+# _slack_payload <message HTML> — {"text"} in Slack markup: *bold*, `code`; & < > stay escaped, as Slack
+# wants them. Cut to whole lines under 3900 characters: Slack folds a longer text away.
+_slack_payload() {
+    local t
+    t="$(printf '%s' "$1" | sed -e 's#</\{0,1\}b>#*#g' -e 's#</\{0,1\}code>#`#g' -e 's/<[^>]*>//g')"
+    jq -n --arg t "$(_cut_lines "$t" 3900)" '{text: $t}'
+}
+
+# _http_post <url> <JSON> <who, for the error> — POST the JSON; 0 on a 2xx answer. The URL goes to curl in
+# a config, not as an argument: Slack and Discord put their secret in it. HTTP_BODY — the answer.
+_http_post() {
+    local url="$1" payload="$2" who="$3" resp code
+    resp="$(printf '%s' "$payload" | curl -s -m 15 -w '\n%{http_code}' -X POST \
+        -H 'Content-Type: application/json' --data-binary @- -K <(curl_url_cfg "$url") 2>/dev/null)" || true
+    code="${resp##*$'\n'}"
+    HTTP_BODY=""; [[ "$resp" == *$'\n'* ]] && HTTP_BODY="${resp%$'\n'*}"
     [[ "$code" == 2?? ]] && return 0
-    if [[ -z "$code" || "$code" == "000" ]]; then NOTIFY_ERR="no response from the webhook URL"
-    else NOTIFY_ERR="the webhook replied HTTP ${code}"; fi
+    if [[ -z "$code" || "$code" == "000" ]]; then NOTIFY_ERR="no response from ${who/#the webhook/the webhook URL}"
+    else NOTIFY_ERR="${who} replied HTTP ${code}"; fi
     return 1
+}
+
+# PagerDuty, Events API v2. An error or a warning opens an incident, a success resolves it. One incident
+# per server and script (dedup_key docker-backup-s3/<server>/<script>): a backup failing every night stays
+# one incident instead of a new page each time, and the next good run closes it.
+pagerduty_url() {
+    case "${PAGERDUTY_REGION:-us}" in
+        eu) printf 'https://events.eu.pagerduty.com/v2/%s' "$1" ;;
+        *)  printf 'https://events.pagerduty.com/v2/%s' "$1" ;;
+    esac
+}
+
+_notify_pagerduty() {
+    local level="$1" server="$2" title="$3" details="$4" job="${0##*/}" key sev="" action=trigger
+    case "${PAGERDUTY_REGION:-us}" in us|eu) ;; *) NOTIFY_ERR="PAGERDUTY_REGION must be us or eu"; return 1 ;; esac
+    job="${job%.sh}"
+    key="docker-backup-s3/${server}/${job}"
+    case "$level" in
+        error) sev=error ;;
+        warn)  sev=warning ;;
+        *)     action=resolve ;;
+    esac
+    if [[ -n "${PD_TEST:-}" ]]; then
+        key="docker-backup-s3/${server}/test"; sev=info; action=trigger
+    fi
+    _pd_event enqueue "$action" "$key" "$sev" "Server ${server}: ${title}" "$server" "$job" "$details" || return 1
+    [[ -n "${PD_TEST:-}" ]] && { _pd_event enqueue resolve "$key" || return 1; }
+    return 0
+}
+
+# _pd_event <enqueue|change/enqueue> <action> <dedup key> [severity summary source component details] —
+# one event. The routing key reaches jq through its environment, not as an argument (ps would show it).
+_pd_event() {
+    local api="$1" payload
+    payload="$(PD_KEY="$PAGERDUTY_ROUTING_KEY" jq -n --arg a "$2" --arg k "$3" --arg sev "${4:-}" \
+        --arg s "${5:-}" --arg src "${6:-}" --arg c "${7:-}" --arg d "${8:-}" \
+        --arg tm "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+        if $a == "change" then
+            {routing_key: env.PD_KEY, payload: {summary: $s[0:1024], source: $src, timestamp: $tm}}
+        else
+            {routing_key: env.PD_KEY, event_action: $a, dedup_key: $k}
+            + (if $a == "trigger" then {payload: ({summary: $s[0:1024], source: $src, severity: $sev,
+                    component: $c, group: "docker-backup-s3"}
+                    + (if $d != "" then {custom_details: {details: $d}} else {} end))} else {} end)
+        end')" || { NOTIFY_ERR="jq failed"; return 1; }
+    _http_post "$(pagerduty_url "$api")" "$payload" "PagerDuty" && return 0
+    local why
+    why="$(printf '%s' "$HTTP_BODY" | jq -r '[.message, (.errors // [])[]] | map(select(. != null)) | join(": ")' 2>/dev/null || true)"
+    [[ -n "$why" ]] && NOTIFY_ERR+=" (${why})"
+    return 1
+}
+
+# pagerduty_check — a change event: checks the routing key without paging anyone (validate-config.sh)
+pagerduty_check() {
+    NOTIFY_ERR=""
+    _pd_event change/enqueue change "" "" "docker-backup-s3: configuration check on ${NOTIFY_NAME:-$(uname -n)}" \
+        "${NOTIFY_NAME:-$(uname -n)}" || { printf '%s\n' "$NOTIFY_ERR" >&2; return 1; }
 }
 
 # Email over SMTP with curl (no mail server on this host needed). The message has a plain-text and

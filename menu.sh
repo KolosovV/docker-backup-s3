@@ -349,9 +349,21 @@ menu_schedule() {
         choice="$(ui_menu "Scheduled backups run from cron or a systemd timer." \
             status "Show the current setup" \
             set    "Set up or change the schedule…" \
+            check  "Restore check on a schedule…" \
             remove "Remove scheduled runs")" || return 0
         case "$choice" in
             status) run_tool setup-cron.sh --status ;;
+            check)
+                spec="$(UI_DEFAULT=weekly ui_menu "When to check that the latest backups restore? The check downloads each project's latest archive and waits for a backup still running." \
+                    weekly "Once a week — Sunday 06:00" \
+                    daily  "Every day at 06:00" \
+                    custom "Custom… (the format of the backup schedule)" \
+                    off    "No scheduled check")" || continue
+                if [[ "$spec" == "custom" ]]; then
+                    spec="$(ui_input "Schedule (cron: <minute> <hour> <day of month> <month> <day of week>; a timer: OnCalendar)" "30 6 * * *")" || continue
+                    [[ -z "$spec" ]] && continue
+                fi
+                run_tool setup-cron.sh -v "$spec" -y ;;
             set)
                 method="$(UI_DEFAULT=cron ui_menu "How to run it?" \
                     cron    "cron — simple and familiar" \
@@ -504,9 +516,11 @@ Write ${p}_OPTS_EXTRA=\"${CERT_OPTS}\" to the config?" y; then
 notify_line() {
     if ! notify_configured "$1"; then printf 'off'; return 0; fi
     case "$1" in
-        telegram) printf 'chat %s' "$TELEGRAM_CHAT_ID" ;;
-        webhook)  printf '%s (%s)' "$(s3_host "$NOTIFY_WEBHOOK_URL")" "$(webhook_format)" ;;
-        email)    printf 'to %s via %s' "$EMAIL_TO" "$SMTP_HOST" ;;
+        email)     printf 'to %s via %s' "$EMAIL_TO" "$SMTP_HOST" ;;
+        slack)     printf 'incoming webhook' ;;
+        pagerduty) printf 'integration …%s, %s' "${PAGERDUTY_ROUTING_KEY: -4}" "${PAGERDUTY_REGION:-us}" ;;
+        webhook)   printf '%s (%s)' "$(s3_host "$NOTIFY_WEBHOOK_URL")" "$(webhook_format)" ;;
+        telegram)  printf 'chat %s' "$TELEGRAM_CHAT_ID" ;;
     esac
 }
 
@@ -683,10 +697,12 @@ menu_notify() {
         choice="$(ui_menu "Where messages about backups go. Any channels can be on at once." \
             when     "When: $(notify_when)" \
             name     "Server name in messages: ${NOTIFY_NAME:-$(uname -n) (the hostname)}" \
-            telegram "Telegram — $(notify_line telegram)" \
-            webhook  "Webhook — $(notify_line webhook)" \
-            email    "Email — $(notify_line email)" \
-            test     "Send a test message to every channel" \
+            email     "Email — $(notify_line email)" \
+            slack     "Slack — $(notify_line slack)" \
+            pagerduty "PagerDuty — $(notify_line pagerduty)" \
+            webhook   "Webhook — $(notify_line webhook)" \
+            telegram  "Telegram — $(notify_line telegram)" \
+            test      "Send a test message to every channel" \
             quiet    "Without a sound: $(notify_quiet)")" || return 0
         case "$choice" in
             when)
@@ -706,13 +722,14 @@ menu_notify() {
             name)
                 v="$(ui_input "Server name in messages (empty — the hostname)" "${NOTIFY_NAME:-}")" || continue
                 backup_conf_once; conf_set NOTIFY_NAME "$(trim "$v")" --allow-empty; reload_conf ;;
-            telegram|webhook|email)
+            email|slack|pagerduty|webhook|telegram)
                 menu_channel "$choice" ;;
             test)
                 out=""
                 notify_load
-                for ch in telegram webhook email; do
+                for ch in "${NOTIFY_CHANNELS[@]}"; do
                     notify_configured "$ch" || continue
+                    [[ "$ch" == pagerduty ]] && ! ui_yesno "$PD_TEST_ASK" n && continue
                     if err="$(notify_probe "$ch")"; then out+="✓ ${ch}: sent"$'\n'
                     else out+="✗ ${ch}: ${err:-unknown error}"$'\n'; notify_hint "$ch" "$err"; fi
                 done
@@ -723,7 +740,7 @@ menu_notify() {
 
 menu_channel() {
     local ch="$1" label choice err
-    case "$ch" in telegram) label="Telegram" ;; webhook) label="Webhook" ;; *) label="Email" ;; esac
+    label="$(notify_label "$ch")"
     while true; do
         UI_TITLE="$label"
         if notify_configured "$ch"; then
@@ -738,14 +755,17 @@ menu_channel() {
             edit)
                 notify_load
                 case "$ch" in
-                    telegram) tg_wizard ;;
-                    webhook)  webhook_wizard ;;
-                    email)    email_wizard ;;
+                    email)     email_wizard ;;
+                    slack)     slack_wizard ;;
+                    pagerduty) pagerduty_wizard ;;
+                    webhook)   webhook_wizard ;;
+                    telegram)  tg_wizard ;;
                 esac || return 0
                 backup_conf_once; notify_save; reload_conf
                 if notify_configured "$ch"; then ui_msg "${label}: saved to ${CONFIG_FILE}."
                 else ui_msg "${label}: off."; return 0; fi ;;
             test)
+                [[ "$ch" == pagerduty ]] && ! ui_yesno "$PD_TEST_ASK" y && continue
                 notify_load
                 if err="$(notify_probe "$ch")"; then ui_msg "✓ ${label}: the test message was sent."
                 else notify_hint "$ch" "$err"; ui_msg "✗ ${label}: ${err:-unknown error}"; fi ;;

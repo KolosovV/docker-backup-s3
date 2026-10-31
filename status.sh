@@ -386,6 +386,27 @@ if [[ -z "$CRON_LINE" && "$has_systemd" != "true" ]]; then
     echo "  $(status_dot err) Scheduled runs are not set up"
     echo "    Set up: sudo $SCRIPT_DIR/setup-cron.sh"
 fi
+
+# The restore check (verify-restore.sh) on a schedule, and how the last one went
+VERIFY_LINE=$(crontab -l 2>/dev/null | sed -n '/^# === Docker backup ===/,/^# === \/Docker backup ===/p' \
+    | grep -v '^[[:space:]]*#' | grep -F "${SCRIPT_DIR}/verify-restore.sh" | head -1 || true)
+if [[ -n "$VERIFY_LINE" ]]; then
+    echo "  $(status_dot ok) Restore check: cron $(echo "$VERIFY_LINE" | awk '{print $1, $2, $3, $4, $5}')"
+elif [[ -f /etc/systemd/system/docker-backup-verify.timer ]]; then
+    echo "  $(status_dot ok) Restore check: timer $(sed -n 's/^OnCalendar=//p' /etc/systemd/system/docker-backup-verify.timer | head -1)"
+elif [[ -n "$CRON_LINE" || "$has_systemd" == "true" ]]; then
+    echo "  $(status_dot warn) Restore check: not scheduled — sudo $SCRIPT_DIR/setup-cron.sh -v weekly"
+fi
+LAST_VERIFY_FILE="${LAST_VERIFY_FILE:-/var/lib/docker-backup/last-verify.json}"
+if [[ -f "$LAST_VERIFY_FILE" ]] && lv="$(jq -r '[.finished, (.ok|tostring), .checked, .failed, .from] | @tsv' "$LAST_VERIFY_FILE" 2>/dev/null)"; then
+    IFS=$'\t' read -r lv_at lv_ok lv_n lv_failed lv_from <<< "$lv"
+    lv_at="${lv_at/T/ }"; lv_at="${lv_at%Z} UTC"
+    if [[ "$lv_ok" == "true" ]]; then
+        echo "    Last check: $lv_at — $(status_dot ok) ${lv_n} of ${lv_n} restore (${lv_from})"
+    else
+        echo "    Last check: $lv_at — $(status_dot err) ${lv_failed} of ${lv_n} failed (${lv_from}); details: sudo $SCRIPT_DIR/logs.sh -e"
+    fi
+fi
 echo
 
 # ==============================================================================
@@ -409,9 +430,11 @@ printf "  %-22s %s\n" "Notifications:" "${NOTIFY_ON:-error}"
 
 # A short notification checklist
 notif_setup=""
-notify_configured telegram && notif_setup+=" Telegram"
-notify_configured webhook  && notif_setup+=" Webhook($(webhook_format))"
-notify_configured email    && notif_setup+=" Email"
+notify_configured email     && notif_setup+=" Email"
+notify_configured slack     && notif_setup+=" Slack"
+notify_configured pagerduty && notif_setup+=" PagerDuty"
+notify_configured webhook   && notif_setup+=" Webhook($(webhook_format))"
+notify_configured telegram  && notif_setup+=" Telegram"
 [[ -n "$notif_setup" ]] && printf "  %-22s %s\n" "  Channels:" "$notif_setup"
 
 echo

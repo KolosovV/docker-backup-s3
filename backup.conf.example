@@ -368,6 +368,8 @@ GPG_PASSPHRASE_FILE="/root/.docker-backup-passphrase"
 #   always   — every run (success + errors)
 NOTIFY_ON="error"
 
+# Any channels can be on at once; each one below is off while its settings are empty.
+
 # Levels that arrive WITHOUT A SOUND (Telegram and Discord; other channels have no such thing):
 # space-separated, from success / warn / error. Empty — every message rings.
 # The default keeps a routine "backup done" quiet next to the alerts in the same chat.
@@ -375,20 +377,6 @@ NOTIFY_SILENT="success"
 
 # How to name the server in messages: "🔴 Server <name>: …". Empty — the hostname.
 NOTIFY_NAME=""
-
-# --- Telegram ---
-# Get the token via @BotFather, the chat_id via @userinfobot or @getmyid_bot
-TELEGRAM_BOT_TOKEN=""
-TELEGRAM_CHAT_ID=""
-
-# --- Webhook (Discord, Slack, Mattermost, your own receiver) ---
-# The URL receives a POST with JSON. Its shape (NOTIFY_WEBHOOK_FORMAT):
-#   auto    — discord.com/api/webhooks/… → discord, hooks.slack.com/… → slack, anything else → json
-#   discord — {"content": "..."}
-#   slack   — {"text": "..."} (also Mattermost, Rocket.Chat)
-#   json    — {"text", "level": "error|warn|success", "server", "title", "details", "time"}
-NOTIFY_WEBHOOK_URL=""
-NOTIFY_WEBHOOK_FORMAT="auto"
 
 # --- Email (SMTP) ---
 # Sent by curl straight to your SMTP server — no mail server is needed on this host.
@@ -400,6 +388,31 @@ SMTP_PORT=""                # empty — the port of SMTP_SECURITY
 SMTP_USER=""                # empty — send without logging in
 SMTP_PASSWORD=""
 SMTP_FROM=""                # the sender address; empty — SMTP_USER
+
+# --- Slack ---
+# An incoming webhook: api.slack.com/apps → Create New App → Incoming Webhooks → Add New Webhook.
+SLACK_WEBHOOK_URL=""        # https://hooks.slack.com/services/…
+
+# --- PagerDuty (Events API v2) ---
+# A failed or incomplete run opens an incident, the next good run resolves it — whatever NOTIFY_ON says.
+# One incident per server and job (backup, restore check, sync), not a new one every night.
+# The key: Services → your service → Integrations → Add an integration → Events API V2 → Integration Key.
+PAGERDUTY_ROUTING_KEY=""
+PAGERDUTY_REGION="us"       # us, or eu for an account at <name>.eu.pagerduty.com
+
+# --- Webhook (Discord, Mattermost, Rocket.Chat, your own receiver) ---
+# The URL receives a POST with JSON. Its shape (NOTIFY_WEBHOOK_FORMAT):
+#   auto    — discord.com/api/webhooks/… → discord, hooks.slack.com/… → slack, anything else → json
+#   discord — {"content": "..."}
+#   slack   — {"text": "..."} (Mattermost, Rocket.Chat; for Slack itself SLACK_WEBHOOK_URL is simpler)
+#   json    — {"text", "level": "error|warn|success", "server", "title", "details", "time"}
+NOTIFY_WEBHOOK_URL=""
+NOTIFY_WEBHOOK_FORMAT="auto"
+
+# --- Telegram ---
+# Get the token via @BotFather, the chat_id via @userinfobot or @getmyid_bot
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
 
 # ==============================================================================
 # COLORED OUTPUT

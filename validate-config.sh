@@ -428,8 +428,42 @@ done
 # ==============================================================================
 # 7. NOTIFICATIONS
 # ==============================================================================
-if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${NOTIFY_WEBHOOK_URL:-}" || -n "${EMAIL_TO:-}" || -n "${SMTP_HOST:-}" ]]; then
+if notify_any || [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${EMAIL_TO:-}" || -n "${SMTP_HOST:-}" ]]; then
     section "Notifications"
+
+    if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        if ! [[ "$SLACK_WEBHOOK_URL" == https://hooks.slack.com/* ]]; then
+            err "SLACK_WEBHOOK_URL must start with https://hooks.slack.com/ (for another receiver use NOTIFY_WEBHOOK_URL)"
+        elif sl_err="$(notify_test slack 2>&1)"; then
+            ok "Test message delivered to Slack"
+        else
+            err "Slack: $sl_err"
+            case "$sl_err" in
+                *"HTTP 403"*|*"HTTP 404"*|*"HTTP 410"*) echo "      💡 The webhook URL is wrong or was removed (or its channel archived) — add a new one in the Slack app" ;;
+            esac
+        fi
+    fi
+
+    if [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]]; then
+        # Not a test incident: validate-config runs often, and an incident pages whoever is on call.
+        # A change event checks the key and pages no one.
+        if [[ "${PAGERDUTY_REGION:-us}" != us && "${PAGERDUTY_REGION:-us}" != eu ]]; then
+            err "PAGERDUTY_REGION must be us or eu. Now: '${PAGERDUTY_REGION}'"
+        else
+            [[ "$PAGERDUTY_ROUTING_KEY" =~ ^[A-Za-z0-9]{32}$ ]] \
+                || warn "PAGERDUTY_ROUTING_KEY has an unusual format (an Events API v2 integration key is 32 letters and digits)"
+            if pd_err="$(pagerduty_check 2>&1)"; then
+                ok "PagerDuty accepted a change event (${PAGERDUTY_REGION:-us}; it pages no one — see the service's Recent Changes)"
+            else
+                err "PagerDuty: $pd_err"
+                case "$pd_err" in
+                    *"HTTP 400"*) echo "      💡 The key is wrong: it is the Integration Key of an Events API V2 integration of the service" ;;
+                    *"no response"*) echo "      💡 No answer from $(pagerduty_url enqueue | sed 's#^https://##; s#/.*##') — check outgoing HTTPS" ;;
+                esac
+            fi
+            echo "    A test incident (resolved at once): sudo docker-backup-s3 → Notifications → PagerDuty"
+        fi
+    fi
 
     if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
         # Token format check

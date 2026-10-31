@@ -8,6 +8,35 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
+## [Unreleased]
+
+### Added
+- **The restore check on a schedule.** `setup-cron.sh` puts `verify-restore.sh` next to the backup job — weekly,
+  Sunday 06:00, for a new setup — in the same crontab block or as its own systemd timer
+  (`docker-backup-verify.timer`). `-v daily|weekly|off|<expression>` sets it; given alone, it changes only the
+  check and the backups keep their schedule. `-y` without `-v` keeps the check a setup already has. In the menu:
+  Scheduled runs → Restore check on a schedule. `status.sh` shows the schedule and the last check's result
+  (`last-verify.json`), `--status` and `--remove` cover the check, `uninstall.sh` removes its timer.
+- **The check waits for a backup still running** (up to `VERIFY_WAIT_MINUTES`, 180), so it checks the copy being
+  made; `--no-wait` checks at once.
+- **Slack** as a channel of its own (`SLACK_WEBHOOK_URL`), so Slack and a Discord webhook can be on together.
+  A Slack URL in `NOTIFY_WEBHOOK_URL` keeps working.
+- **PagerDuty** (Events API v2, `PAGERDUTY_ROUTING_KEY`, `PAGERDUTY_REGION` us/eu): a failed run opens an
+  incident, the next good run resolves it — one incident per server and job, not one per night.
+  `validate-config.sh` checks the key with a change event, which pages no one; the menu sends a real test
+  incident (opened and resolved at once) only after a question.
+
+### Changed
+- The channels are offered and listed in the order most teams use them: email, Slack, PagerDuty, the webhook,
+  Telegram — in `install.sh`, the menu and `backup.conf.example`.
+
+### Fixed
+- **A restore check that could not start said nothing** (no access to the storage, a missing tool, no space): it
+  now sends "restore check did not run" with the reason. On a schedule nobody reads its output.
+- `verify-restore.sh`'s output reaches the backup log (`LOG_FILE`) too: the "Details" line of its notifications
+  pointed at a log it never wrote to, and `logs.sh -e` did not see its errors.
+- `uninstall.sh` left `/var/lib/docker-backup` (the last run's result) behind.
+
 ## [2.1.0] — 2026-10-25
 
 ### Added
@@ -485,6 +514,7 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
+[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.1.0...HEAD
 [2.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.1.0
 [2.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.1
 [2.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.0

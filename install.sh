@@ -724,11 +724,15 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     NOTIFY_SET=""
     notify_load   # the template defaults (auto, starttls) stay if a wizard is skipped
     ui_title "Notifications (optional)"
-    if ask_yn "  Set up Telegram notifications?" "n"; then tg_wizard && NOTIFY_SET=1; fi
-    ui_title "Notifications (optional)"
-    if ask_yn "  Set up a webhook (Discord/Slack/Mattermost/custom)?" "n"; then webhook_wizard && NOTIFY_SET=1; fi
-    ui_title "Notifications (optional)"
     if ask_yn "  Set up email notifications (your SMTP server)?" "n"; then email_wizard && NOTIFY_SET=1; fi
+    ui_title "Notifications (optional)"
+    if ask_yn "  Set up Slack notifications?" "n"; then slack_wizard && NOTIFY_SET=1; fi
+    ui_title "Notifications (optional)"
+    if ask_yn "  Set up PagerDuty (an incident on a failure, resolved by the next good run)?" "n"; then pagerduty_wizard && NOTIFY_SET=1; fi
+    ui_title "Notifications (optional)"
+    if ask_yn "  Set up a webhook (Discord/Mattermost/your own receiver)?" "n"; then webhook_wizard && NOTIFY_SET=1; fi
+    ui_title "Notifications (optional)"
+    if ask_yn "  Set up Telegram notifications?" "n"; then tg_wizard && NOTIFY_SET=1; fi
     UI_TITLE=""
 
     # ─── Applying the settings to backup.conf ───

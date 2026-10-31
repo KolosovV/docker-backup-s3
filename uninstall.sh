@@ -187,10 +187,12 @@ else
 fi
 
 # Systemd
-if systemctl list-unit-files 2>/dev/null | grep -q "docker-backup.timer"; then
+if systemctl list-unit-files 2>/dev/null | grep -q "docker-backup.timer" \
+   || [[ -f /etc/systemd/system/docker-backup-verify.timer ]]; then
     FOUND_SYSTEMD="true"
     timer_state=$(systemctl is-active docker-backup.timer 2>/dev/null || echo "unknown")
     log_ok "Systemd timer: docker-backup.timer ($timer_state)"
+    [[ -f /etc/systemd/system/docker-backup-verify.timer ]] && log_ok "Systemd timer: docker-backup-verify.timer (the restore check)"
 else
     log_skip "No systemd timer found"
 fi
@@ -410,12 +412,17 @@ fi
 if [[ "$FOUND_SYSTEMD" == "true" ]]; then
     log_step "Removing the systemd timer"
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_dry "systemctl disable --now docker-backup.timer"
-        log_dry "rm /etc/systemd/system/docker-backup.{service,timer}"
+        log_dry "systemctl disable --now docker-backup.timer docker-backup-verify.timer"
+        log_dry "rm /etc/systemd/system/docker-backup{,-verify}.{service,timer}"
         log_dry "systemctl daemon-reload"
     else
         systemctl disable --now docker-backup.timer 2>/dev/null && \
             log_ok "Timer stopped and disabled" || log_warn "The timer was not active"
+        if [[ -f /etc/systemd/system/docker-backup-verify.timer ]]; then
+            systemctl disable --now docker-backup-verify.timer 2>/dev/null || true
+            rm -f /etc/systemd/system/docker-backup-verify.timer /etc/systemd/system/docker-backup-verify.service \
+                && log_ok "Removed docker-backup-verify.{timer,service}"
+        fi
 
         rm -f /etc/systemd/system/docker-backup.timer && log_ok "Removed docker-backup.timer"
         rm -f /etc/systemd/system/docker-backup.service && log_ok "Removed docker-backup.service"
@@ -450,6 +457,12 @@ fi
 if [[ "$FOUND_WORK_DIR" == "true" ]]; then
     log_step "Removing the temporary folder"
     do_action "rm -rf /var/tmp/docker-backup" rm -rf /var/tmp/docker-backup
+fi
+
+# The results of the last backup and restore check (last-run.json, last-verify.json)
+if [[ -d /var/lib/docker-backup ]]; then
+    log_step "Removing the last-run results"
+    do_action "rm -rf /var/lib/docker-backup" rm -rf /var/lib/docker-backup
 fi
 
 # ==============================================================================

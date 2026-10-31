@@ -43,9 +43,10 @@ run_menu() {
 conf_val() { bash -c 'source "$1" 2>/dev/null; printf "%s" "${!2}"' _ "$CONF" "$1"; }
 
 section "email: set up, test"
-# main: 11 notifications → 5 email → wizard (to, server, 1 starttls, port default, login, password, sender default)
+# notifications: 1 when, 2 name, 3 email, 4 slack, 5 pagerduty, 6 webhook, 7 telegram, 8 test all, 9 quiet
+# main: 11 notifications → 3 email → wizard (to, server, 1 starttls, port default, login, password, sender default)
 #   → 2 send a test → q back; 1 when → 2 every run; q; 12 exit
-run_menu 11 5 ops@example.com smtp.example.com 1 "" bk@example.com 'pa"ss$1' "" 2 q 1 2 q 12
+run_menu 11 3 ops@example.com smtp.example.com 1 "" bk@example.com 'pa"ss$1' "" 2 q 1 2 q 12
 check "the menu exits cleanly" grep -q 'saved to' "$W/out"
 check "EMAIL_TO saved" test "$(conf_val EMAIL_TO)" == ops@example.com
 check "SMTP_HOST saved" test "$(conf_val SMTP_HOST)" == smtp.example.com
@@ -62,8 +63,8 @@ check "smtp was called" grep -q '^smtp://smtp.example.com:587$' "$MOCK_DIR/calls
 
 section "email off, webhook on"
 : > "$MOCK_DIR/calls"
-# 11 → 5 email (configured) → 3 off → y; 4 webhook → URL → 1 auto; q (webhook menu) q (notifications) 12
-run_menu 11 5 3 y 4 https://discord.com/api/webhooks/1/x 1 q q 12
+# 11 → 3 email (configured) → 3 off → y; 6 webhook → URL → 1 auto; q (webhook menu) q (notifications) 12
+run_menu 11 3 3 y 6 https://discord.com/api/webhooks/1/x 1 q q 12
 check "email is off" test -z "$(conf_val EMAIL_TO)$(conf_val SMTP_HOST)$(conf_val SMTP_PASSWORD)"
 check "the webhook is saved" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 check "the test went as Discord content" test "$(jq -r '.content|split("\n")[0]' "$MOCK_DIR/body")" == "🟢 **Server $(uname -n): test message**"
@@ -72,8 +73,8 @@ check "the list shows the webhook" grep -q 'Webhook — discord.com (discord)' "
 
 section "telegram: a failed test, not kept"
 export MOCK_TG=fail
-# 11 → 3 telegram → token, chat → ✗ → enter again? n → keep anyway? n → off; q; 12
-run_menu 11 3 1:abc 42 n n q 12
+# 11 → 7 telegram → token, chat → ✗ → enter again? n → keep anyway? n → off; q; 12
+run_menu 11 7 1:abc 42 n n q 12
 unset MOCK_TG
 check "Telegram's reason is shown" grep -q 'Bad Request: chat not found' "$W/out"
 check "with a hint" grep -q 'nobody has started the bot' "$W/out"
@@ -81,12 +82,38 @@ check "the settings are not kept" test -z "$(conf_val TELEGRAM_BOT_TOKEN)"
 check "the webhook is untouched" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 
 section "server name and test-all"
-# 11 → 2 name → web-9; 6 test all; q; 12
+# 11 → 2 name → web-9; 8 test all; q; 12
 : > "$MOCK_DIR/calls"
-run_menu 11 2 web-9 6 q 12
+run_menu 11 2 web-9 8 q 12
 check "NOTIFY_NAME saved" test "$(conf_val NOTIFY_NAME)" == web-9
 check "test-all reports the webhook" grep -q '✓ webhook: sent' "$W/out"
 check "the new name is in the message" grep -q 'Server web-9: test message' <<< "$(jq -r .content "$MOCK_DIR/body")"
+
+section "slack"
+# 11 → 4 slack → a URL that is not Slack's → again → the right one (a test goes) → q; q; 12
+: > "$MOCK_DIR/calls"
+run_menu 11 4 https://example.com/x https://hooks.slack.com/services/T/B/X q q 12
+check "a URL that is not Slack's is refused" grep -q 'starts with https://hooks.slack.com/' "$W/out"
+check "SLACK_WEBHOOK_URL saved" test "$(conf_val SLACK_WEBHOOK_URL)" == https://hooks.slack.com/services/T/B/X
+check "the test went in Slack markup" test "$(jq -r '.text|split("\n")[0]' "$MOCK_DIR/body")" == "🟢 *Server web-9: test message*"
+check "the list shows Slack" grep -q 'Slack — incoming webhook' "$W/out"
+
+section "pagerduty"
+PDKEY="0123456789abcdef0123456789abcdef"
+# 11 → 5 pagerduty → key → 2 eu → send a test incident? y → q; q; 12
+: > "$MOCK_DIR/calls"
+run_menu 11 5 "$PDKEY" 2 y q q 12
+check "the key and the region saved" test "$(conf_val PAGERDUTY_ROUTING_KEY):$(conf_val PAGERDUTY_REGION)" == "$PDKEY:eu"
+check "a test incident opened and resolved, in the EU region" \
+    test "$(grep -c '^https://events.eu.pagerduty.com/v2/enqueue$' "$MOCK_DIR/calls")" == 2
+check "the last event resolves the test incident" \
+    test "$(jq -r '[.event_action, .dedup_key] | join(" ")' "$MOCK_DIR/body")" == "resolve docker-backup-s3/web-9/test"
+check "the list shows the key's end and the region" grep -q 'PagerDuty — integration …cdef, eu' "$W/out"
+# test all: PagerDuty asks first; n — it is left out
+: > "$MOCK_DIR/calls"
+run_menu 11 8 n q 12
+check "test-all skips PagerDuty when told so" bash -c '! grep -q pagerduty "$1"' _ "$MOCK_DIR/calls"
+check "and tests the others" grep -q '✓ slack: sent' "$W/out"
 
 section "projects: what to leave out"
 # docker and aws stubs: two compose projects on "this host"
