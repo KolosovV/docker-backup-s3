@@ -10,6 +10,8 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-11-01
+
 ### Added
 - **The restore check on a schedule.** `setup-cron.sh` puts `verify-restore.sh` next to the backup job — weekly,
   Sunday 06:00, for a new setup — in the same crontab block or as its own systemd timer
@@ -546,7 +548,8 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
-[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.2.0
 [2.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.1.0
 [2.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.1
 [2.0.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.0

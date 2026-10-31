@@ -6,8 +6,8 @@ Fixes go into the latest release only. Update with `update.sh` (see the README) 
 
 | Version | Supported |
 | ------- | --------- |
-| 2.1.x   | ✅        |
-| < 2.1   | ❌        |
+| 2.2.x   | ✅        |
+| < 2.2   | ❌        |
 
 ## Reporting a vulnerability
 
