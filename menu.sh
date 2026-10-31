@@ -289,15 +289,17 @@ menu_checks() {
             validate "Configuration and access to every storage (validate-config.sh)" \
             quick    "Backups restore — quick: objects are there (all projects)" \
             full     "Backups restore — full: download, unpack, check dumps (all projects)" \
+            deep     "Backups restore — deep: full, and each database dump loaded into a throwaway database" \
             one      "Backups restore — one project, full…" \
             s3       "S3 diagnostics: keys, addressing style, test write (diagnose-s3.sh)" \
             cron     "Cron diagnostics (diagnose-cron.sh)")" || return 0
         case "$choice" in
             validate) run_tool validate-config.sh -c "$CONFIG_FILE" ;;
-            quick|full|one)
+            quick|full|deep|one)
                 role="$(pick_storage "Check the backups of which storage?")" || continue
                 if [[ "$choice" == "quick" ]]; then run_tool verify-restore.sh -c "$CONFIG_FILE" --from "$role" --quick --no-notify
-                elif [[ "$choice" == "full" ]]; then run_tool verify-restore.sh -c "$CONFIG_FILE" --from "$role" --no-notify
+                elif [[ "$choice" == "full" ]]; then run_tool verify-restore.sh -c "$CONFIG_FILE" --from "$role" --standard --no-notify
+                elif [[ "$choice" == "deep" ]]; then run_tool verify-restore.sh -c "$CONFIG_FILE" --from "$role" --deep --no-notify
                 else
                     list="$(s3_folders "$role" "${BACKUP_PREFIX}/")"
                     [[ -z "$list" ]] && { ui_msg "No backups found $(s3_label "$role" in)."; continue; }
@@ -442,6 +444,8 @@ menu_store() {
             else items+=(required "Make it required (a failure here fails the backup)"); fi
         fi
         items+=(check "Check access now" rokey "Read-only key for restore…")
+        if [[ "$(s3_var "$role" OBJECT_LOCK)" == "true" ]]; then items+=(lock "The bucket has Object Lock: yes (uploads carry a checksum)")
+        else items+=(lock "The bucket has Object Lock: no"); fi
         choice="$(ui_menu "$(store_line "$role")
 Options: $(s3_var "$role" OPTS_EXTRA)" "${items[@]}")" || return 0
         case "$choice" in
@@ -505,6 +509,16 @@ Write ${p}_OPTS_EXTRA=\"${CERT_OPTS}\" to the config?" y; then
                     [[ -n "$secret" ]] && conf_set "${p}_RESTORE_SECRET_KEY" "$secret"
                 fi
                 reload_conf ;;
+            lock)
+                backup_conf_once
+                if [[ "$(s3_var "$role" OBJECT_LOCK)" == "true" ]]; then conf_set "${p}_OBJECT_LOCK" "false"
+                else
+                    ui_msg "A bucket with Object Lock and a default retention refuses an upload without a checksum: from now on aws sends one to ${title}.
+
+Versioning comes with the lock, so the rotation only hides old backups: add a lifecycle rule that expires noncurrent versions, or they are kept and billed forever. validate-config.sh checks both."
+                    conf_set "${p}_OBJECT_LOCK" "true"
+                fi
+                reload_conf ;;
         esac
     done
 }
@@ -518,10 +532,23 @@ notify_line() {
     case "$1" in
         email)     printf 'to %s via %s' "$EMAIL_TO" "$SMTP_HOST" ;;
         slack)     printf 'incoming webhook' ;;
+        teams)     printf 'workflow on %s' "$(s3_host "$TEAMS_WEBHOOK_URL")" ;;
         pagerduty) printf 'integration …%s, %s' "${PAGERDUTY_ROUTING_KEY: -4}" "${PAGERDUTY_REGION:-us}" ;;
+        ntfy)      printf 'topic %s on %s' "${NTFY_URL##*/}" "$(s3_host "$NTFY_URL")" ;;
         webhook)   printf '%s (%s)' "$(s3_host "$NOTIFY_WEBHOOK_URL")" "$(webhook_format)" ;;
         telegram)  printf 'chat %s' "$TELEGRAM_CHAT_ID" ;;
+        apprise)   printf '%s URL(s)' "$(split_words "$APPRISE_URLS" | grep -c .)" ;;
     esac
+}
+
+# monitor_line — the monitor's pings and the metrics, in one line
+monitor_line() {
+    local s=""
+    [[ -n "${HEARTBEAT_URL:-}" ]] && s+="backup ping, "
+    [[ -n "${VERIFY_HEARTBEAT_URL:-}" ]] && s+="check ping, "
+    [[ -n "${METRICS_DIR:-}" ]] && s+="metrics, "
+    s="${s%, }"
+    printf '%s' "${s:-off}"
 }
 
 notify_quiet() {
@@ -699,11 +726,15 @@ menu_notify() {
             name     "Server name in messages: ${NOTIFY_NAME:-$(uname -n) (the hostname)}" \
             email     "Email — $(notify_line email)" \
             slack     "Slack — $(notify_line slack)" \
+            teams     "Microsoft Teams — $(notify_line teams)" \
             pagerduty "PagerDuty — $(notify_line pagerduty)" \
+            ntfy      "ntfy — $(notify_line ntfy)" \
             webhook   "Webhook — $(notify_line webhook)" \
             telegram  "Telegram — $(notify_line telegram)" \
+            apprise   "Apprise — $(notify_line apprise)" \
             test      "Send a test message to every channel" \
-            quiet    "Without a sound: $(notify_quiet)")" || return 0
+            quiet    "Without a sound: $(notify_quiet)" \
+            monitor  "Monitoring (a monitor's ping, Prometheus): $(monitor_line)…")" || return 0
         case "$choice" in
             when)
                 v="$(UI_DEFAULT="${NOTIFY_ON:-error}" ui_menu "When to send a message?" \
@@ -713,7 +744,7 @@ menu_notify() {
                 backup_conf_once; conf_set NOTIFY_ON "$v"; reload_conf ;;
             quiet)
                 case "${NOTIFY_SILENT-success}" in "") v=none ;; "success warn") v=success-warn ;; *) v=success ;; esac
-                v="$(UI_DEFAULT="$v" ui_menu "Which messages arrive without a sound? Telegram and Discord deliver them silently, other channels as usual." \
+                v="$(UI_DEFAULT="$v" ui_menu "Which messages arrive without a sound? Telegram, Discord and ntfy deliver them silently, other channels as usual." \
                     success      "Successful runs (recommended)" \
                     success-warn "Successful runs and warnings" \
                     none         "None, every message rings")" || continue
@@ -722,8 +753,9 @@ menu_notify() {
             name)
                 v="$(ui_input "Server name in messages (empty — the hostname)" "${NOTIFY_NAME:-}")" || continue
                 backup_conf_once; conf_set NOTIFY_NAME "$(trim "$v")" --allow-empty; reload_conf ;;
-            email|slack|pagerduty|webhook|telegram)
+            email|slack|teams|pagerduty|ntfy|webhook|telegram|apprise)
                 menu_channel "$choice" ;;
+            monitor) menu_monitor ;;
             test)
                 out=""
                 notify_load
@@ -757,9 +789,12 @@ menu_channel() {
                 case "$ch" in
                     email)     email_wizard ;;
                     slack)     slack_wizard ;;
+                    teams)     teams_wizard ;;
                     pagerduty) pagerduty_wizard ;;
+                    ntfy)      ntfy_wizard ;;
                     webhook)   webhook_wizard ;;
                     telegram)  tg_wizard ;;
+                    apprise)   apprise_wizard ;;
                 esac || return 0
                 backup_conf_once; notify_save; reload_conf
                 if notify_configured "$ch"; then ui_msg "${label}: saved to ${CONFIG_FILE}."
@@ -774,6 +809,33 @@ menu_channel() {
                 notify_load; _nt_clear "$ch"
                 backup_conf_once; notify_save; reload_conf
                 return 0 ;;
+        esac
+    done
+}
+
+# Monitoring: a dead man's switch (Healthchecks.io, Uptime Kuma…) and node_exporter's textfile collector
+menu_monitor() {
+    local choice v var what
+    while true; do
+        UI_TITLE="Monitoring"
+        choice="$(ui_menu "A monitor that waits for a ping raises the alarm when a run never happened — the server off, cron broken — which no message can tell. Healthchecks.io and compatible, Uptime Kuma push monitors." \
+            backup  "The backup's ping URL: ${HEARTBEAT_URL:+$(s3_host "$HEARTBEAT_URL")}${HEARTBEAT_URL:-off}" \
+            verify  "The restore check's ping URL: ${VERIFY_HEARTBEAT_URL:+$(s3_host "$VERIFY_HEARTBEAT_URL")}${VERIFY_HEARTBEAT_URL:-off}" \
+            metrics "Prometheus metrics folder: ${METRICS_DIR:-off}")" || return 0
+        case "$choice" in
+            backup|verify)
+                var=HEARTBEAT_URL; what="backup"
+                [[ "$choice" == verify ]] && { var=VERIFY_HEARTBEAT_URL; what="restore check"; }
+                v="$(ui_input "The ${what}'s ping URL (empty — off). Make the check's period match the schedule, with an hour or two of grace." "${!var:-}")" || continue
+                v="$(trim "$v")"
+                if [[ -n "$v" && ! "$v" =~ ^https?:// ]]; then ui_msg "✗ The URL must start with http:// or https://"; continue; fi
+                backup_conf_once; conf_set "$var" "$v" --allow-empty; reload_conf ;;
+            metrics)
+                v="$(ui_input "The folder of node_exporter's --collector.textfile.directory (empty — no metrics)" "${METRICS_DIR:-}")" || continue
+                v="$(trim "$v")"
+                if [[ -n "$v" && ! -d "$v" ]]; then ui_msg "✗ No such folder: $v"; continue; fi
+                backup_conf_once; conf_set METRICS_DIR "$v" --allow-empty; reload_conf
+                [[ -n "$v" ]] && ui_msg "Written after every run: ${v%/}/docker_backup_s3.prom and docker_backup_s3_verify.prom." ;;
         esac
     done
 }

@@ -407,6 +407,12 @@ _aws_setup() {
     export AWS_DEFAULT_REGION="$region"   # required (s3_complete); no fallback to another storage's region
     addr="$(s3_var "$role" ADDRESSING_STYLE)"
     export AWS_S3_ADDRESSING_STYLE="${addr:-path}"
+    # A bucket with Object Lock refuses an upload without a checksum (Content-MD5 or x-amz-checksum-*):
+    # for such a storage (<ROLE>_S3_OBJECT_LOCK=true) aws sends its checksums, for the others — only where
+    # required (see the top of this file). The base is the value after backup.conf, taken on the first call.
+    [[ -z "${_AWS_CK_BASE+x}" ]] && _AWS_CK_BASE="$AWS_REQUEST_CHECKSUM_CALCULATION"
+    if [[ "$(s3_var "$role" OBJECT_LOCK)" == "true" ]]; then export AWS_REQUEST_CHECKSUM_CALCULATION=when_supported
+    else export AWS_REQUEST_CHECKSUM_CALCULATION="$_AWS_CK_BASE"; fi
 
     # The bandwidth limit is shared by all storages and set once, on the first write.
     # It goes into our AWS_CONFIG_FILE, which is recreated empty at startup:
@@ -643,10 +649,15 @@ release_lock() {
 #   level: error 🔴 — no backup or an incomplete one; warn 🟠 — the primary copy is there, but something is off;
 #          success 🟢 — everything went fine (only with NOTIFY_ON=always).
 #   Details are already HTML: escape substituted names with html_esc.
-#   Goes to every configured channel: email, Slack, PagerDuty, the webhook, Telegram. A channel that
-#   fails is logged and does not stop the others.
+#   Goes to every configured channel (NOTIFY_CHANNELS). A channel that fails is logged and does not stop
+#   the others.
 notify() {
     local level="$1" title="$2" body="${3:-}"
+
+    # The monitor's ping (HB_URL, set by the script) is how the run ended, not a message: whatever NOTIFY_ON says
+    if [[ -n "${HB_URL:-}" ]]; then
+        if [[ "$level" == "error" ]]; then heartbeat fail "$title" "$body"; else heartbeat success "$title" "$body"; fi
+    fi
 
     case "${NOTIFY_ON:-error}" in
         none)   return 0 ;;
@@ -665,7 +676,7 @@ notify() {
 }
 
 # NOTIFY_CHANNELS — every channel, in the order they are sent and listed
-NOTIFY_CHANNELS=(email slack pagerduty webhook telegram)
+NOTIFY_CHANNELS=(email slack teams pagerduty ntfy webhook telegram apprise)
 
 # notify_send <level> <title> <details, HTML> [channel] — build the message and send it, without the
 # NOTIFY_ON filter. With a channel (one of NOTIFY_CHANNELS) — only there; exit code 1 if it failed,
@@ -691,9 +702,12 @@ notify_send() {
         case "$ch" in
             email)     _notify_email "$subject" "$full" ;;
             slack)     _http_post "$SLACK_WEBHOOK_URL" "$(_slack_payload "$full")" "Slack" ;;
+            teams)     _http_post "$TEAMS_WEBHOOK_URL" "$(_teams_payload "$level" "Server ${name}: ${title}" "$plain_body")" "Teams" ;;
             pagerduty) _notify_pagerduty "$level" "$name" "$title" "$plain_body" ;;
+            ntfy)      _notify_ntfy "$level" "Server ${name}: ${title}" "$plain_body" ;;
             webhook)   _notify_webhook "$level" "$name" "$title" "$full" "$plain_body" ;;
             telegram)  _notify_telegram "$full" "$level" ;;
+            apprise)   _notify_apprise "$level" "$subject" "$plain_body" ;;
         esac && continue
         rc=1
         [[ -z "$only" ]] && log_warn "Could not send the notification to ${ch}: ${NOTIFY_ERR:-unknown error}"
@@ -703,7 +717,7 @@ notify_send() {
 
 # notify_silent <level> — this level arrives without a sound (NOTIFY_SILENT, a list of levels; unset —
 # "success"). A routine "backup done" in the same chat as the alerts should not ring like one of them.
-# Telegram and Discord can deliver silently; Slack, PagerDuty, a custom webhook and email have no such thing.
+# Telegram, Discord and ntfy (low priority) can deliver silently; the other channels have no such thing.
 notify_silent() {
     local l
     while IFS= read -r l; do
@@ -717,9 +731,12 @@ notify_configured() {
     case "$1" in
         email)     [[ -n "${EMAIL_TO:-}" && -n "${SMTP_HOST:-}" ]] ;;
         slack)     [[ -n "${SLACK_WEBHOOK_URL:-}" ]] ;;
+        teams)     [[ -n "${TEAMS_WEBHOOK_URL:-}" ]] ;;
         pagerduty) [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]] ;;
+        ntfy)      [[ -n "${NTFY_URL:-}" ]] ;;
         webhook)   [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]] ;;
         telegram)  [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]] ;;
+        apprise)   [[ -n "${APPRISE_URLS:-}" ]] ;;
         *)         return 1 ;;
     esac
 }
@@ -848,12 +865,61 @@ _slack_payload() {
     jq -n --arg t "$(_cut_lines "$t" 3900)" '{text: $t}'
 }
 
-# _http_post <url> <JSON> <who, for the error> — POST the JSON; 0 on a 2xx answer. The URL goes to curl in
-# a config, not as an argument: Slack and Discord put their secret in it. HTTP_BODY — the answer.
+# _teams_payload <level> <title> <details, plain> — an Adaptive Card for a Teams Workflows webhook ("Post to a
+# channel when a webhook request is received"). One text block a line: Teams joins single line breaks.
+_teams_payload() {
+    local color=Good
+    case "$1" in error) color=Attention ;; warn) color=Warning ;; esac
+    jq -n --arg c "$color" --arg t "$2" --arg d "$(_cut_lines "$3" 15000)" '{type: "message", attachments: [{
+        contentType: "application/vnd.microsoft.card.adaptive", content: {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", type: "AdaptiveCard", version: "1.4",
+            msteams: {width: "Full"},
+            body: ([{type: "TextBlock", text: $t, weight: "Bolder", size: "Medium", color: $c, wrap: true}]
+                + [$d | split("\n")[] | select(length > 0) | {type: "TextBlock", text: ., wrap: true, spacing: "None"}])}}]}'
+}
+
+# _notify_ntfy <level> <title> <details, plain> — ntfy (ntfy.sh or your own server). NTFY_URL is the topic's
+# URL; the message goes as JSON to the server's root, so a title in any language reaches the phone intact.
+# Priority: an error 4 (high), a warning or a success 3; a level in NOTIFY_SILENT 2 (low: no sound).
+# NTFY_TOKEN — an access token for a protected topic, sent in a header from a curl config, not on the command line.
+_notify_ntfy() {
+    local level="$1" url="${NTFY_URL%/}" prio=3 tag=green_circle payload hdr=""
+    case "$level" in error) prio=4; tag=red_circle ;; warn) tag=orange_circle ;; esac
+    notify_silent "$level" && prio=2
+    payload="$(jq -n --arg tp "${url##*/}" --arg t "$2" --arg m "$(_cut_lines "${3:-$2}" 3900)" --argjson p "$prio" \
+        --arg tag "$tag" '{topic: $tp, title: $t, message: $m, priority: $p, tags: [$tag]}')"
+    [[ -n "${NTFY_TOKEN:-}" ]] && hdr="$(printf 'header = "Authorization: Bearer %s"\n' "${NTFY_TOKEN//\"/}")"
+    _http_post "${url%/*}/" "$payload" "ntfy" "$hdr" && return 0
+    local why
+    why="$(printf '%s' "$HTTP_BODY" | jq -r '.error // empty' 2>/dev/null || true)"
+    [[ -n "$why" ]] && NOTIFY_ERR+=" (${why})"
+    return 1
+}
+
+# _notify_apprise <level> <title> <details, plain> — through the apprise CLI: one setting reaches the 100+
+# services it knows (Matrix, Gotify, Pushover, Signal, Opsgenie, …). APPRISE_URLS (space-separated) go to it
+# in a temporary config file, not as arguments: the URLs carry the services' tokens.
+_notify_apprise() {
+    local type=success cfg out rc=0 u
+    case "$1" in error) type=failure ;; warn) type=warning ;; esac
+    command -v apprise >/dev/null 2>&1 || { NOTIFY_ERR="apprise is not installed (pip install apprise)"; return 1; }
+    cfg="$(mktemp)" || { NOTIFY_ERR="mktemp failed"; return 1; }
+    chmod 600 "$cfg"
+    while IFS= read -r u; do [[ -n "$u" ]] && printf '%s\n' "$u"; done < <(split_words "$APPRISE_URLS") > "$cfg"
+    out="$(timeout 60 apprise -c "$cfg" -n "$type" -t "$2" -b "${3:-$2}" 2>&1)" || rc=$?
+    rm -f "$cfg"
+    (( rc == 0 )) && return 0
+    NOTIFY_ERR="$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | tail -n 1)"
+    NOTIFY_ERR="${NOTIFY_ERR:-apprise exit code $rc}"
+    return 1
+}
+
+# _http_post <url> <JSON> <who, for the error> [curl config lines] — POST the JSON; 0 on a 2xx answer. The URL
+# goes to curl in a config, not as an argument: Slack and Discord put their secret in it. HTTP_BODY — the answer.
 _http_post() {
     local url="$1" payload="$2" who="$3" resp code
     resp="$(printf '%s' "$payload" | curl -s -m 15 -w '\n%{http_code}' -X POST \
-        -H 'Content-Type: application/json' --data-binary @- -K <(curl_url_cfg "$url") 2>/dev/null)" || true
+        -H 'Content-Type: application/json' --data-binary @- -K <(curl_url_cfg "$url"; printf '%s' "${4:-}") 2>/dev/null)" || true
     code="${resp##*$'\n'}"
     HTTP_BODY=""; [[ "$resp" == *$'\n'* ]] && HTTP_BODY="${resp%$'\n'*}"
     [[ "$code" == 2?? ]] && return 0
@@ -1034,19 +1100,171 @@ notify_log_hint() {
 }
 
 # ==============================================================================
+# PROMETHEUS METRICS — files for node_exporter's textfile collector (METRICS_DIR)
+# ==============================================================================
+# metrics_write <file name> <prefix> <ok 0|1> <name value>… — <prefix>_last_run_timestamp_seconds,
+# _last_run_success, _last_success_timestamp_seconds (kept from the file when this run failed) and the given
+# gauges. Written to a temporary file and moved: the collector never reads half a file.
+metrics_write() {
+    local dir="${METRICS_DIR:-}" name="$1" p="$2" ok="$3" f now last_ok
+    shift 3
+    [[ -z "$dir" ]] && return 0
+    [[ -d "$dir" ]] || { log_warn "METRICS_DIR does not exist: $dir — no metrics written"; return 0; }
+    f="${dir%/}/${name}.prom"; now="$(date +%s)"
+    if [[ "$ok" == 1 ]]; then last_ok="$now"
+    else last_ok="$(awk -v m="${p}_last_success_timestamp_seconds" '$1 == m { print $2 }' "$f" 2>/dev/null | head -n 1)"; fi
+    {
+        printf '# HELP %s_last_run_timestamp_seconds When the last run ended.\n# TYPE %s_last_run_timestamp_seconds gauge\n%s_last_run_timestamp_seconds %s\n' "$p" "$p" "$p" "$now"
+        printf '# HELP %s_last_run_success 1 if the last run succeeded.\n# TYPE %s_last_run_success gauge\n%s_last_run_success %s\n' "$p" "$p" "$p" "$ok"
+        [[ -n "$last_ok" ]] && printf '# HELP %s_last_success_timestamp_seconds When a run last succeeded.\n# TYPE %s_last_success_timestamp_seconds gauge\n%s_last_success_timestamp_seconds %s\n' "$p" "$p" "$p" "$last_ok"
+        while (( $# >= 2 )); do
+            printf '# TYPE %s_%s gauge\n%s_%s %s\n' "$p" "$1" "$p" "$1" "$2"
+            shift 2
+        done
+    } > "${f}.$$" && chmod 644 "${f}.$$" && mv "${f}.$$" "$f" \
+        || { rm -f "${f}.$$"; log_warn "Could not write the metrics to $f"; }
+    return 0
+}
+
+# ==============================================================================
+# A MONITOR'S PING (dead man's switch): Healthchecks.io and compatible, Uptime Kuma
+# ==============================================================================
+# A notification can't say that a run never happened: the server was off, cron broken, the disk full before
+# the start. A monitor that waits for a ping can: no ping in time — it raises the alarm itself.
+# HB_URL — the URL for this script (docker-backup.sh: HEARTBEAT_URL, verify-restore.sh: VERIFY_HEARTBEAT_URL);
+# the script leaves it empty for a dry run and for a run of some projects only.
+
+# heartbeat_format — healthchecks (/start, the URL itself, /fail; Healthchecks.io, Better Stack, Cronitor's
+# healthchecks-style URLs) or kuma (Uptime Kuma push: ?status=up|down&msg=…). HEARTBEAT_FORMAT, or by the URL.
+heartbeat_format() {
+    local f="${HEARTBEAT_FORMAT:-auto}"
+    if [[ "$f" == "auto" ]]; then
+        case "${HB_URL:-}" in */api/push/*) f=kuma ;; *) f=healthchecks ;; esac
+    fi
+    printf '%s' "$f"
+}
+
+# heartbeat <start|success|fail> [title] [details, HTML] — one ping; a failure is logged, never fatal.
+# The URL holds the check's secret: it goes to curl in a config, not as an argument.
+heartbeat() {
+    local what="$1" title="${2:-}" body="${3:-}" url="${HB_URL:-}" base query="" text code
+    [[ -z "$url" ]] && return 0
+    text="Server ${NOTIFY_NAME:-$(uname -n)}: ${title:-$what}"
+    [[ -n "$body" ]] && text+=$'\n'"$(html_plain "$body")"
+    case "$(heartbeat_format)" in
+        healthchecks)
+            base="${url%%\?*}"; [[ "$url" == *\?* ]] && query="?${url#*\?}"
+            base="${base%/}"
+            # One run id for the start and the end: the monitor pairs them and shows how long the run took
+            [[ -z "${HB_RID:-}" ]] && HB_RID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+            if [[ -n "${HB_RID:-}" ]]; then
+                if [[ -n "$query" ]]; then query+="&rid=${HB_RID}"; else query="?rid=${HB_RID}"; fi
+            fi
+            case "$what" in
+                start)   [[ "${HEARTBEAT_START:-true}" == "true" ]] || return 0
+                         url="${base}/start${query}" ;;
+                success) url="${base}${query}" ;;
+                fail)    url="${base}/fail${query}" ;;
+            esac
+            code="$(printf '%s' "$text" | head -c 10000 | curl -s -m 10 --retry 2 -o /dev/null -w '%{http_code}' \
+                -X POST --data-binary @- -K <(curl_url_cfg "$url") 2>/dev/null)" || true ;;
+        kuma)
+            [[ "$what" == "start" ]] && return 0   # a push monitor has no "started"
+            base="${url%%\?*}"
+            code="$(curl -s -m 10 --retry 2 -o /dev/null -w '%{http_code}' -G \
+                --data-urlencode "status=$([[ "$what" == fail ]] && echo down || echo up)" \
+                --data-urlencode "msg=$(printf '%s' "${text%%$'\n'*}" | head -c 250)" \
+                -K <(curl_url_cfg "$base") 2>/dev/null)" || true ;;
+        *)
+            log_warn "HEARTBEAT_FORMAT must be auto, healthchecks or kuma — no ping sent"; return 0 ;;
+    esac
+    [[ "$code" == 2?? ]] && return 0
+    log_warn "Could not ping the monitor (${what}): $([[ -z "$code" || "$code" == 000 ]] && echo "no response" || echo "HTTP $code")"
+    return 0
+}
+
+# ==============================================================================
 # GPG ENCRYPTION
 # ==============================================================================
-encrypt_file() {
-    local src="$1"
-    local dst="${src}.gpg"
-    [[ -f "$GPG_PASSPHRASE_FILE" ]] || fail "Passphrase file not found: $GPG_PASSPHRASE_FILE"
-    [[ -r "$GPG_PASSPHRASE_FILE" ]] || fail "No read permission: $GPG_PASSPHRASE_FILE"
+# Two ways, one file extension (.gpg):
+#   a passphrase (GPG_PASSPHRASE_FILE) — AES256; whoever can read this host's passphrase can read every backup;
+#   public keys (GPG_RECIPIENT_FILE: one or more key files, space-separated) — this host can encrypt but not
+#     decrypt: the secret key lives elsewhere (a restore host, a safe). A host that is broken into gives away
+#     neither the old backups nor the means to read them.
+# Decryption reads either kind: a passphrase archive with GPG_PASSPHRASE_FILE, a public-key one with the secret
+# key — GPG_SECRET_KEY_FILE (imported into a throwaway keyring for each call) or root's own keyring; a passphrase
+# on that secret key is read from GPG_PASSPHRASE_FILE as well.
 
-    gpg --batch --yes --quiet \
-        --passphrase-file "$GPG_PASSPHRASE_FILE" \
-        --symmetric --cipher-algo AES256 \
-        -o "$dst" "$src" \
-        || fail "Encryption failed: $src"
+# gpg_pubkey — encryption goes to public keys
+gpg_pubkey() { [[ -n "${GPG_RECIPIENT_FILE:-}" ]]; }
+
+# gpg_enc_check — everything needed to encrypt is there; the reason on stdout and 1 otherwise
+gpg_enc_check() {
+    local f
+    if gpg_pubkey; then
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            [[ -r "$f" ]] || { printf 'Cannot read the public key file %s' "$f"; return 1; }
+        done < <(split_words "$GPG_RECIPIENT_FILE")
+    else
+        [[ -f "${GPG_PASSPHRASE_FILE:-}" ]] || { printf 'Passphrase file not found: %s' "${GPG_PASSPHRASE_FILE:-(not set)}"; return 1; }
+        [[ -r "$GPG_PASSPHRASE_FILE" ]] || { printf 'No read permission: %s' "$GPG_PASSPHRASE_FILE"; return 1; }
+    fi
+    return 0
+}
+
+# gpg_can_decrypt — this host can decrypt a public-key archive (a symmetric one: the passphrase file is there)
+gpg_can_decrypt() {
+    if [[ "${1:-pubkey}" == symmetric ]]; then [[ -r "${GPG_PASSPHRASE_FILE:-}" ]]; return; fi
+    [[ -n "${GPG_SECRET_KEY_FILE:-}" ]] && { [[ -r "$GPG_SECRET_KEY_FILE" ]]; return; }
+    gpg --batch --list-secret-keys --with-colons 2>/dev/null | grep -q '^sec'
+}
+
+# gpg_enc <gpg output and input: -o dst src | -o - (from stdin)> — encrypt, by GPG_RECIPIENT_FILE or the passphrase
+gpg_enc() {
+    local -a ga=(--batch --yes --quiet)
+    local f
+    if gpg_pubkey; then
+        while IFS= read -r f; do [[ -n "$f" ]] && ga+=(--recipient-file "$f"); done < <(split_words "$GPG_RECIPIENT_FILE")
+        ga+=(--encrypt)
+    else
+        ga+=(--passphrase-file "$GPG_PASSPHRASE_FILE" --symmetric --cipher-algo AES256)
+    fi
+    gpg "${ga[@]}" "$@"
+}
+
+# gpg_dec <gpg output and input: -o dst src | (stdin to stdout)> — decrypt either kind (see above)
+gpg_dec() {
+    local -a ga=(--batch --yes --quiet --pinentry-mode loopback)
+    [[ -r "${GPG_PASSPHRASE_FILE:-}" ]] && ga+=(--passphrase-file "$GPG_PASSPHRASE_FILE")
+    if [[ -z "${GPG_SECRET_KEY_FILE:-}" ]]; then
+        gpg "${ga[@]}" --decrypt "$@"
+        return
+    fi
+    # A keyring of its own, gone with the call: the secret key is not left in root's keyring
+    (
+        h="$(mktemp -d "${TMPDIR:-/tmp}/dbgpg.XXXXXX")" || exit 2
+        trap 'gpgconf --homedir "$h" --kill gpg-agent >/dev/null 2>&1; rm -rf "$h"' EXIT
+        gpg --homedir "$h" "${ga[@]}" --import "$GPG_SECRET_KEY_FILE" >/dev/null 2>&1 \
+            || { echo "Cannot import the secret key from $GPG_SECRET_KEY_FILE" >&2; exit 2; }
+        gpg --homedir "$h" "${ga[@]}" --decrypt "$@"
+    )
+}
+
+# gpg_kind <file.gpg> — symmetric or pubkey, by the first packet (no key needed). Only the file's start goes
+# to gpg: with the key at hand, --list-packets would decrypt the whole archive.
+gpg_kind() {
+    local p
+    p="$(head -c 65536 "$1" 2>/dev/null | gpg --batch --list-packets --pinentry-mode cancel 2>/dev/null \
+        | grep -m 1 -oE '^:(symkey|pubkey) enc packet' || true)"
+    case "$p" in *symkey*) echo symmetric ;; *pubkey*) echo pubkey ;; *) echo unknown ;; esac
+}
+
+encrypt_file() {
+    local src="$1" why
+    local dst="${src}.gpg"
+    why="$(gpg_enc_check)" || fail "$why"
+    gpg_enc -o "$dst" "$src" || fail "Encryption failed: $src"
     rm -f "$src"
     echo "$dst"
 }
@@ -1054,12 +1272,7 @@ encrypt_file() {
 decrypt_file() {
     local src="$1"
     local dst="${src%.gpg}"
-    [[ -f "$GPG_PASSPHRASE_FILE" ]] || fail "Passphrase file not found: $GPG_PASSPHRASE_FILE"
-
-    gpg --batch --yes --quiet \
-        --passphrase-file "$GPG_PASSPHRASE_FILE" \
-        --decrypt -o "$dst" "$src" \
-        || fail "Decryption failed: $src"
+    gpg_dec -o "$dst" "$src" || fail "Decryption failed: $src"
     echo "$dst"
 }
 
@@ -1725,7 +1938,7 @@ _remote_db_run() {
 _rdb_compress() { if [[ "$RDB_GZIP" == true ]]; then gzip -c "-${COMPRESS_LEVEL:-6}"; else cat; fi; }
 _rdb_encrypt() {
     if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
-        gpg --batch --yes --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" --symmetric --cipher-algo AES256 -o -
+        gpg_enc -o -
     else
         cat
     fi

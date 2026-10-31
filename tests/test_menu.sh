@@ -43,7 +43,8 @@ run_menu() {
 conf_val() { bash -c 'source "$1" 2>/dev/null; printf "%s" "${!2}"' _ "$CONF" "$1"; }
 
 section "email: set up, test"
-# notifications: 1 when, 2 name, 3 email, 4 slack, 5 pagerduty, 6 webhook, 7 telegram, 8 test all, 9 quiet
+# notifications: 1 when, 2 name, 3 email, 4 slack, 5 teams, 6 pagerduty, 7 ntfy, 8 webhook, 9 telegram,
+#   10 apprise, 11 test all, 12 quiet, 13 monitoring
 # main: 11 notifications → 3 email → wizard (to, server, 1 starttls, port default, login, password, sender default)
 #   → 2 send a test → q back; 1 when → 2 every run; q; 12 exit
 run_menu 11 3 ops@example.com smtp.example.com 1 "" bk@example.com 'pa"ss$1' "" 2 q 1 2 q 12
@@ -63,8 +64,8 @@ check "smtp was called" grep -q '^smtp://smtp.example.com:587$' "$MOCK_DIR/calls
 
 section "email off, webhook on"
 : > "$MOCK_DIR/calls"
-# 11 → 3 email (configured) → 3 off → y; 6 webhook → URL → 1 auto; q (webhook menu) q (notifications) 12
-run_menu 11 3 3 y 6 https://discord.com/api/webhooks/1/x 1 q q 12
+# 11 → 3 email (configured) → 3 off → y; 8 webhook → URL → 1 auto; q (webhook menu) q (notifications) 12
+run_menu 11 3 3 y 8 https://discord.com/api/webhooks/1/x 1 q q 12
 check "email is off" test -z "$(conf_val EMAIL_TO)$(conf_val SMTP_HOST)$(conf_val SMTP_PASSWORD)"
 check "the webhook is saved" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 check "the test went as Discord content" test "$(jq -r '.content|split("\n")[0]' "$MOCK_DIR/body")" == "🟢 **Server $(uname -n): test message**"
@@ -73,8 +74,8 @@ check "the list shows the webhook" grep -q 'Webhook — discord.com (discord)' "
 
 section "telegram: a failed test, not kept"
 export MOCK_TG=fail
-# 11 → 7 telegram → token, chat → ✗ → enter again? n → keep anyway? n → off; q; 12
-run_menu 11 7 1:abc 42 n n q 12
+# 11 → 9 telegram → token, chat → ✗ → enter again? n → keep anyway? n → off; q; 12
+run_menu 11 9 1:abc 42 n n q 12
 unset MOCK_TG
 check "Telegram's reason is shown" grep -q 'Bad Request: chat not found' "$W/out"
 check "with a hint" grep -q 'nobody has started the bot' "$W/out"
@@ -82,9 +83,9 @@ check "the settings are not kept" test -z "$(conf_val TELEGRAM_BOT_TOKEN)"
 check "the webhook is untouched" test "$(conf_val NOTIFY_WEBHOOK_URL)" == https://discord.com/api/webhooks/1/x
 
 section "server name and test-all"
-# 11 → 2 name → web-9; 8 test all; q; 12
+# 11 → 2 name → web-9; 11 test all; q; 12
 : > "$MOCK_DIR/calls"
-run_menu 11 2 web-9 8 q 12
+run_menu 11 2 web-9 11 q 12
 check "NOTIFY_NAME saved" test "$(conf_val NOTIFY_NAME)" == web-9
 check "test-all reports the webhook" grep -q '✓ webhook: sent' "$W/out"
 check "the new name is in the message" grep -q 'Server web-9: test message' <<< "$(jq -r .content "$MOCK_DIR/body")"
@@ -100,9 +101,9 @@ check "the list shows Slack" grep -q 'Slack — incoming webhook' "$W/out"
 
 section "pagerduty"
 PDKEY="0123456789abcdef0123456789abcdef"
-# 11 → 5 pagerduty → key → 2 eu → send a test incident? y → q; q; 12
+# 11 → 6 pagerduty → key → 2 eu → send a test incident? y → q; q; 12
 : > "$MOCK_DIR/calls"
-run_menu 11 5 "$PDKEY" 2 y q q 12
+run_menu 11 6 "$PDKEY" 2 y q q 12
 check "the key and the region saved" test "$(conf_val PAGERDUTY_ROUTING_KEY):$(conf_val PAGERDUTY_REGION)" == "$PDKEY:eu"
 check "a test incident opened and resolved, in the EU region" \
     test "$(grep -c '^https://events.eu.pagerduty.com/v2/enqueue$' "$MOCK_DIR/calls")" == 2
@@ -111,9 +112,29 @@ check "the last event resolves the test incident" \
 check "the list shows the key's end and the region" grep -q 'PagerDuty — integration …cdef, eu' "$W/out"
 # test all: PagerDuty asks first; n — it is left out
 : > "$MOCK_DIR/calls"
-run_menu 11 8 n q 12
+run_menu 11 11 n q 12
 check "test-all skips PagerDuty when told so" bash -c '! grep -q pagerduty "$1"' _ "$MOCK_DIR/calls"
 check "and tests the others" grep -q '✓ slack: sent' "$W/out"
+
+section "teams, ntfy"
+# 11 → 5 teams → a URL that is not https → again → the right one → q; 7 ntfy → topic URL, token → q; q; 12
+: > "$MOCK_DIR/calls"
+run_menu 11 5 http://x https://prod.example.test/workflows/abc q 7 https://ntfy.example.test/backups-7f3 tk_123 q q 12
+check "TEAMS_WEBHOOK_URL saved" test "$(conf_val TEAMS_WEBHOOK_URL)" == https://prod.example.test/workflows/abc
+check "a URL that is not https is refused" grep -q 'must start with https://' "$W/out"
+check "ntfy: the topic and the token saved" test "$(conf_val NTFY_URL):$(conf_val NTFY_TOKEN)" == https://ntfy.example.test/backups-7f3:tk_123
+check "ntfy's test went to the server's root" grep -q '^https://ntfy.example.test/$' "$MOCK_DIR/calls"
+check "as JSON with the topic" test "$(jq -r .topic "$MOCK_DIR/body")" == backups-7f3
+check "the list shows both" bash -c 'grep -q "Microsoft Teams — workflow on prod.example.test" "$1" && grep -q "ntfy — topic backups-7f3 on ntfy.example.test" "$1"' _ "$W/out"
+
+section "monitoring"
+mkdir -p "$W/prom"
+# 11 → 13 monitoring → 1 backup ping → URL; 3 metrics → a folder that is not there → 3 → the right one; q; q; 12
+run_menu 11 13 1 https://hc.example.test/ping/abc 3 /nonexistent/x 3 "$W/prom" q q 12
+check "HEARTBEAT_URL saved" test "$(conf_val HEARTBEAT_URL)" == https://hc.example.test/ping/abc
+check "a missing folder is refused" grep -q 'No such folder: /nonexistent/x' "$W/out"
+check "METRICS_DIR saved" test "$(conf_val METRICS_DIR)" == "$W/prom"
+check "the notifications list sums it up" grep -q 'Monitoring (a monitor.s ping, Prometheus): backup ping, metrics' "$W/out"
 
 section "projects: what to leave out"
 # docker and aws stubs: two compose projects on "this host"

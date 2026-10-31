@@ -424,7 +424,7 @@ for role in "${S3_ROLES[@]:1}"; do
 done
 printf "  %-22s %s\n" "Bandwidth limit:" "${S3_BANDWIDTH_LIMIT:-no limit}"
 printf "  %-22s %s\n" "Parallel jobs:" "${PARALLEL_JOBS:-1}"
-printf "  %-22s %s\n" "GPG encryption:" "$([[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && echo "${C_GREEN}ON${C_RESET}" || echo "${C_DIM}OFF${C_RESET}")"
+printf "  %-22s %s\n" "GPG encryption:" "$([[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && echo "${C_GREEN}ON${C_RESET} ($(gpg_pubkey && echo "public key" || echo passphrase))" || echo "${C_DIM}OFF${C_RESET}")"
 printf "  %-22s %s\n" "DB auto-dump:" "$([[ "${AUTO_DUMP_DATABASES:-true}" == "true" ]] && echo "${C_GREEN}ON${C_RESET}" || echo "${C_DIM}OFF${C_RESET}")"
 printf "  %-22s %s\n" "Notifications:" "${NOTIFY_ON:-error}"
 
@@ -432,10 +432,18 @@ printf "  %-22s %s\n" "Notifications:" "${NOTIFY_ON:-error}"
 notif_setup=""
 notify_configured email     && notif_setup+=" Email"
 notify_configured slack     && notif_setup+=" Slack"
+notify_configured teams     && notif_setup+=" Teams"
 notify_configured pagerduty && notif_setup+=" PagerDuty"
+notify_configured ntfy      && notif_setup+=" ntfy"
 notify_configured webhook   && notif_setup+=" Webhook($(webhook_format))"
 notify_configured telegram  && notif_setup+=" Telegram"
+notify_configured apprise   && notif_setup+=" Apprise"
 [[ -n "$notif_setup" ]] && printf "  %-22s %s\n" "  Channels:" "$notif_setup"
+mon_setup=""
+[[ -n "${HEARTBEAT_URL:-}" ]] && mon_setup+=" ping($(s3_host "$HEARTBEAT_URL"))"
+[[ -n "${VERIFY_HEARTBEAT_URL:-}" ]] && mon_setup+=" verify-ping($(s3_host "$VERIFY_HEARTBEAT_URL"))"
+[[ -n "${METRICS_DIR:-}" ]] && mon_setup+=" metrics(${METRICS_DIR})"
+[[ -n "$mon_setup" ]] && printf "  %-22s %s\n" "Monitoring:" "${mon_setup# }"
 
 echo
 

@@ -48,6 +48,12 @@ PRIMARY_S3_RESTORE_SECRET_KEY=""
 # If the bucket is unreachable with one style — try the other.
 PRIMARY_S3_ADDRESSING_STYLE="path"
 
+# The bucket has Object Lock with a default retention (ransomware protection: a key that leaks from this
+# host cannot delete a locked backup). Such a bucket refuses uploads without a checksum: "true" makes aws
+# send them for this storage. validate-config.sh checks the lock, versioning and the lifecycle rule;
+# README: Object Lock.
+PRIMARY_S3_OBJECT_LOCK="false"
+
 # --- Extra aws CLI options ---
 # CERTIFICATE_VERIFY_FAILED with a valid certificate (curl to the endpoint works) — aws has its own
 # outdated CA bundle (snap). Give it the system one: "--ca-bundle /etc/ssl/certs/ca-certificates.crt".
@@ -126,6 +132,9 @@ SECONDARY_S3_BUCKET=""
 # Addressing style: path | virtual. If the bucket is unreachable with one style — try the other.
 SECONDARY_S3_ADDRESSING_STYLE="path"
 
+# Object Lock on this bucket (like PRIMARY_S3_OBJECT_LOCK).
+SECONDARY_S3_OBJECT_LOCK="false"
+
 # Extra aws CLI options (like PRIMARY_S3_OPTS_EXTRA). A certificate verification error with a valid one —
 # "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
 SECONDARY_S3_OPTS_EXTRA=""
@@ -164,6 +173,9 @@ TERTIARY_S3_BUCKET=""
 
 # Addressing style: path | virtual. If the bucket is unreachable with one style — try the other.
 TERTIARY_S3_ADDRESSING_STYLE="path"
+
+# Object Lock on this bucket (like PRIMARY_S3_OBJECT_LOCK).
+TERTIARY_S3_OBJECT_LOCK="false"
 
 # Extra aws CLI options (like PRIMARY_S3_OPTS_EXTRA). A certificate verification error with a valid one —
 # "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
@@ -358,6 +370,20 @@ ENCRYPT_BACKUPS="false"
 # (bitwarden, 1password, paper in a safe) — without it a restore is impossible.
 GPG_PASSPHRASE_FILE="/root/.docker-backup-passphrase"
 
+# --- Or public keys: this host encrypts, but cannot decrypt ---
+# With a passphrase, whoever breaks into this host reads every backup. With a public key the secret key lives
+# elsewhere (a restore host, a safe), and the backups stay closed. One or more public key files, space-separated
+# (each holder can decrypt). Takes the place of the passphrase for new backups; old ones still need it.
+#   gpg --quick-gen-key "backups@example.com" rsa4096 encr 5y      (on your own machine)
+#   gpg --export --armor backups@example.com > /root/backup-key.pub.asc   (copy this file to the server)
+#   gpg --export-secret-keys --armor backups@example.com > backup-key.sec.asc   (keep it OFF the server)
+GPG_RECIPIENT_FILE=""
+
+# Decrypting a public-key backup (restore, the restore check): the secret key file — on a restore host. Empty —
+# root's own keyring. A passphrase on that key is read from GPG_PASSPHRASE_FILE. Without the secret key the
+# restore check verifies such archives by sha256 only, and says so.
+GPG_SECRET_KEY_FILE=""
+
 # ==============================================================================
 # NOTIFICATIONS
 # ==============================================================================
@@ -370,7 +396,7 @@ NOTIFY_ON="error"
 
 # Any channels can be on at once; each one below is off while its settings are empty.
 
-# Levels that arrive WITHOUT A SOUND (Telegram and Discord; other channels have no such thing):
+# Levels that arrive WITHOUT A SOUND (Telegram, Discord, ntfy; other channels have no such thing):
 # space-separated, from success / warn / error. Empty — every message rings.
 # The default keeps a routine "backup done" quiet next to the alerts in the same chat.
 NOTIFY_SILENT="success"
@@ -393,12 +419,24 @@ SMTP_FROM=""                # the sender address; empty — SMTP_USER
 # An incoming webhook: api.slack.com/apps → Create New App → Incoming Webhooks → Add New Webhook.
 SLACK_WEBHOOK_URL=""        # https://hooks.slack.com/services/…
 
+# --- Microsoft Teams ---
+# A workflow: in the channel ⋯ → Workflows → "Post to a channel when a webhook request is received" → copy
+# the URL. The message is an Adaptive Card, red / orange / green by level.
+TEAMS_WEBHOOK_URL=""
+
 # --- PagerDuty (Events API v2) ---
 # A failed or incomplete run opens an incident, the next good run resolves it — whatever NOTIFY_ON says.
 # One incident per server and job (backup, restore check, sync), not a new one every night.
 # The key: Services → your service → Integrations → Add an integration → Events API V2 → Integration Key.
 PAGERDUTY_ROUTING_KEY=""
 PAGERDUTY_REGION="us"       # us, or eu for an account at <name>.eu.pagerduty.com
+
+# --- ntfy (push to a phone) ---
+# The topic's URL on ntfy.sh or your own server. On ntfy.sh anyone who knows a topic's name can read it:
+# pick a long random name, or a protected topic and its access token. Errors come at high priority,
+# levels in NOTIFY_SILENT at low (no sound).
+NTFY_URL=""                 # https://ntfy.sh/<topic>
+NTFY_TOKEN=""               # tk_… — for a protected topic
 
 # --- Webhook (Discord, Mattermost, Rocket.Chat, your own receiver) ---
 # The URL receives a POST with JSON. Its shape (NOTIFY_WEBHOOK_FORMAT):
@@ -413,6 +451,49 @@ NOTIFY_WEBHOOK_FORMAT="auto"
 # Get the token via @BotFather, the chat_id via @userinfobot or @getmyid_bot
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
+
+# --- Apprise (Matrix, Gotify, Pushover, Signal, Opsgenie and 100+ more) ---
+# Needs the apprise CLI on this host (pip install apprise). Space-separated Apprise URLs:
+# github.com/caronc/apprise/wiki — e.g. "matrixs://user:pass@matrix.example.org/#room pover://user@token"
+APPRISE_URLS=""
+
+# ==============================================================================
+# THE RESTORE CHECK (verify-restore.sh; on a schedule — setup-cron.sh -v)
+# ==============================================================================
+
+# "true" — the deep check by default: each database dump is also loaded into a throwaway container of its own
+# database and version (no network, removed after), and its tables counted against the dump's. A whole gzip
+# can still be a dump that does not load; this catches it. Needs the database images (pulled the first time)
+# and the disk and memory for the largest database. --standard / --quick on the command line override it.
+VERIFY_DEEP="false"
+VERIFY_DEEP_TIMEOUT="3600"  # seconds a dump may take to load
+# The image for a kind of dump; empty — by the dump's own version (postgres:16-alpine, mariadb:11.4, mysql:8.0,
+# timescale/timescaledb:latest-pg17 when the dump uses TimescaleDB, mongo:8, redis:8-alpine, valkey/valkey:9-alpine).
+# E.g. for PostGIS: VERIFY_DEEP_IMAGE_POSTGRES="postgis/postgis:17-3.5-alpine"
+VERIFY_DEEP_IMAGE_POSTGRES=""
+
+# How long a check waits for a backup under way to finish before it checks the copies already there (minutes)
+VERIFY_WAIT_MINUTES="180"
+
+# ==============================================================================
+# MONITORING
+# ==============================================================================
+
+# --- A monitor's ping (dead man's switch) ---
+# A notification can't say that a run never happened (the server off, cron broken). A monitor that waits
+# for a ping can: no ping in time — it raises the alarm. Whole runs only (not -p, not --dry-run).
+#   Healthchecks.io and compatible (Better Stack, a self-hosted Healthchecks): <url>/start, <url>, <url>/fail
+#   Uptime Kuma push monitor (…/api/push/<token>): ?status=up|down&msg=…
+HEARTBEAT_URL=""            # for the backup
+VERIFY_HEARTBEAT_URL=""     # for the scheduled restore check — a check of its own, with its own period
+HEARTBEAT_FORMAT="auto"     # auto (Kuma by /api/push/, otherwise healthchecks), healthchecks, kuma
+HEARTBEAT_START="true"      # the /start ping (false for a service that has no such path)
+
+# --- Prometheus metrics ---
+# Files for node_exporter's textfile collector: docker_backup_s3.prom and docker_backup_s3_verify.prom with
+# *_last_run_timestamp_seconds, *_last_run_success, *_last_success_timestamp_seconds, *_projects,
+# *_projects_failed, *_duration_seconds (and docker_backup_s3_uploaded_bytes). Empty — none.
+METRICS_DIR=""              # e.g. /var/lib/node_exporter/textfile_collector
 
 # ==============================================================================
 # COLORED OUTPUT

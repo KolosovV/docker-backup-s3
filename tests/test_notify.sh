@@ -262,6 +262,123 @@ check "the config check is a change event (it pages no one)" \
     bash -c 'grep -q " https://events.pagerduty.com/v2/change/enqueue$" "$1" && [[ "$(jq -c "[has(\"event_action\"), .payload.source]" "$2")" == "[false,\"web-1\"]" ]]' _ "$MOCK_DIR/calls" "$MOCK_DIR/body.1"
 PAGERDUTY_ROUTING_KEY=""
 
+section "teams"
+TEAMS_WEBHOOK_URL="https://prod.example.test/workflows/SECRET"
+reset; notify error "backup with errors" "$BODY"
+t="$MOCK_DIR/body.1"
+check "an Adaptive Card in a message" test "$(jq -r '[.type, .attachments[0].contentType, .attachments[0].content.type] | join(" ")' "$t")" \
+    == "message application/vnd.microsoft.card.adaptive AdaptiveCard"
+check "the title in red (Attention)" test "$(jq -r '.attachments[0].content.body[0] | [.text, .color] | join("|")' "$t")" == "Server web-1: backup with errors|Attention"
+check "one plain text block a line" test "$(jq -r '[.attachments[0].content.body[1:][].text] | join("|")' "$t")" == "Saved nowhere: app&db.|Details: tail -n 80 /var/log/docker-backup.log"
+check "the URL is not on curl's command line" bash -c '! grep -q SECRET "$1"' _ "$MOCK_DIR/args.1"
+reset; notify warn "x" "y"
+check "a warning is orange (Warning)" test "$(jq -r '.attachments[0].content.body[0].color' "$MOCK_DIR/body.1")" == Warning
+TEAMS_WEBHOOK_URL=""
+
+section "ntfy"
+NTFY_URL="https://ntfy.example.test/backups-7f3/"
+reset; notify error "backup with errors" "$BODY"
+n1="$MOCK_DIR/body.1"
+check "to the server's root" grep -q '^1 https://ntfy.example.test/$' "$MOCK_DIR/calls"
+check "JSON: topic, title, details, high priority, a red tag" \
+    test "$(jq -c '[.topic, .title, .priority, .tags[0]]' "$n1")" == '["backups-7f3","Server web-1: backup with errors",4,"red_circle"]'
+check "the details in plain text" test "$(jq -r .message "$n1")" == "Saved nowhere: app&db."$'\n'"Details: tail -n 80 /var/log/docker-backup.log"
+check "no token — no Authorization header" bash -c '! grep -q Authorization "$1"' _ "$MOCK_DIR/cfg.1"
+NOTIFY_ON=always NTFY_TOKEN="tk_secret"; reset; notify success "backup done" "x"
+check "a silent level goes at low priority" test "$(jq -r '[.priority, .tags[0]] | join(" ")' "$MOCK_DIR/body.1")" == "2 green_circle"
+check "the token in a header, in the config curl reads" grep -qx 'header = "Authorization: Bearer tk_secret"' "$MOCK_DIR/cfg.1"
+check "and not on the command line" bash -c '! grep -q tk_secret "$1"' _ "$MOCK_DIR/args.1"
+NOTIFY_ON=error; NTFY_TOKEN=""
+reset; notify_test ntfy >/dev/null 2>&1
+check "the test message rings (priority 3)" test "$(jq -r .priority "$MOCK_DIR/body.1")" == 3
+NTFY_URL=""
+
+section "apprise"
+cat > "$W/bin/apprise" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$MOCK_DIR/apprise.args"
+prev=""; for a in "$@"; do [[ "$prev" == -c ]] && cp "$a" "$MOCK_DIR/apprise.cfg"; prev="$a"; done
+[[ "${MOCK_APPRISE:-ok}" == ok ]] && exit 0
+echo "ERROR - Unsupported URL: bad://x" >&2; exit 1
+EOF
+chmod +x "$W/bin/apprise"
+APPRISE_URLS="pover://user@SECRET  matrixs://u:p@m.example.test/#room"
+reset; notify error "backup with errors" "$BODY"
+check "the type is failure, the title and the plain details" \
+    bash -c 'a="$(tr "\n" "|" < "$1")"; [[ "$a" == *"-n|failure|"* && "$a" == *"-t|🔴 Server web-1: backup with errors|"* && "$a" == *"Saved nowhere: app&db."* ]]' _ "$MOCK_DIR/apprise.args"
+check "the URLs in a config, one a line" test "$(cat "$MOCK_DIR/apprise.cfg")" == "pover://user@SECRET"$'\n'"matrixs://u:p@m.example.test/#room"
+check "and not on its command line" bash -c '! grep -q SECRET "$1"' _ "$MOCK_DIR/apprise.args"
+reset; notify warn "x" "y"
+check "a warning is warning" grep -qx warning "$MOCK_DIR/apprise.args"
+export MOCK_APPRISE=bad; reset; notify error "x" "y" >>"$LOG_FILE" 2>&1; unset MOCK_APPRISE
+check "a failure is logged with apprise's words" grep -q 'to apprise: ERROR - Unsupported URL: bad://x' "$LOG_FILE"
+rm -f "$W/bin/apprise"
+reset; notify_test apprise 2>"$W/e" >/dev/null
+check "no apprise on the host — said so" grep -q 'apprise is not installed' "$W/e"
+APPRISE_URLS=""
+
+section "heartbeat: healthchecks"
+HB_URL="https://hc.example.test/ping/SECRET"
+reset; heartbeat start; rid="$HB_RID"
+check "a run id is made" test -n "$rid"
+check "start → /start with the run id" grep -q "^1 https://hc.example.test/ping/SECRET/start?rid=${rid}\$" "$MOCK_DIR/calls"
+check "the URL is not on curl's command line" bash -c '! grep -q SECRET "$1"' _ "$MOCK_DIR/args.1"
+reset; notify error "backup with errors" "$BODY" >/dev/null 2>&1
+check "an error notification pings /fail, the same run id" grep -q "^1 https://hc.example.test/ping/SECRET/fail?rid=${rid}\$" "$MOCK_DIR/calls"
+check "with the message as the body, in plain text" test "$(head -n 1 "$MOCK_DIR/body.1")" == "Server web-1: backup with errors"
+reset; NOTIFY_ON=none notify success "backup done" "x"
+check "success pings the URL itself, whatever NOTIFY_ON says" grep -q "^1 https://hc.example.test/ping/SECRET?rid=${rid}\$" "$MOCK_DIR/calls"
+check "and only that" test "$(calls)" == 1
+reset; NOTIFY_ON=none notify warn "check the settings" "x"
+check "a warning counts as a run that happened" grep -q "SECRET?rid=" "$MOCK_DIR/calls"
+HB_URL="https://hc.example.test/ping/abc?create=1"
+reset; heartbeat fail "x"
+check "a query in the URL is kept, the run id added" grep -q "^1 https://hc.example.test/ping/abc/fail?create=1&rid=${rid}\$" "$MOCK_DIR/calls"
+HEARTBEAT_START=false; reset; heartbeat start
+check "HEARTBEAT_START=false: no /start" test "$(calls)" == 0
+unset HEARTBEAT_START
+export MOCK_CODE=000; reset; heartbeat success "x" >>"$LOG_FILE" 2>&1; rc=$?; unset MOCK_CODE
+check "an unreachable monitor is logged, not fatal" bash -c '[[ $2 == 0 ]] && grep -q "Could not ping the monitor (success): no response" "$1"' _ "$LOG_FILE" "$rc"
+
+section "heartbeat: uptime kuma"
+HB_URL="https://kuma.example.test/api/push/TOKEN?status=up&msg=OK&ping="
+reset; heartbeat start
+check "kuma has no start" test "$(calls)" == 0
+reset; heartbeat fail "backup with errors" "$BODY"
+a="$(tr '\n' '|' < "$MOCK_DIR/args.1")"
+check "down, to the URL without its query" bash -c '[[ "$1" == *"-G|"* && "$1" == *"status=down|"* ]] && grep -q "^1 https://kuma.example.test/api/push/TOKEN$" "$2"' _ "$a" "$MOCK_DIR/calls"
+check "msg is the first line" grep -qx 'msg=Server web-1: backup with errors' "$MOCK_DIR/args.1"
+reset; heartbeat success "backup done"
+check "success is up" grep -qx 'status=up' "$MOCK_DIR/args.1"
+HEARTBEAT_FORMAT=healthchecks; reset; heartbeat success "x"
+check "HEARTBEAT_FORMAT overrides the guess" grep -q '^1 https://kuma.example.test/api/push/TOKEN?' "$MOCK_DIR/calls"
+HEARTBEAT_FORMAT=bogus; reset; heartbeat success "x" >>"$LOG_FILE" 2>&1
+check "an unknown format: nothing sent" test "$(calls)" == 0
+check "and it is logged" grep -q "HEARTBEAT_FORMAT must be" "$LOG_FILE"
+unset HEARTBEAT_FORMAT; HB_URL=""; unset HB_RID
+reset; heartbeat fail "x"
+check "no URL — no ping" test "$(calls)" == 0
+
+section "metrics"
+METRICS_DIR="$W/prom"; mkdir -p "$METRICS_DIR"
+metrics_write t demo 1 projects 3 uploaded_bytes 1024
+f="$METRICS_DIR/t.prom"
+check "the gauges are written" bash -c 'grep -qx "demo_last_run_success 1" "$1" && grep -qx "demo_projects 3" "$1" && grep -qx "demo_uploaded_bytes 1024" "$1"' _ "$f"
+check "each with its TYPE" test "$(grep -c '^# TYPE demo_.* gauge$' "$f")" == 5
+ok_ts="$(awk '$1 == "demo_last_success_timestamp_seconds" { print $2 }' "$f")"
+check "the success time is the run's" test "$ok_ts" == "$(awk '$1 == "demo_last_run_timestamp_seconds" { print $2 }' "$f")"
+sed -i "s/^demo_last_success_timestamp_seconds .*/demo_last_success_timestamp_seconds 1700000000/" "$f"
+metrics_write t demo 0 projects 3
+check "a failed run: success 0, the last success kept" \
+    bash -c 'grep -qx "demo_last_run_success 0" "$1" && grep -qx "demo_last_success_timestamp_seconds 1700000000" "$1"' _ "$f"
+check "no temporary file left" test "$(ls "$METRICS_DIR" | wc -l)" == 1
+check "readable by the collector (644)" test "$(stat -c %a "$f")" == 644
+rm -f "$f"; metrics_write t demo 0
+check "never a success — no last-success line" bash -c '! grep -q last_success_timestamp "$1" && grep -qx "demo_last_run_success 0" "$1"' _ "$f"
+METRICS_DIR="$W/nope"; metrics_write t demo 1 >>"$LOG_FILE" 2>&1; rc=$?
+check "a missing folder: a warning, not a failure" bash -c '[[ $2 == 0 ]] && grep -q "METRICS_DIR does not exist" "$1"' _ "$LOG_FILE" "$rc"
+METRICS_DIR=""
+
 section "notify_any, backup_running_pid"
 if notify_any; then bad "notify_any with nothing set up"; else ok "notify_any: nothing set up"; fi
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T/B/X"

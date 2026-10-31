@@ -509,8 +509,8 @@ s3_cert_check() {
 # A test message goes through lib.sh in a separate bash with only these settings (NOTIFY_LIB — its path).
 # ==============================================================================
 NT_KEYS=(EMAIL_TO SMTP_HOST SMTP_SECURITY SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
-         SLACK_WEBHOOK_URL PAGERDUTY_ROUTING_KEY PAGERDUTY_REGION
-         NOTIFY_WEBHOOK_URL NOTIFY_WEBHOOK_FORMAT TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID)
+         SLACK_WEBHOOK_URL TEAMS_WEBHOOK_URL PAGERDUTY_ROUTING_KEY PAGERDUTY_REGION NTFY_URL NTFY_TOKEN
+         NOTIFY_WEBHOOK_URL NOTIFY_WEBHOOK_FORMAT TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID APPRISE_URLS)
 declare -A NT=()
 
 # notify_load — the current values (from the sourced config) into NT
@@ -528,8 +528,9 @@ PD_TEST_ASK="Send a test incident to PagerDuty? It is resolved at once, but whoe
 # notify_label <channel> — its name for people
 notify_label() {
     case "$1" in
-        email) printf 'Email' ;; slack) printf 'Slack' ;; pagerduty) printf 'PagerDuty' ;;
-        webhook) printf 'Webhook' ;; telegram) printf 'Telegram' ;; *) printf '%s' "$1" ;;
+        email) printf 'Email' ;; slack) printf 'Slack' ;; teams) printf 'Microsoft Teams' ;;
+        pagerduty) printf 'PagerDuty' ;; ntfy) printf 'ntfy' ;; webhook) printf 'Webhook' ;;
+        telegram) printf 'Telegram' ;; apprise) printf 'Apprise' ;; *) printf '%s' "$1" ;;
     esac
 }
 
@@ -546,9 +547,12 @@ _nt_clear() {
         email)     for k in EMAIL_TO SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM; do NT[$k]=""; done
                    NT[SMTP_SECURITY]="starttls" ;;
         slack)     NT[SLACK_WEBHOOK_URL]="" ;;
+        teams)     NT[TEAMS_WEBHOOK_URL]="" ;;
         pagerduty) NT[PAGERDUTY_ROUTING_KEY]=""; NT[PAGERDUTY_REGION]="us" ;;
+        ntfy)      NT[NTFY_URL]=""; NT[NTFY_TOKEN]="" ;;
         webhook)   NT[NOTIFY_WEBHOOK_URL]=""; NT[NOTIFY_WEBHOOK_FORMAT]="auto" ;;
         telegram)  NT[TELEGRAM_BOT_TOKEN]=""; NT[TELEGRAM_CHAT_ID]="" ;;
+        apprise)   NT[APPRISE_URLS]="" ;;
     esac
 }
 
@@ -579,6 +583,14 @@ notify_hint() {
             ui_note "💡 The bot is blocked, or it is not in the group: unblock it, or add it to the group." ;;
         slack:*"HTTP 403"*|slack:*"HTTP 404"*|slack:*"HTTP 410"*)
             ui_note "💡 The webhook URL is wrong, or it was removed (or its channel archived): add a new one in the Slack app." ;;
+        teams:*"HTTP 400"*)
+            ui_note "💡 The workflow rejected the card: create it from the template \"Post to a channel when a webhook request is received\"." ;;
+        teams:*"HTTP 401"*|teams:*"HTTP 403"*|teams:*"HTTP 404"*)
+            ui_note "💡 The URL is wrong, or the workflow was turned off or deleted: copy its URL again." ;;
+        ntfy:*"HTTP 401"*|ntfy:*"HTTP 403"*)
+            ui_note "💡 The topic is protected: give an access token that may publish to it (ntfy: Account → Access tokens)." ;;
+        apprise:*"not installed"*)
+            ui_note "💡 Install it: pip install apprise (or apt install apprise), then send the test again." ;;
         pagerduty:*"HTTP 400"*)
             ui_note "💡 PagerDuty rejected the event: the integration key is wrong. It is the Events API v2 key of a service integration." ;;
         pagerduty:*"HTTP 429"*)
@@ -629,6 +641,64 @@ slack_wizard() {
         fi
         NT[SLACK_WEBHOOK_URL]="$url"
         _nt_verify slack "the Slack channel" && return 0
+    done
+}
+
+teams_wizard() {
+    local url
+    ui_title "Microsoft Teams"
+    ui_note "In the channel: ⋯ → Workflows → \"Post to a channel when a webhook request is received\" → Add workflow → copy the URL."
+    ui_note "(Office 365 connectors — the old \"Incoming Webhook\" — are retired by Microsoft: use a workflow.)"
+    while true; do
+        url="$(ui_input "  Workflow URL (empty — no Teams)" "${NT[TEAMS_WEBHOOK_URL]:-}")" || return 1
+        url="$(trim "$url")"
+        [[ -z "$url" ]] && { _nt_clear teams; return 0; }
+        if ! [[ "$url" == https://* ]]; then
+            ui_note "✗ The URL must start with https://"
+            [[ "${NON_INTERACTIVE:-false}" == "true" ]] && { _nt_clear teams; return 0; }
+            continue
+        fi
+        NT[TEAMS_WEBHOOK_URL]="$url"
+        _nt_verify teams "the Teams channel" && return 0
+    done
+}
+
+ntfy_wizard() {
+    local url token
+    ui_title "ntfy"
+    ui_note "Push to a phone with the ntfy app: subscribe to a topic there, then give its URL here — https://ntfy.sh/<topic> or your own server."
+    ui_note "On ntfy.sh anyone who knows a topic's name can read it: pick a long, random one, or use a protected topic and a token."
+    while true; do
+        url="$(ui_input "  Topic URL (empty — no ntfy)" "${NT[NTFY_URL]:-}")" || return 1
+        url="$(trim "$url")"; url="${url%/}"
+        [[ -z "$url" ]] && { _nt_clear ntfy; return 0; }
+        if ! [[ "$url" =~ ^https?://[^/]+/.+ ]]; then
+            ui_note "✗ A topic URL looks like https://ntfy.sh/<topic>"
+            [[ "${NON_INTERACTIVE:-false}" == "true" ]] && { _nt_clear ntfy; return 0; }
+            continue
+        fi
+        token="$(ui_input "  Access token (empty — an open topic)" "${NT[NTFY_TOKEN]:-}")" || return 1
+        NT[NTFY_URL]="$url"; NT[NTFY_TOKEN]="$(trim "$token")"
+        _nt_verify ntfy "the ntfy app" && return 0
+    done
+}
+
+apprise_wizard() {
+    local urls
+    ui_title "Apprise"
+    ui_note "One setting for 100+ services — Matrix, Gotify, Pushover, Signal, Opsgenie, Rocket.Chat and more: github.com/caronc/apprise/wiki"
+    command -v apprise >/dev/null 2>&1 || ui_note "⚠ apprise is not installed on this host: pip install apprise (or apt install apprise)."
+    while true; do
+        urls="$(ui_input "  Apprise URLs, space-separated (empty — no Apprise)" "${NT[APPRISE_URLS]:-}")" || return 1
+        urls="$(trim "$urls")"
+        [[ -z "$urls" ]] && { _nt_clear apprise; return 0; }
+        if [[ "$urls" != *://* ]]; then
+            ui_note "✗ An Apprise URL looks like service://… (for example, pover://user@token)"
+            [[ "${NON_INTERACTIVE:-false}" == "true" ]] && { _nt_clear apprise; return 0; }
+            continue
+        fi
+        NT[APPRISE_URLS]="$urls"
+        _nt_verify apprise "the services" && return 0
     done
 }
 

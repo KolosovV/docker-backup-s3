@@ -183,6 +183,17 @@ if s3_complete primary; then bad "a storage without a region counted as complete
 PRIMARY_S3_REGION=eu-1
 check "with a region: complete" s3_complete primary
 
+section "Object Lock: checksums for that storage only"
+SECONDARY_S3_ENABLED=true SECONDARY_S3_ACCESS_KEY=k2 SECONDARY_S3_SECRET_KEY=s2 SECONDARY_S3_ENDPOINT=https://s3.example.org
+SECONDARY_S3_BUCKET=b2 SECONDARY_S3_REGION=eu-2 SECONDARY_S3_OBJECT_LOCK=true
+_aws_setup primary
+check "an ordinary storage: only where required" test "$AWS_REQUEST_CHECKSUM_CALCULATION" == when_required
+_aws_setup secondary
+check "a storage with Object Lock: aws sends its checksums" test "$AWS_REQUEST_CHECKSUM_CALCULATION" == when_supported
+_aws_setup primary
+check "and back for the next one" test "$AWS_REQUEST_CHECKSUM_CALCULATION" == when_required
+unset SECONDARY_S3_ENABLED SECONDARY_S3_ACCESS_KEY SECONDARY_S3_SECRET_KEY SECONDARY_S3_ENDPOINT SECONDARY_S3_BUCKET SECONDARY_S3_REGION SECONDARY_S3_OBJECT_LOCK
+
 section "Ctrl+C stops a script (aws-cli catches it and exits with an ordinary error)"
 if command -v setsid >/dev/null 2>&1; then
     # The child stands in for aws: it catches SIGINT and exits 1. Ctrl+C reaches the whole process group.
@@ -256,6 +267,46 @@ check "status: a finished run shows its result line, not the separator" grep -q 
 printf '[%s 22:01:00]   📦 Project: web\n' "$t" >> "$W/b.log"
 out="$(bash "$REPO/status.sh" -c "$W/logs.conf" 2>&1 || true)"
 check "status: a run under way shows its latest line" grep -q "└ .*Project: web" <<< "$out"
+
+section "GPG: a passphrase or a public key"
+if command -v gpg >/dev/null 2>&1; then
+    # A keyring of the test's own: root's is left alone
+    export GNUPGHOME="$W/gnupg-maker"; mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+    gpg --batch --passphrase '' --quick-gen-key "backups@example.test" default default never >/dev/null 2>&1
+    gpg --batch --export --armor backups@example.test > "$W/k.pub.asc"
+    gpg --batch --pinentry-mode loopback --passphrase '' --export-secret-keys --armor backups@example.test > "$W/k.sec.asc"
+    gpgconf --kill gpg-agent >/dev/null 2>&1
+    export GNUPGHOME="$W/gnupg-host"; mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"   # the backup host: no keys at all
+    printf 'secret-pass' > "$W/pass"; chmod 600 "$W/pass"
+    GPG_PASSPHRASE_FILE="$W/pass"
+    echo "symmetric" > "$W/s.txt"; encrypt_file "$W/s.txt" >/dev/null
+    check "a passphrase archive" test "$(gpg_kind "$W/s.txt.gpg")" == symmetric
+
+    GPG_RECIPIENT_FILE="$W/k.pub.asc"; GPG_PASSPHRASE_FILE="$W/nope"
+    check "public key: no passphrase file needed to encrypt" gpg_enc_check
+    echo "public" > "$W/p.txt"; out="$(encrypt_file "$W/p.txt")"
+    check "public key: encrypted, the plain file gone" bash -c '[[ -f "$1" && ! -f "$2" ]]' _ "$out" "$W/p.txt"
+    check "a public-key archive" test "$(gpg_kind "$W/p.txt.gpg")" == pubkey
+    check "nothing imported into this host's keyring" test -z "$(gpg --batch --list-keys --with-colons 2>/dev/null | grep '^pub')"
+    if gpg_can_decrypt; then bad "the host counts as able to decrypt"; else ok "the host cannot decrypt — no secret key"; fi
+    if (decrypt_file "$W/p.txt.gpg") >/dev/null 2>&1; then bad "decrypted without the secret key"; else ok "no secret key — no decryption"; fi
+
+    GPG_SECRET_KEY_FILE="$W/k.sec.asc"
+    check "with GPG_SECRET_KEY_FILE it can" gpg_can_decrypt
+    rm -f "$W/p.txt"; decrypt_file "$W/p.txt.gpg" >/dev/null 2>&1
+    check "and decrypts" test "$(cat "$W/p.txt" 2>/dev/null)" == public
+    check "the secret key is not left in a keyring" test -z "$(gpg --batch --list-secret-keys --with-colons 2>/dev/null | grep '^sec')"
+    check "its throwaway keyring is gone" bash -c '! ls -d "${TMPDIR:-/tmp}"/dbgpg.* >/dev/null 2>&1'
+    GPG_PASSPHRASE_FILE="$W/pass"; rm -f "$W/s.txt"; decrypt_file "$W/s.txt.gpg" >/dev/null 2>&1
+    check "an old passphrase archive still opens next to it" test "$(cat "$W/s.txt" 2>/dev/null)" == symmetric
+    out="$(printf 'stream' | gpg_enc -o - | gpg_dec 2>/dev/null)"
+    check "as a stream (remote database dumps)" test "$out" == stream
+    GPG_RECIPIENT_FILE="$W/none.asc"
+    check "a missing public key file is reported" bash -c 'source "$1/lib.sh"; GPG_RECIPIENT_FILE="$2"; [[ "$(gpg_enc_check)" == "Cannot read the public key file $2" ]]' _ "$REPO" "$W/none.asc"
+    unset GPG_RECIPIENT_FILE GPG_SECRET_KEY_FILE GPG_PASSPHRASE_FILE GNUPGHOME
+else
+    echo "   SKIP: no gpg"
+fi
 
 section "helpers"
 check "join_list: one line, comma-separated (IFS has a newline here)" test "$(join_list a b 'c d')" == "a, b, c d"

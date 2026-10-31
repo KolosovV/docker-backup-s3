@@ -25,10 +25,40 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
   incident, the next good run resolves it — one incident per server and job, not one per night.
   `validate-config.sh` checks the key with a change event, which pages no one; the menu sends a real test
   incident (opened and resolved at once) only after a question.
+- **Microsoft Teams** (`TEAMS_WEBHOOK_URL`, a Workflows webhook): an Adaptive Card, red / orange / green by level.
+- **ntfy** (`NTFY_URL`, `NTFY_TOKEN` for a protected topic): push to a phone; an error at high priority, a level in
+  `NOTIFY_SILENT` at low (no sound).
+- **Apprise** (`APPRISE_URLS`): one setting for Matrix, Gotify, Pushover, Signal, Opsgenie and 100+ more services,
+  through the `apprise` CLI. The URLs reach it in a temporary file, never on its command line.
+- **A monitor's ping** (dead man's switch): `HEARTBEAT_URL` for the backup, `VERIFY_HEARTBEAT_URL` for the
+  restore check — Healthchecks.io and compatible (`/start`, the URL, `/fail`, one run id for the pair) or an
+  Uptime Kuma push monitor. A message can't say that a run never happened; a monitor that waits for a ping can.
+  Whole runs only; a failed ping is a warning in the log. `validate-config.sh` checks the URL with a `/log` ping,
+  which leaves the check's state alone.
+- **Prometheus metrics** (`METRICS_DIR`): `docker_backup_s3.prom` and `docker_backup_s3_verify.prom` for
+  node_exporter's textfile collector — last run, success, last success, projects, failures, bytes, duration.
+  Written atomically; a failed run keeps the last success time.
+- **Object Lock** (`<ROLE>_S3_OBJECT_LOCK`): uploads to that storage carry the checksum such a bucket requires.
+  `validate-config.sh` reads each bucket's versioning, Object Lock and lifecycle rules: it says when a locked
+  bucket needs the setting, when the lock outlasts `RETENTION_DAYS`, and when no rule expires noncurrent
+  versions — in a versioned bucket the rotation then only hides old backups, and the storage keeps them forever.
+  In the menu: Storage settings → the storage → The bucket has Object Lock.
+- **Encryption to a public key** (`GPG_RECIPIENT_FILE`): the host that makes the backups can't read them; the
+  secret key stays on a restore host (`GPG_SECRET_KEY_FILE`, imported into a throwaway keyring per call) or in a
+  safe. Old passphrase archives still open next to the new ones. Without the secret key the restore check
+  verifies such archives by sha256 and says so; `validate-config.sh` checks the key's expiry and capabilities.
+- **The deep restore check** (`verify-restore.sh --deep`, or `VERIFY_DEEP="true"`): every database dump is loaded
+  into a throwaway container of its own database and version — PostgreSQL (TimescaleDB when the dump uses it),
+  MySQL/MariaDB, MongoDB — with no network, and its tables are counted against the dump's; a Redis/Valkey RDB
+  goes through `redis-check-rdb`. A whole gzip with the right header can still be a dump that does not load: a
+  cut-off one now fails. Remote databases' dumps are streamed into it, never written to this disk.
+  `VERIFY_DEEP_IMAGE_<KIND>` picks another image (PostGIS, say). In the menu: Checks → deep.
 
 ### Changed
-- The channels are offered and listed in the order most teams use them: email, Slack, PagerDuty, the webhook,
-  Telegram — in `install.sh`, the menu and `backup.conf.example`.
+- The channels are offered and listed in the order most teams use them: email, Slack, Teams, PagerDuty, ntfy,
+  the webhook, Telegram, Apprise — in `install.sh`, the menu and `backup.conf.example`.
+- `verify-restore.sh --standard` forces the standard check when `VERIFY_DEEP` is on; the menu's "full" check
+  uses it.
 
 ### Fixed
 - **A restore check that could not start said nothing** (no access to the storage, a missing tool, no space): it
@@ -36,6 +66,8 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 - `verify-restore.sh`'s output reaches the backup log (`LOG_FILE`) too: the "Details" line of its notifications
   pointed at a log it never wrote to, and `logs.sh -e` did not see its errors.
 - `uninstall.sh` left `/var/lib/docker-backup` (the last run's result) behind.
+- A passing restore check sent nothing unless `NOTIFY_ON=always`, so PagerDuty never heard it resolve an
+  incident the check had opened.
 
 ## [2.1.0] — 2026-10-25
 

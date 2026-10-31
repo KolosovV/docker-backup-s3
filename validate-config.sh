@@ -291,7 +291,50 @@ fi
 if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
     if command -v gpg >/dev/null 2>&1; then
         ok "gpg found (encryption enabled)"
-        if [[ -f "${GPG_PASSPHRASE_FILE:-}" ]]; then
+        if gpg_pubkey; then
+            # Public keys: each file holds a key that can encrypt and has not expired
+            gpg_bad=false
+            while IFS= read -r kf; do
+                [[ -z "$kf" ]] && continue
+                if [[ ! -r "$kf" ]]; then err "GPG_RECIPIENT_FILE: cannot read $kf"; gpg_bad=true; continue; fi
+                kinfo="$(gpg --batch --with-colons --import-options show-only --import "$kf" 2>/dev/null)"
+                kpub="$(awk -F: '$1 == "pub" { print $2 ":" $7 ":" $12; exit }' <<< "$kinfo")"
+                kfpr="$(awk -F: '$1 == "fpr" { print $10; exit }' <<< "$kinfo")"
+                kuid="$(awk -F: '$1 == "uid" { print $10; exit }' <<< "$kinfo")"
+                if [[ -z "$kpub" ]]; then err "$kf is not an OpenPGP public key"; gpg_bad=true; continue; fi
+                IFS=: read -r kval kexp kcap <<< "$kpub"
+                if [[ "$kval" == e || ( -n "$kexp" && "$kexp" -lt "$(date +%s)" ) ]]; then
+                    err "The key in $kf ($kfpr) has expired — new backups cannot be encrypted to it"; gpg_bad=true
+                elif [[ "$kval" == r ]]; then
+                    err "The key in $kf ($kfpr) is revoked"; gpg_bad=true
+                elif [[ "$kcap" != *E* ]]; then
+                    err "The key in $kf ($kfpr) has no encryption subkey"; gpg_bad=true
+                else
+                    ok "Public key: ${kuid:-?} (${kfpr: -16})$([[ -n "$kexp" ]] && echo ", expires $(date -u -d "@$kexp" +%Y-%m-%d)")"
+                    [[ -n "$kexp" ]] && (( kexp - $(date +%s) < 30 * 86400 )) && warn "The key in $kf expires in less than 30 days: extend it, and give this host the updated public key"
+                fi
+            done < <(split_words "$GPG_RECIPIENT_FILE")
+            if ! $gpg_bad; then
+                gpg_tmp="$(mktemp -d)"
+                echo "validate-config" > "$gpg_tmp/t"
+                if gpg_out="$(gpg_enc -o "$gpg_tmp/t.gpg" "$gpg_tmp/t" 2>&1)"; then
+                    ok "Test encryption to the public key works"
+                    if gpg_can_decrypt; then
+                        if gpg_dec -o "$gpg_tmp/t.out" "$gpg_tmp/t.gpg" >/dev/null 2>&1 && [[ "$(cat "$gpg_tmp/t.out" 2>/dev/null)" == "validate-config" ]]; then
+                            ok "The secret key decrypts it (a full restore check is possible here)"
+                        else
+                            err "A secret key is set up here (${GPG_SECRET_KEY_FILE:-the root keyring}), but it does not decrypt: not the pair of GPG_RECIPIENT_FILE, or a passphrase is missing"
+                        fi
+                        echo "    The secret key is on this host: a break-in here exposes the backups. The host that makes them needs only the public key"
+                    else
+                        ok "This host cannot decrypt (no secret key here) — as intended; the restore check verifies the archives by sha256"
+                    fi
+                else
+                    err "gpg cannot encrypt to the public key: $(printf '%s' "$gpg_out" | head -n 2 | tr '\n' ' ')"
+                fi
+                rm -rf "$gpg_tmp"
+            fi
+        elif [[ -f "${GPG_PASSPHRASE_FILE:-}" ]]; then
             pass_perms=$(stat -c '%a' "$GPG_PASSPHRASE_FILE")
             if [[ "$pass_perms" != "600" && "$pass_perms" != "400" ]]; then
                 err "$GPG_PASSPHRASE_FILE: chmod $pass_perms — must be 600!"
@@ -302,9 +345,7 @@ if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
             # (no gpg-agent with gnupg2-minimal, say)
             gpg_tmp="$(mktemp -d)"
             echo "validate-config" > "$gpg_tmp/t"
-            if gpg_out="$(gpg --batch --yes --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" --symmetric --cipher-algo AES256 \
-                    -o "$gpg_tmp/t.gpg" "$gpg_tmp/t" 2>&1 \
-                 && gpg --batch --yes --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" -d -o "$gpg_tmp/t.out" "$gpg_tmp/t.gpg" 2>&1)" \
+            if gpg_out="$(gpg_enc -o "$gpg_tmp/t.gpg" "$gpg_tmp/t" 2>&1 && gpg_dec -o "$gpg_tmp/t.out" "$gpg_tmp/t.gpg" 2>&1)" \
                && [[ "$(cat "$gpg_tmp/t.out" 2>/dev/null)" == "validate-config" ]]; then
                 ok "Test encryption and decryption work"
             else
@@ -319,7 +360,9 @@ if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]]; then
         err "ENCRYPT_BACKUPS=true, but gpg is not installed"
     fi
 fi
-if [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]]; then
+if [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -n "${GPG_RECIPIENT_FILE:-}" ]]; then
+    warn "‼ ENCRYPTION IS OFF, but GPG_RECIPIENT_FILE is set: backups go to S3 unencrypted (ENCRYPT_BACKUPS=\"true\" to encrypt)"
+elif [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]]; then
     warn "‼ ENCRYPTION IS OFF, but the passphrase file ${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase} exists"
     echo "      Backups go to S3 unencrypted. If that is not deliberate: ENCRYPT_BACKUPS=\"true\" in $CONFIG_FILE"
 fi
@@ -327,6 +370,63 @@ fi
 # ==============================================================================
 # 4. ACCESS TO THE STORAGES — the primary and every enabled copy
 # ==============================================================================
+# bucket_protection <role> — versioning and Object Lock of the current bucket (_aws_setup done), and whether
+# the rotation can free space in it. Against ransomware: a key that leaks from this host can delete backups,
+# but not the versions an Object Lock keeps.
+#   In a versioned bucket a delete only adds a delete marker: the rotation and drop-project.sh hide old
+#   backups, and the space is freed only by a lifecycle rule that expires noncurrent versions.
+bucket_protection() {
+    local role="$1" p="${1^^}_S3" b="$S3_CUR_BUCKET" out ver="" lock="" mode="" days="" lc="" rc
+    out="$(aws_q s3api get-bucket-versioning --bucket "$b" --output json 2>&1)" && ver="$(jq -r '.Status // ""' <<< "$out" 2>/dev/null)"
+    rc=0; out="$(aws_q s3api get-object-lock-configuration --bucket "$b" --output json 2>&1)" || rc=$?
+    if (( rc == 0 )); then
+        lock="$(jq -r '.ObjectLockConfiguration.ObjectLockEnabled // ""' <<< "$out" 2>/dev/null)"
+        mode="$(jq -r '.ObjectLockConfiguration.Rule.DefaultRetention.Mode // ""' <<< "$out" 2>/dev/null)"
+        days="$(jq -r '.ObjectLockConfiguration.Rule.DefaultRetention | if . == null then "" elif .Days then .Days elif .Years then .Years * 365 else "" end' <<< "$out" 2>/dev/null)"
+    elif [[ "$out" != *ObjectLockConfigurationNotFound* ]]; then
+        lock="?"
+    fi
+    rc=0; out="$(aws_q s3api get-bucket-lifecycle-configuration --bucket "$b" --output json 2>&1)" || rc=$?
+    if (( rc == 0 )); then
+        lc="$(jq -r '[.Rules[]? | select(.Status == "Enabled" and .NoncurrentVersionExpiration != null)
+            | .NoncurrentVersionExpiration.NoncurrentDays] | first // ""' <<< "$out" 2>/dev/null)"
+    elif [[ "$out" != *NoSuchLifecycleConfiguration* ]]; then
+        lc="?"
+    fi
+
+    if [[ "$lock" == Enabled ]]; then
+        if [[ -n "$mode" ]]; then
+            ok "Object Lock: ${mode}, ${days} days by default — a leaked key cannot delete a backup younger than that"
+            [[ "$mode" == GOVERNANCE ]] && echo "    (GOVERNANCE: a key with s3:BypassGovernanceRetention still can — give this host's key none)"
+            if [[ "$(s3_var "$role" OBJECT_LOCK)" != "true" ]]; then
+                err "${b} locks every new object, and such a bucket refuses an upload without a checksum: set ${p}_OBJECT_LOCK=\"true\""
+            fi
+            if [[ "$days" =~ ^[0-9]+$ ]] && (( days > ${RETENTION_DAYS:-30} )); then
+                echo "    The lock (${days} d) outlasts RETENTION_DAYS (${RETENTION_DAYS:-30} d): backups older than that are hidden by the rotation, but kept — and paid for — until their lock ends"
+            fi
+        else
+            ok "Object Lock is on, without a default retention: objects are not locked unless asked to"
+            [[ "$(s3_var "$role" OBJECT_LOCK)" == "true" ]] || echo "    For locked uploads set a default retention on the bucket, and ${p}_OBJECT_LOCK=\"true\""
+        fi
+    elif [[ "$lock" == "?" ]]; then
+        echo "    Object Lock: cannot read it with this key (s3:GetBucketObjectLockConfiguration) — not checked"
+    elif [[ "$(s3_var "$role" OBJECT_LOCK)" == "true" ]]; then
+        warn "${p}_OBJECT_LOCK=\"true\", but ${b} has no Object Lock: nothing protects the backups from a leaked key"
+    fi
+
+    if [[ "$ver" == Enabled || "$lock" == Enabled ]]; then
+        if [[ "$lc" =~ ^[0-9]+$ ]]; then
+            ok "Versioning on, and a lifecycle rule removes deleted backups after ${lc} more days"
+        elif [[ "$lc" == "?" ]]; then
+            echo "    Versioning is on; the lifecycle rules can't be read with this key — check that one expires noncurrent versions"
+        else
+            warn "Versioning is on, but no lifecycle rule expires noncurrent versions: the rotation only hides old backups, the storage keeps — and bills — them forever (README: Object Lock)"
+        fi
+    elif [[ "$ver" == Suspended ]]; then
+        echo "    Versioning is suspended: versions made while it was on stay until a lifecycle rule removes them"
+    fi
+    return 0
+}
 for role in primary ${S3_COPIES[@]+"${S3_COPIES[@]}"}; do
     P="${role^^}_S3"
     section "Access: $(s3_label "$role")"
@@ -349,6 +449,7 @@ for role in primary ${S3_COPIES[@]+"${S3_COPIES[@]}"}; do
         else
             err "Cannot write to the bucket — check the key's permissions"
         fi
+        bucket_protection "$role"
     else
         err "Cannot access bucket ${S3_CUR_BUCKET}"
         echo "    Check: the access key, that the bucket exists, endpoint ${S3_CUR_ENDPOINT}"
@@ -444,6 +545,20 @@ if notify_any || [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${EMAIL_TO:-}" || -n "${
         fi
     fi
 
+    if [[ -n "${TEAMS_WEBHOOK_URL:-}" ]]; then
+        if ! [[ "$TEAMS_WEBHOOK_URL" == https://* ]]; then
+            err "TEAMS_WEBHOOK_URL must start with https://"
+        elif tm_err="$(notify_test teams 2>&1)"; then
+            ok "Test message delivered to Teams"
+        else
+            err "Teams: $tm_err"
+            case "$tm_err" in
+                *"HTTP 400"*) echo "      💡 The workflow rejected the card: it must be \"Post to a channel when a webhook request is received\"" ;;
+                *"HTTP 401"*|*"HTTP 403"*|*"HTTP 404"*) echo "      💡 The URL is wrong, or the workflow was turned off or deleted — copy its URL again" ;;
+            esac
+        fi
+    fi
+
     if [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]]; then
         # Not a test incident: validate-config runs often, and an incident pages whoever is on call.
         # A change event checks the key and pages no one.
@@ -462,6 +577,20 @@ if notify_any || [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${EMAIL_TO:-}" || -n "${
                 esac
             fi
             echo "    A test incident (resolved at once): sudo docker-backup-s3 → Notifications → PagerDuty"
+        fi
+    fi
+
+    if [[ -n "${NTFY_URL:-}" ]]; then
+        if ! [[ "$NTFY_URL" =~ ^https?://[^/]+/.*[^/]$ ]]; then
+            err "NTFY_URL must be the topic's URL, like https://ntfy.sh/<topic>. Now: '$NTFY_URL'"
+        elif nf_err="$(notify_test ntfy 2>&1)"; then
+            ok "Test message delivered to ntfy (topic ${NTFY_URL##*/})"
+        else
+            err "ntfy: $nf_err"
+            case "$nf_err" in
+                *"HTTP 401"*|*"HTTP 403"*) echo "      💡 The topic is protected: set NTFY_TOKEN to an access token that may publish to it" ;;
+                *"HTTP 429"*) echo "      💡 The server limits how often you publish — try again later" ;;
+            esac
         fi
     fi
 
@@ -547,6 +676,52 @@ if notify_any || [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${EMAIL_TO:-}" || -n "${
                 esac
             fi
         fi
+    fi
+
+    if [[ -n "${APPRISE_URLS:-}" ]]; then
+        if ! command -v apprise >/dev/null 2>&1; then
+            err "APPRISE_URLS is set, but apprise is not installed (pip install apprise, or the distribution's package)"
+        elif ap_err="$(notify_test apprise 2>&1)"; then
+            ok "Test message sent through apprise ($(split_words "$APPRISE_URLS" | grep -c .) URL(s))"
+        else
+            err "Apprise: $ap_err"
+        fi
+    fi
+fi
+
+# ==============================================================================
+# 7b. MONITORING: the monitor's ping, Prometheus metrics
+# ==============================================================================
+if [[ -n "${HEARTBEAT_URL:-}${VERIFY_HEARTBEAT_URL:-}${METRICS_DIR:-}" ]]; then
+    section "Monitoring"
+    for hb_var in HEARTBEAT_URL VERIFY_HEARTBEAT_URL; do
+        HB_URL="${!hb_var:-}"
+        [[ -z "$HB_URL" ]] && continue
+        if ! [[ "$HB_URL" =~ ^https?:// ]]; then
+            err "$hb_var must start with http:// or https://"; continue
+        fi
+        hb_fmt="$(heartbeat_format)"
+        case "$hb_fmt" in
+            healthchecks)
+                # /log records the ping without changing the check's state: a "success" from here would
+                # reset the monitor's timer while no backup ran
+                hb_code="$(printf 'docker-backup-s3: configuration check' | curl -s -m 10 -o /dev/null -w '%{http_code}' \
+                    -X POST --data-binary @- -K <(curl_url_cfg "${HB_URL%%\?*}/log") 2>/dev/null)" || true
+                case "$hb_code" in
+                    2??) ok "$hb_var: the monitor answered (a /log ping — its state is unchanged)" ;;
+                    404) warn "$hb_var: the service has no /log — reachable, but not checked without changing its state" ;;
+                    ""|000) err "$hb_var: no response from $(s3_host "$HB_URL")" ;;
+                    *) err "$hb_var: the monitor replied HTTP $hb_code — check the URL" ;;
+                esac ;;
+            kuma) ok "$hb_var: an Uptime Kuma push URL (not pinged from here: it would mark the monitor up)" ;;
+            *) err "HEARTBEAT_FORMAT must be auto, healthchecks or kuma. Now: '${HEARTBEAT_FORMAT}'" ;;
+        esac
+    done
+    HB_URL=""
+    if [[ -n "${METRICS_DIR:-}" ]]; then
+        if [[ ! -d "$METRICS_DIR" ]]; then err "METRICS_DIR does not exist: $METRICS_DIR (node_exporter's --collector.textfile.directory)"
+        elif [[ ! -w "$METRICS_DIR" ]]; then err "METRICS_DIR is not writable: $METRICS_DIR"
+        else ok "METRICS_DIR: $METRICS_DIR (docker_backup_s3.prom, docker_backup_s3_verify.prom)"; fi
     fi
 fi
 

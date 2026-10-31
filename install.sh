@@ -728,11 +728,19 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     ui_title "Notifications (optional)"
     if ask_yn "  Set up Slack notifications?" "n"; then slack_wizard && NOTIFY_SET=1; fi
     ui_title "Notifications (optional)"
+    if ask_yn "  Set up Microsoft Teams notifications?" "n"; then teams_wizard && NOTIFY_SET=1; fi
+    ui_title "Notifications (optional)"
     if ask_yn "  Set up PagerDuty (an incident on a failure, resolved by the next good run)?" "n"; then pagerduty_wizard && NOTIFY_SET=1; fi
+    ui_title "Notifications (optional)"
+    if ask_yn "  Set up ntfy (push to a phone)?" "n"; then ntfy_wizard && NOTIFY_SET=1; fi
     ui_title "Notifications (optional)"
     if ask_yn "  Set up a webhook (Discord/Mattermost/your own receiver)?" "n"; then webhook_wizard && NOTIFY_SET=1; fi
     ui_title "Notifications (optional)"
     if ask_yn "  Set up Telegram notifications?" "n"; then tg_wizard && NOTIFY_SET=1; fi
+    if command -v apprise >/dev/null 2>&1; then
+        ui_title "Notifications (optional)"
+        if ask_yn "  Set up Apprise (Matrix, Gotify, Pushover and 100+ more)?" "n"; then apprise_wizard && NOTIFY_SET=1; fi
+    fi
     UI_TITLE=""
 
     # ─── Applying the settings to backup.conf ───

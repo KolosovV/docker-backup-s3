@@ -25,7 +25,8 @@ CONFIG_FILE="${SCRIPT_DIR}/backup.conf"
 
 # --- Arguments ---
 PROJECT_FILTER=""
-MODE="standard"   # quick | standard
+MODE="standard"   # quick | standard | deep
+MODE_SET=""       # given on the command line: VERIFY_DEEP does not override it
 NOTIFY="true"
 FROM_ROLE="primary"
 WAIT_FOR_BACKUP="true"
@@ -34,7 +35,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -c|--config)    CONFIG_FILE="$2"; shift 2 ;;
         -p|--project)   PROJECT_FILTER="$2"; shift 2 ;;
-        --quick)        MODE="quick"; shift ;;
+        --quick)        MODE="quick"; MODE_SET=1; shift ;;
+        --standard)     MODE="standard"; MODE_SET=1; shift ;;
+        --deep)         MODE="deep"; MODE_SET=1; shift ;;
         --no-notify)    NOTIFY="false"; shift ;;
         --from)         FROM_ROLE="$2"; shift 2 ;;
         --no-wait)      WAIT_FOR_BACKUP="false"; shift ;;
@@ -47,6 +50,8 @@ Checks that backups can be restored.
   -c, --config FILE    config file (default: backup.conf)
   -p, --project NAME   check only the given project
       --quick          only the object's presence and size in S3, no download
+      --deep           also load every database dump into a throwaway container
+      --standard       the standard check, whatever VERIFY_DEEP says
       --no-notify      don't send a notification
       --from ROLE      which storage to check: primary (default), secondary, tertiary
       --no-wait        don't wait for a backup under way (by default the check waits up to
@@ -59,6 +64,11 @@ CHECK LEVELS:
   quick:    head-object — the object is there and non-empty (downloads nothing)
   standard: download → check size and sha256 → unpack → check tar
             and database dumps (default)
+  deep:     standard, then every database dump is loaded into a throwaway
+            container of its database (no network, removed after): PostgreSQL
+            and MySQL/MariaDB of the dump's version, MongoDB; a Redis RDB goes
+            through redis-check-rdb. Its tables are counted against the dump's.
+            VERIFY_DEEP="true" in the config makes it the default.
 
 EXAMPLES:
   Quick check of all:           sudo $0 --quick
@@ -74,6 +84,7 @@ done
 source "$CONFIG_FILE"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+[[ -z "$MODE_SET" && "${VERIFY_DEEP:-false}" == "true" ]] && MODE="deep"
 
 # The log: to the screen (or the cron log) and to LOG_FILE, so logs.sh and the notification's
 # "Details" line find it next to the backup's
@@ -90,11 +101,20 @@ VR_DONE="false"
 VR_FAIL_MSG=""
 fail() { VR_FAIL_MSG="$*"; log_err "$*"; exit 1; }
 VERIFY_DIR=""
+# The deep check's throwaway database containers (dbs-verify-<this PID>-…) are removed however the script ends:
+# deep_load runs in a pipeline, a subshell, so they are found by name, not kept in a list
 _vr_exit() {
     local rc=$?
+    docker ps -aq --filter "name=^dbs-verify-$$-" 2>/dev/null | xargs -r docker rm -f -v >/dev/null 2>&1 || true
     [[ -n "$VERIFY_DIR" ]] && rm -rf "$VERIFY_DIR"
-    if (( rc != 0 )) && [[ "$VR_DONE" != "true" && "$NOTIFY" == "true" ]]; then
-        notify error "restore check did not run" "$(html_esc "${VR_FAIL_MSG:-verify-restore.sh stopped with exit code $rc}")"$'\n'"$(notify_log_hint)" || true
+    if (( rc != 0 )) && [[ "$VR_DONE" != "true" ]]; then
+        if [[ "$NOTIFY" == "true" ]]; then
+            notify error "restore check did not run" "$(html_esc "${VR_FAIL_MSG:-verify-restore.sh stopped with exit code $rc}")"$'\n'"$(notify_log_hint)" || true
+        else
+            heartbeat fail "restore check did not run" "$(html_esc "${VR_FAIL_MSG:-exit code $rc}")"
+        fi
+        [[ -z "$PROJECT_FILTER" && "$FROM_ROLE" == "primary" ]] \
+            && metrics_write docker_backup_s3_verify docker_backup_s3_verify 0 projects 0 projects_failed 0 duration_seconds 0
     fi
     # Let tee write the last lines: under systemd the leftover processes are killed when the script exits
     if [[ -n "$VR_LOG_PID" ]]; then exec 2>&-; wait "$VR_LOG_PID" 2>/dev/null || true; fi
@@ -104,7 +124,12 @@ trap _vr_exit EXIT
 
 require_cmd docker tar gzip aws jq
 [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && require_cmd gpg
-notify_any && require_cmd curl
+{ notify_any || [[ -n "${VERIFY_HEARTBEAT_URL:-}" ]]; } && require_cmd curl
+
+# The monitor hears of whole checks of the primary storage only (a check of one project or of a copy is not
+# the scheduled one). The ping goes before anything that can fail: a check that cannot start is a "fail".
+[[ -z "$PROJECT_FILTER" && "$FROM_ROLE" == "primary" ]] && HB_URL="${VERIFY_HEARTBEAT_URL:-}"
+heartbeat start
 
 # The storage to check; the read-only key, if set
 s3_is_role "$FROM_ROLE" || fail "Unknown storage: $FROM_ROLE (available: $(s3_roles_txt))"
@@ -160,6 +185,181 @@ dump_kind() {
     else echo unknown; fi
 }
 
+# ==============================================================================
+# THE DEEP CHECK: a dump loaded into a throwaway database
+# ==============================================================================
+# A dump can be whole gzip and say "PostgreSQL" in its first line, and still not load: cut off midway, a
+# version the server can't read, an extension missing. Only loading it tells.
+
+# deep_image <kind> <the dump's first lines> — the image of the dump's own database and version.
+# VERIFY_DEEP_IMAGE_<KIND> (POSTGRES, MYSQL, MARIADB, MONGO, REDIS, VALKEY) overrides it.
+deep_image() {
+    local kind="$1" head="$2" v ov
+    case "$kind" in
+        postgres)
+            v="$(grep -m 1 -oE 'Dumped from database version [0-9]+' <<< "$head" | grep -oE '[0-9]+$' || true)"
+            ov="${VERIFY_DEEP_IMAGE_POSTGRES:-}"
+            if grep -q 'timescaledb' <<< "$head"; then printf '%s' "${ov:-timescale/timescaledb:latest-pg${v:-17}}"
+            else printf '%s' "${ov:-postgres:${v:-17}-alpine}"; fi ;;
+        mysql)
+            v="$(grep -m 1 -E '^-- Server version' <<< "$head" | grep -oE '[0-9]+\.[0-9]+' | head -n 1 || true)"
+            if grep -qi 'mariadb' <<< "$head"; then printf '%s' "${VERIFY_DEEP_IMAGE_MARIADB:-mariadb:${v:-11.4}}"
+            else printf '%s' "${VERIFY_DEEP_IMAGE_MYSQL:-mysql:${v:-8.4}}"; fi ;;
+        mongo)  printf '%s' "${VERIFY_DEEP_IMAGE_MONGO:-mongo:8}" ;;
+        redis)  printf '%s' "${VERIFY_DEEP_IMAGE_REDIS:-redis:8-alpine}" ;;
+        valkey) printf '%s' "${VERIFY_DEEP_IMAGE_VALKEY:-valkey/valkey:9-alpine}" ;;
+    esac
+}
+
+# _deep_tables_expected <postgres|mysql> — from the dump on stdin: the tables it creates, those of the system
+# schemas left out (the count in the database leaves them out too)
+_deep_tables_expected() {
+    if [[ "$1" == postgres ]]; then
+        awk '/^CREATE (UNLOGGED |TEMP |TEMPORARY )?TABLE / && $0 !~ /TABLE (IF NOT EXISTS )?"?_?timescaledb/ { n++ } END { print n + 0 }'
+    else
+        awk '/^USE `/ { db = $2 } /^CREATE TABLE / && db !~ /^`(mysql|sys|performance_schema|information_schema)`;?$/ { n++ } END { print n + 0 }'
+    fi
+}
+
+# _deep_wait <container> <command…> — the server answers (up to VERIFY_DEEP_START seconds, 180)
+_deep_wait() {
+    local c="$1" i; shift
+    for (( i = 0; i < ${VERIFY_DEEP_START:-180}; i++ )); do
+        docker exec "$c" "$@" >/dev/null 2>&1 && return 0
+        [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == true ]] || return 1
+        sleep 1
+    done
+    return 1
+}
+
+# deep_load <kind: postgres|mysql|mongo|redis> <name> <the dump's first lines> — the uncompressed dump on stdin.
+# 0 — it loads; 1 — it does not; 2 — not checked (no image). What it found goes to the log.
+deep_load() {
+    local kind="$1" name="$2" head="$3" image c d out rc=0 n expected errs dbs db tmo="${VERIFY_DEEP_TIMEOUT:-3600}"
+    [[ "$kind" == redis && "$head" == VALKEY* ]] && kind=valkey
+    image="$(deep_image "$kind" "$head")"
+    if ! docker image inspect "$image" >/dev/null 2>&1 && ! docker pull -q "$image" >/dev/null 2>&1; then
+        log_warn "    $name: cannot get the image $image — not loaded"
+        cat > /dev/null; return 2
+    fi
+    d="$(mktemp -d "${VERIFY_DIR}/deep.XXXXXX")"
+    c="dbs-verify-$$-${BASHPID}-${RANDOM}"
+    case "$kind" in
+        redis|valkey)
+            # No server needed: the checker reads the file
+            cat > "$d/dump.rdb"; chmod 644 "$d/dump.rdb"; chmod 755 "$d"
+            out="$(timeout "$tmo" docker run --rm --name "$c" --label docker-backup-s3.skip=true --network none \
+                -v "$d/dump.rdb:/check/dump.rdb:ro" --entrypoint "${kind}-check-rdb" "$image" /check/dump.rdb 2>&1)" || rc=$?
+            rm -rf "$d"
+            if (( rc == 0 )) && grep -q 'RDB looks OK' <<< "$out"; then
+                n="$(grep -oE '[0-9]+ keys read' <<< "$out" | head -n 1)"
+                log_ok "    $name: ${kind}-check-rdb ($image): the RDB is sound${n:+, $n}"; return 0
+            fi
+            log_err "    $name: ${kind}-check-rdb ($image) rejects it: $(grep -iE 'error|fail|corrupt|unexpected' <<< "$out" | head -n 2 | tr '\n' ' ')"
+            return 1 ;;
+    esac
+
+    log "    🧪 $name: loading into a throwaway $image (no network)..."
+    case "$kind" in
+        postgres) docker run -d --name "$c" --label docker-backup-s3.skip=true --network none \
+                      -e POSTGRES_HOST_AUTH_METHOD=trust "$image" >/dev/null 2>"$d/run" || rc=$? ;;
+        mysql)    docker run -d --name "$c" --label docker-backup-s3.skip=true --network none \
+                      -e MYSQL_ALLOW_EMPTY_PASSWORD=yes -e MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1 "$image" >/dev/null 2>"$d/run" || rc=$? ;;
+        mongo)    docker run -d --name "$c" --label docker-backup-s3.skip=true --network none "$image" >/dev/null 2>"$d/run" || rc=$? ;;
+    esac
+    if (( rc != 0 )); then
+        log_err "    $name: the database container did not start: $(head -n 1 "$d/run")"
+        cat > /dev/null; rm -rf "$d"; return 1
+    fi
+    # Over TCP: the images first run a temporary server for their setup, then restart it
+    local cli="mariadb"; [[ "$kind" == mysql && "$image" == mysql:* ]] && cli="mysql"
+    local -a ready
+    case "$kind" in
+        postgres) ready=(pg_isready -q -h 127.0.0.1 -U postgres) ;;
+        mysql)    ready=("$cli" -h127.0.0.1 --protocol=tcp -uroot -e 'select 1') ;;
+        mongo)    ready=(mongosh --quiet --eval 'db.runCommand({ping: 1}).ok') ;;
+    esac
+    if ! _deep_wait "$c" "${ready[@]}"; then
+        log_err "    $name: the $image server did not come up: $(docker logs --tail 3 "$c" 2>&1 | tr '\n' ' ')"
+        cat > /dev/null; docker rm -f -v "$c" >/dev/null 2>&1; rm -rf "$d"; return 1
+    fi
+
+    rc=0
+    case "$kind" in
+        postgres)
+            tee >(_deep_tables_expected postgres > "$d/expected") \
+                | timeout "$tmo" docker exec -i "$c" psql -U postgres -h 127.0.0.1 -q -v ON_ERROR_STOP=0 -f - >/dev/null 2>"$d/err" || rc=$? ;;
+        mysql)
+            # A dump of all databases brings its own mysql.user, and the source's root password with it: the
+            # tables are counted in the same session, after the dump
+            { tee >(_deep_tables_expected mysql > "$d/expected")
+              printf '\nSELECT CONCAT("DBS_TABLES=", COUNT(*)) FROM information_schema.tables WHERE table_type = "BASE TABLE" AND table_schema NOT IN ("mysql","sys","performance_schema","information_schema");\n'
+            } | timeout "$tmo" docker exec -i "$c" "$cli" -uroot -h127.0.0.1 --protocol=tcp --force -N -B >"$d/out" 2>"$d/err" || rc=$? ;;
+        mongo)
+            timeout "$tmo" docker exec -i "$c" mongorestore --archive --quiet >/dev/null 2>"$d/err" || rc=$? ;;
+    esac
+    for _ in $(seq 1 100); do [[ "$kind" == mongo || -s "$d/expected" ]] && break; sleep 0.1; done
+    if (( rc == 124 )); then
+        log_err "    $name: still loading after ${tmo} s (VERIFY_DEEP_TIMEOUT) — stopped"
+        docker rm -f -v "$c" >/dev/null 2>&1; rm -rf "$d"; return 1
+    fi
+    if (( rc != 0 )); then
+        log_err "    $name: the load failed (exit code $rc): $(grep -v '^[[:space:]]*$' "$d/err" | tail -n 2 | tr '\n' ' ')"
+        docker rm -f -v "$c" >/dev/null 2>&1; rm -rf "$d"; return 1
+    fi
+
+    # What is in the database now
+    n=0
+    case "$kind" in
+        postgres)
+            dbs="$(docker exec "$c" psql -U postgres -h 127.0.0.1 -Atc "select datname from pg_database where datallowconn and not datistemplate" 2>/dev/null)"
+            while IFS= read -r db; do
+                [[ -z "$db" ]] && continue
+                n=$(( n + $(docker exec "$c" psql -U postgres -h 127.0.0.1 -d "$db" -Atc \
+                    "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema') and schemaname not like '\_timescaledb%' and schemaname not like 'timescaledb%'" 2>/dev/null || echo 0) ))
+            done <<< "$dbs"
+            errs="$(grep -E '^(psql:.*)?ERROR' "$d/err" | grep -v 'already exists' || true)" ;;
+        mysql)
+            n="$(sed -n 's/^DBS_TABLES=//p' "$d/out" | tail -n 1)"; n="${n:-?}"
+            errs="$(grep -E '^ERROR' "$d/err" | grep -v 'already exists' || true)" ;;
+        mongo)
+            n="$(docker exec "$c" mongosh --quiet --eval 'let n = 0; db.adminCommand({listDatabases: 1}).databases.forEach(x => { if (!["admin", "local", "config"].includes(x.name)) n += db.getSiblingDB(x.name).getCollectionNames().length }); print(n)' 2>/dev/null || echo "?")"
+            errs="$(grep -iE 'error|failed' "$d/err" || true)" ;;
+    esac
+    expected="$(cat "$d/expected" 2>/dev/null || true)"
+    docker rm -f -v "$c" >/dev/null 2>&1
+    rm -rf "$d"
+
+    local what="tables"; [[ "$kind" == mongo ]] && what="collections"
+    if [[ "$n" =~ ^[0-9]+$ && "$expected" =~ ^[0-9]+$ ]] && (( n < expected )); then
+        log_err "    $name: loads, but only $n of the dump's $expected $what are there"
+        return 1
+    fi
+    log_ok "    $name: loads into $image — ${n} ${what}${expected:+ (the dump creates $expected)}"
+    if [[ -n "$errs" ]]; then
+        log_warn "    $name: $(grep -c . <<< "$errs") error(s) while loading, the first: $(head -n 1 <<< "$errs" | cut -c1-200)"
+    fi
+    return 0
+}
+
+# deep_dump <file.gz> <postgres|mysql|redis|mongo> — deep_load of a dump on this disk; its return code
+deep_dump() {
+    local f="$1" kind="$2" head
+    head="$(gunzip -c "$f" 2>/dev/null | head -c 16384 || true)"
+    # The extension that picks the image may come long after the start (pg_dumpall: roles, then each database)
+    [[ "$kind" == postgres ]] && head+=$'\n'"$(gunzip -c "$f" 2>/dev/null | grep -m 1 -E '^CREATE EXTENSION .*timescaledb' || true)"
+    gunzip -c "$f" | deep_load "$kind" "$(basename "$f")" "$head"
+}
+
+# sealed_note <project> — a public-key archive, and no secret key here: it is whole (sha256), but what is inside
+# was not checked. Counted as passed, listed in the summary (SEALED).
+SEALED=()
+sealed_note() {
+    log_warn "Encrypted to a public key, and its secret key is not on this host: the archive is whole (sha256), its contents are not checked"
+    log "    For the full check set GPG_SECRET_KEY_FILE — on a restore host, not on the one that makes the backups"
+    SEALED+=("$1")
+}
+
 # List of projects in S3
 list_s3_projects() {
     aws_q s3api list-objects-v2 \
@@ -206,16 +406,23 @@ find_archive_name() {
 # on this disk: download | sha256 | decrypt | gunzip (which checks the gzip CRC), the first 64 KB kept to tell
 # what made the dump.
 verify_remote_dump() {
-    local project="$1" key="$2" name="$3" d st expected rc_aws rc_tee rc_gpg rc_gz head kind
+    local project="$1" key="$2" name="$3" d st expected rc_aws rc_tee rc_gpg rc_gz head kind sealed=false
     d="${VERIFY_DIR}/${project}"
     mkdir -p "$d"
-    log "  🗄  A remote database's dump: checking it as it streams by (download, sha256, decrypt, gunzip)"
+    # Encrypted to a public key whose secret key is not on this host: the checksum is all that can be checked
+    if [[ "$name" == *.gpg ]] && aws_q s3api get-object --bucket "$SRC_BUCKET" --key "$key" --range bytes=0-65535 "$d/start" >/dev/null 2>&1 \
+        && [[ "$(gpg_kind "$d/start")" == pubkey ]] && ! gpg_can_decrypt; then
+        sealed=true
+    fi
+    rm -f "$d/start"
+    if $sealed; then log "  🗄  A remote database's dump, encrypted to a public key: download and sha256 only"
+    else log "  🗄  A remote database's dump: checking it as it streams by (download, sha256, decrypt, gunzip)"; fi
     st="$(
         set +e
         aws_q s3 cp "s3://${SRC_BUCKET}/${key}" - \
             | tee >(sha256sum | awk '{print $1}' > "$d/sum") \
-            | if [[ "$name" == *.gpg ]]; then gpg --batch --quiet --passphrase-file "$GPG_PASSPHRASE_FILE" -d; else cat; fi \
-            | gunzip -c 2> "$d/gz" \
+            | if $sealed; then cat > /dev/null; elif [[ "$name" == *.gpg ]]; then gpg_dec; else cat; fi \
+            | if $sealed; then cat; else gunzip -c 2> "$d/gz"; fi \
             | { head -c 65536 > "$d/head"; cat > /dev/null; }
         printf '%s ' "${PIPESTATUS[@]}"
     )"
@@ -233,6 +440,9 @@ verify_remote_dump() {
         fi
     else
         log_warn "No sha256 manifest — checking by size only"
+    fi
+    if $sealed; then
+        sealed_note "$project"; rm -rf "$d"; return 0
     fi
     if [[ "${rc_gpg:-1}" != 0 ]]; then
         log_err "Decryption failed"; FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("GPG decryption"); return 1
@@ -257,6 +467,18 @@ verify_remote_dump() {
         FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("Not a database dump"); return 1
     fi
     log_ok "$kind, intact"
+    if [[ "$MODE" == deep ]]; then
+        # Streamed once more, straight into the throwaway database: the dump may be too big for this disk
+        local dk drc=0
+        case "$kind" in PostgreSQL*) dk=postgres ;; MySQL*) dk=mysql ;; Redis*) dk=redis ;; *) dk=mongo ;; esac
+        aws_q s3 cp "s3://${SRC_BUCKET}/${key}" - 2>/dev/null \
+            | if [[ "$name" == *.gpg ]]; then gpg_dec 2>/dev/null; else cat; fi \
+            | gunzip -c 2>/dev/null \
+            | deep_load "$dk" "$name" "$(head -c 65536 "$d/head" 2>/dev/null | tr -d '\0')" || drc=$?
+        if (( drc == 1 )); then
+            FAILED_PROJECTS+=("$project"); FAILURE_REASONS+=("The dump does not load (deep check)"); rm -rf "$d"; return 1
+        fi
+    fi
     log_ok "${C_BOLD}Check passed${C_RESET}"
     rm -rf "$d"
     return 0
@@ -367,6 +589,10 @@ verify_project() {
 
     # 5. Decrypt if needed
     local work_archive="$local_archive"
+    if [[ "$archive_name" == *.gpg && "$(gpg_kind "$local_archive")" == pubkey ]] && ! gpg_can_decrypt; then
+        sealed_note "$project"
+        return 0
+    fi
     if [[ "$archive_name" == *.gpg ]]; then
         log "  🔐 Decrypting..."
         if work_archive=$(decrypt_file "$local_archive"); then
@@ -467,7 +693,7 @@ verify_project() {
 
         if [[ -n "$dumps_dir" && -d "$dumps_dir" ]]; then
             log "  🗄  Checking DB dumps in $(basename "$(dirname "$dumps_dir")")/db-dumps/..."
-            local dump_failed=0
+            local dump_failed=0 drc
 
             # PostgreSQL dumps
             for d in "$dumps_dir"/postgres_*.sql.gz; do
@@ -479,6 +705,7 @@ verify_project() {
                     if [[ "$(dump_kind "$d")" == postgres ]]; then
                         local lines; lines=$(gunzip -c "$d" 2>/dev/null | wc -l)
                         log_ok "    $name (PostgreSQL, $lines lines)"
+                        if [[ "$MODE" == deep ]]; then drc=0; deep_dump "$d" postgres || drc=$?; if (( drc == 1 )); then dump_failed=$((dump_failed + 1)); fi; fi
                     else
                         log_warn "    $name — gzip is intact, but it doesn't look like pg_dumpall"
                     fi
@@ -496,6 +723,7 @@ verify_project() {
                     if [[ "$(dump_kind "$d")" == mysql ]]; then
                         local lines; lines=$(gunzip -c "$d" 2>/dev/null | wc -l)
                         log_ok "    $name (MySQL, $lines lines)"
+                        if [[ "$MODE" == deep ]]; then drc=0; deep_dump "$d" mysql || drc=$?; if (( drc == 1 )); then dump_failed=$((dump_failed + 1)); fi; fi
                     else
                         log_warn "    $name — gzip is intact, but it doesn't look like a mysqldump/mariadb-dump"
                     fi
@@ -516,6 +744,7 @@ verify_project() {
                     if [[ "$magic" == REDIS* || "$magic" == VALKEY ]]; then
                         local size; size=$(stat -c %s "$d")
                         log_ok "    $name (Redis RDB, $size bytes)"
+                        if [[ "$MODE" == deep ]]; then drc=0; deep_dump "$d" redis || drc=$?; if (( drc == 1 )); then dump_failed=$((dump_failed + 1)); fi; fi
                     else
                         log_warn "    $name — gzip is intact, but it is not an RDB file (no REDIS/VALKEY magic)"
                     fi
@@ -534,6 +763,7 @@ verify_project() {
                     local magic; magic=$(gunzip -c "$d" 2>/dev/null | od -An -tx1 -N4 | tr -d ' \n' || true)
                     if [[ "$magic" == 6de29981 ]]; then
                         log_ok "    $name (MongoDB archive)"
+                        if [[ "$MODE" == deep ]]; then drc=0; deep_dump "$d" mongo || drc=$?; if (( drc == 1 )); then dump_failed=$((dump_failed + 1)); fi; fi
                     else
                         log_warn "    $name — gzip is intact, but it is not a mongodump archive"
                     fi
@@ -545,7 +775,7 @@ verify_project() {
 
             if [[ "$dump_failed" -gt 0 ]]; then
                 FAILED_PROJECTS+=("$project")
-                FAILURE_REASONS+=("Corrupted DB dumps ($dump_failed)")
+                FAILURE_REASONS+=("DB dumps that fail the check ($dump_failed)")
                 return 1
             fi
         fi
@@ -579,6 +809,7 @@ fi
 
 if [[ ${#PROJECTS_TO_CHECK[@]} -eq 0 ]]; then
     log_warn "No projects to check"
+    heartbeat success "nothing to check" "No projects in the storage yet."
     exit 0
 fi
 
@@ -608,6 +839,10 @@ if [[ -z "$PROJECT_FILTER" ]] && mkdir -p "$(dirname "$LAST_VERIFY_FILE")" 2>/de
         && mv "${LAST_VERIFY_FILE}.tmp" "$LAST_VERIFY_FILE"
     chmod 644 "$LAST_VERIFY_FILE" 2>/dev/null || true
 fi
+if [[ -z "$PROJECT_FILTER" && "$FROM_ROLE" == "primary" ]]; then
+    metrics_write docker_backup_s3_verify docker_backup_s3_verify "$([[ "$TOTAL_FAIL" -eq 0 ]] && echo 1 || echo 0)" \
+        projects "$TOTAL_PROJECTS" projects_failed "$TOTAL_FAIL" duration_seconds "$TOTAL_DURATION"
+fi
 
 log ""
 log "${C_BOLD}${C_BLUE}═══════════════════════════════════════════════════════════════${C_RESET}"
@@ -616,10 +851,18 @@ if [[ "$TOTAL_FAIL" -eq 0 ]]; then
     log "    Checked: ${TOTAL_OK}/${TOTAL_PROJECTS}"
     log "    Mode:    $MODE"
     log "    Time:    $(fmt_duration $TOTAL_DURATION)"
-
-    if [[ "$NOTIFY" == "true" && "${NOTIFY_ON:-error}" == "always" ]]; then
-        notify success "backups restore fine" "Checked ${TOTAL_OK} of ${TOTAL_PROJECTS} $(plural "$TOTAL_PROJECTS" project projects) (${MODE} mode) in $(fmt_duration $TOTAL_DURATION)."
+    sealed_txt=""
+    if (( ${#SEALED[@]} )); then
+        sealed_txt="${#SEALED[@]} encrypted to a public key without its secret key here: checked by sha256 only ($(IFS=,; printf '%s' "${SEALED[*]}" | sed 's/,/, /g'))."
+        log "    ${C_YELLOW}${sealed_txt}${C_RESET}"
     fi
+
+    # Always through notify: it sends the message only with NOTIFY_ON=always, but the monitor's ping and
+    # PagerDuty's resolve go whatever NOTIFY_ON says
+    pass_msg="Checked ${TOTAL_OK} of ${TOTAL_PROJECTS} $(plural "$TOTAL_PROJECTS" project projects) (${MODE} mode) in $(fmt_duration $TOTAL_DURATION)."
+    [[ -n "$sealed_txt" ]] && pass_msg+=$'\n'"$(html_esc "$sealed_txt")"
+    if [[ "$NOTIFY" == "true" ]]; then notify success "backups restore fine" "$pass_msg"
+    else heartbeat success "backups restore fine" "$pass_msg"; fi
 else
     log "${C_RED}${C_BOLD}❌ PROBLEMS WITH BACKUPS FOUND${C_RESET}"
     log "    Succeeded: ${TOTAL_OK}/${TOTAL_PROJECTS}"
@@ -631,13 +874,13 @@ else
     done
     log "    Time: $(fmt_duration $TOTAL_DURATION)"
 
-    if [[ "$NOTIFY" == "true" ]]; then
-        reasons=""
-        for i in "${!FAILED_PROJECTS[@]}"; do
-            reasons+=$'\n'"• <b>$(html_esc "${FAILED_PROJECTS[$i]}")</b>: $(html_esc "${FAILURE_REASONS[$i]}")"
-        done
-        notify error "a backup does not restore" "Restore check: ${TOTAL_FAIL} of ${TOTAL_PROJECTS} failed.${reasons}"$'\n'"$(notify_log_hint)"
-    fi
+    reasons=""
+    for i in "${!FAILED_PROJECTS[@]}"; do
+        reasons+=$'\n'"• <b>$(html_esc "${FAILED_PROJECTS[$i]}")</b>: $(html_esc "${FAILURE_REASONS[$i]}")"
+    done
+    fail_msg="Restore check: ${TOTAL_FAIL} of ${TOTAL_PROJECTS} failed.${reasons}"$'\n'"$(notify_log_hint)"
+    if [[ "$NOTIFY" == "true" ]]; then notify error "a backup does not restore" "$fail_msg"
+    else heartbeat fail "a backup does not restore" "$fail_msg"; fi
 fi
 log "${C_BOLD}${C_BLUE}═══════════════════════════════════════════════════════════════${C_RESET}"
 

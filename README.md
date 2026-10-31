@@ -59,15 +59,17 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 - ⚡ **Parallel volume backup**
 - 🎯 **Single-project backup** with `-p NAME` for urgent jobs
 - 🚦 **Bandwidth limit** for S3 uploads
-- 🔐 **GPG encryption** of archives (optional)
+- 🔐 **GPG encryption** of archives (optional) — with a passphrase, or to a public key: then the host that makes the backups cannot read them ([details](#gpg-encryption))
+- 🛡 **Object Lock** buckets — the checksum uploads to them need, and a check that the lock, versioning and lifecycle rules work together ([details](#object-lock-and-versioning))
 - 🔒 **Secrets stay on your server** — no telemetry; keys and passwords never go on a command line, in the log or in a notification ([details](#where-your-keys-and-passwords-live))
 - 🔍 **Integrity check** — size via S3 head-object plus a `sha256` manifest next to the archive (in every storage)
 - 🔁 **Upload retries** — a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection) is retried, and the failed upload's parts are aborted
 - ✅ **Completeness control** — if a volume or bind mount didn't make it into the archive, the project is marked as failed, not as a "success"
 - 🗂 **GFS rotation** (day/week/month) and the `KEEP_MIN_BACKUPS` floor — the latest copies are never deleted
 - 🔒 **Lock** against a double start (via an atomic mkdir)
-- 📡 **Notifications** to email (your SMTP), Slack, PagerDuty (an incident opened by a failure and resolved by the next good run), a webhook (Discord, Mattermost or your own JSON receiver) and Telegram — an interrupted run (Ctrl+C, a kill, a shutdown) is reported too
-- 🧪 **Restore checks on a schedule** — the latest archive of every project downloaded, unpacked and its database dumps checked, weekly by default
+- 📡 **Notifications** to email (your SMTP), Slack, Microsoft Teams, PagerDuty (an incident opened by a failure and resolved by the next good run), ntfy, a webhook (Discord, Mattermost or your own JSON receiver), Telegram and, through Apprise, 100+ more services — an interrupted run (Ctrl+C, a kill, a shutdown) is reported too
+- 💓 **A monitor's ping and Prometheus metrics** — Healthchecks.io-compatible or Uptime Kuma pings raise the alarm when a run never happened; node_exporter textfile metrics for dashboards and alerts ([details](#monitoring))
+- 🧪 **Restore checks on a schedule** — the latest archive of every project downloaded, unpacked and its database dumps checked, weekly by default; the deep check loads every dump into a throwaway database of its own version and counts its tables
 - 🧪 **Dry-run** for safe testing
 - 🔑 **Read-only S3 key** for restore (protection against deletion from dev/staging)
 - 🛟 **Restore from any storage** — `--from secondary|tertiary` (or the interactive choice) pulls from a copy if the primary is unavailable
@@ -148,11 +150,11 @@ The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arg
 | Remote databases | add one (type, host, user, password, TLS — the login is checked at once), change it, test the login, back it up now, take it off |
 | Restore | pick the storage, the project and the backup from lists, then: restore in place (with or without starting), into another folder, one named volume, unpack only, or show the contents |
 | Synchronize storages | the plan, all copies, one copy, with `--prune`, or restoring the primary from a copy |
-| Checks and diagnostics | `validate-config.sh`, quick/full restore verification (of any storage, all projects or one), `diagnose-s3.sh`, `diagnose-cron.sh` |
+| Checks and diagnostics | `validate-config.sh`, quick/full/deep restore verification (of any storage, all projects or one), `diagnose-s3.sh`, `diagnose-cron.sh` |
 | Logs | the last lines, errors, the last run, today's errors, one project, follow live |
 | Scheduled runs | the current setup, a method (cron / systemd timer) and a preset or your own schedule, the restore check on a schedule, removal |
-| Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key |
-| Notifications | when to notify (problems only / every run / never), the server name in messages, which of them arrive without a sound, and email, Slack, PagerDuty, the webhook and Telegram: set up, test, turn off; every change is checked with a test message (PagerDuty's after a question: it pages) |
+| Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key, Object Lock |
+| Notifications | when to notify (problems only / every run / never), the server name in messages, which of them arrive without a sound, and email, Slack, Teams, PagerDuty, ntfy, the webhook, Telegram and Apprise: set up, test, turn off; every change is checked with a test message (PagerDuty's after a question: it pages); Monitoring: the monitor's ping URLs and the metrics folder |
 
 Destructive actions (an in-place restore, `--prune`, writing to the primary from a copy) ask for confirmation first;
 the scripts themselves keep their own confirmations too. Before the first change to the config the menu
@@ -284,8 +286,8 @@ The installer does everything itself:
      generate one (copy it off the server: without it the backups cannot be restored)
    - The server's name in notifications (`NOTIFY_NAME`)
    - Notifications, each optional and checked with a test message: email (recipients, SMTP server, security,
-     login, sender), Slack (the webhook URL), PagerDuty (the integration key, the region), a webhook, Telegram
-     (token and chat_id)
+     login, sender), Slack (the webhook URL), Teams (the workflow URL), PagerDuty (the integration key, the region),
+     ntfy (the topic, a token), a webhook, Telegram (token and chat_id), Apprise (when it is installed)
 7. Optionally sets up logrotate; links the `docker-backup-s3` command
 8. Runs `validate-config.sh`
 9. Optionally runs `setup-cron.sh` for scheduled runs and the weekly restore check
@@ -506,7 +508,7 @@ Everything else has sensible defaults.
 | `ENCRYPT_BACKUPS` | `false` | GPG encryption |
 | `GPG_PASSPHRASE_FILE` | `/root/.docker-backup-passphrase` | passphrase file |
 | `NOTIFY_ON` | `error` | none / error (errors and warnings) / always |
-| `NOTIFY_SILENT` | `success` | levels that arrive without a sound in Telegram and Discord: success / warn / error, space-separated; empty — all ring |
+| `NOTIFY_SILENT` | `success` | levels that arrive without a sound in Telegram, Discord and ntfy: success / warn / error, space-separated; empty — all ring |
 | `NOTIFY_NAME` | empty | the server's name in messages; empty — the hostname |
 | `EMAIL_TO` | empty | email recipients, space- or comma-separated |
 | `SMTP_HOST` | empty | SMTP server |
@@ -515,12 +517,21 @@ Everything else has sensible defaults.
 | `SMTP_USER` / `SMTP_PASSWORD` | empty | SMTP login; empty — without login |
 | `SMTP_FROM` | empty | sender address; empty — `SMTP_USER` |
 | `SLACK_WEBHOOK_URL` | empty | a Slack incoming webhook |
+| `TEAMS_WEBHOOK_URL` | empty | a Microsoft Teams Workflows webhook |
 | `PAGERDUTY_ROUTING_KEY` | empty | the Events API v2 integration key of a PagerDuty service |
 | `PAGERDUTY_REGION` | `us` | us / eu — the account's service region |
+| `NTFY_URL` / `NTFY_TOKEN` | empty | an ntfy topic's URL / an access token for a protected one |
 | `NOTIFY_WEBHOOK_URL` | empty | webhook URL |
 | `NOTIFY_WEBHOOK_FORMAT` | `auto` | auto/discord/slack/json — the payload shape |
 | `TELEGRAM_BOT_TOKEN` | empty | bot token |
 | `TELEGRAM_CHAT_ID` | empty | recipient ID |
+| `APPRISE_URLS` | empty | Apprise URLs, space-separated (needs the `apprise` CLI) |
+| `HEARTBEAT_URL` / `VERIFY_HEARTBEAT_URL` | empty | a monitor's ping URL for the backup / the restore check ([Monitoring](#monitoring)) |
+| `HEARTBEAT_FORMAT` / `HEARTBEAT_START` | `auto` / `true` | healthchecks / kuma; the `/start` ping |
+| `METRICS_DIR` | empty | node_exporter's textfile collector folder for the Prometheus metrics |
+| `VERIFY_DEEP` / `VERIFY_DEEP_TIMEOUT` | `false` / `3600` | the deep restore check by default; seconds per dump |
+| `<ROLE>_S3_OBJECT_LOCK` | `false` | the bucket has Object Lock ([details](#object-lock-and-versioning)) |
+| `GPG_RECIPIENT_FILE` / `GPG_SECRET_KEY_FILE` | empty | public key file(s) to encrypt to / the secret key for restore ([details](#to-a-public-key-the-host-cant-read-its-own-backups)) |
 | `COLOR_OUTPUT` | `auto` | auto/on/off |
 | `LOCK_FILE` | `/var/run/docker-backup.lock` | base path for the lock; the lock itself is a `<LOCK_FILE>.d` directory with the PID inside (atomic `mkdir`) |
 | `WORK_DIR` | `/var/tmp/docker-backup` | temporary folder |
@@ -555,8 +566,11 @@ The script checks:
 - Each storage's read-only key, if set
 - Free space
 - **Telegram bot** — by actually sending a test message, with error diagnostics
-- **Email**, **Slack** and the **webhook** — by sending a test message, with hints for the common errors
+- **Email**, **Slack**, **Teams**, **ntfy**, the **webhook** and **Apprise** — by sending a test message, with hints for the common errors
 - **PagerDuty** — the key's format and region, and a change event that pages no one
+- **The monitor's ping** (a `/log` ping that changes nothing) and **the metrics folder**
+- **Encryption** — a real round trip; for a public key its expiry and that this host cannot decrypt
+- **Each bucket's Object Lock, versioning and lifecycle rules** — whether the rotation can free space
 - The cron job and which `aws` it will find with its `PATH` (warns if it's from snap)
 
 ---
@@ -1043,6 +1057,9 @@ sudo /opt/docker-backup-s3/verify-restore.sh --no-notify
 
 # Check the copy in the tertiary S3 rather than the primary
 sudo /opt/docker-backup-s3/verify-restore.sh --from tertiary
+
+# Deep: also load every database dump into a throwaway database
+sudo /opt/docker-backup-s3/verify-restore.sh --deep
 ```
 
 ### What the standard mode checks
@@ -1059,6 +1076,27 @@ sudo /opt/docker-backup-s3/verify-restore.sh --from tertiary
   - MySQL/MariaDB: gzip + the `mysqldump`/`mariadb-dump` header (MariaDB 10.11.8+/11 start with a sandbox line first)
   - Redis: gzip + RDB magic (`REDIS`, `VALKEY` in Valkey 9+)
   - MongoDB: gzip + the mongodump archive magic
+
+### The deep check (`--deep`, `VERIFY_DEEP="true"`)
+
+A dump can be whole gzip with the right first line and still not load: cut off midway, written by a version the
+server can't read, needing an extension. The deep check loads each one, after the standard checks:
+
+| Dump | Loaded into | Counted |
+|---|---|---|
+| PostgreSQL | `postgres:<the dump's major>-alpine`; `timescale/timescaledb:latest-pg<major>` when it uses TimescaleDB | tables in every database, against the dump's `CREATE TABLE`s |
+| MySQL / MariaDB | `mysql:<x.y>` / `mariadb:<x.y>` of the dump's `Server version` | tables outside the system schemas, against the dump's |
+| MongoDB | `mongo:8`, with `mongorestore --archive` | collections |
+| Redis / Valkey RDB | `redis-check-rdb` of `redis:8-alpine` / `valkey/valkey:9-alpine` | keys read |
+
+- The container has **no network**, is labelled so the backup leaves it alone, and is removed after the dump (and
+  when the script is stopped). The images are pulled the first time.
+- **Fewer tables than the dump creates fails the check.** Errors while loading (an extension the image lacks,
+  say) are warnings with the first of them shown; for an image of your own — PostGIS, an extension —
+  `VERIFY_DEEP_IMAGE_POSTGRES` (`_MYSQL`, `_MARIADB`, `_MONGO`, `_REDIS`, `_VALKEY`).
+- Remote databases' dumps are streamed into the container: they are never written to this disk.
+- It needs memory and disk for the largest database, and time: `VERIFY_DEEP_TIMEOUT` (an hour) per dump. On a
+  busy server run it weekly, the standard check daily — or on a restore host of its own.
 
 ### On a schedule
 
@@ -1147,18 +1185,77 @@ tar xzf myapp__2026-05-12.tar.gz
 
 Without the passphrase, encrypted backups are lost for good. **Keep a copy of the passphrase in at least two places off the server.** After a passphrase change, old archives still decrypt only with the old passphrase — the new one won't work.
 
+### To a public key: the host can't read its own backups
+
+With a passphrase, whoever breaks into the server reads every backup with it. With a public key, the server only
+encrypts: the secret key is somewhere else, and the backups stay closed.
+
+```bash
+# On your own machine (not the server)
+gpg --quick-gen-key "backups@example.com" rsa4096 encr 5y
+gpg --export --armor backups@example.com > backup-key.pub.asc            # → to the server
+gpg --export-secret-keys --armor backups@example.com > backup-key.sec.asc  # → a safe, a restore host
+```
+
+On the server, in `backup.conf`:
+```bash
+ENCRYPT_BACKUPS="true"
+GPG_RECIPIENT_FILE="/root/backup-key.pub.asc"   # several files, space-separated: each holder can decrypt
+```
+
+- The key is used from the file: nothing is imported into root's keyring. `validate-config.sh` checks that it can
+  encrypt, has not expired (and warns 30 days before), and that this host **cannot** decrypt.
+- **Restore** needs the secret key: on the restore host `GPG_SECRET_KEY_FILE="/root/backup-key.sec.asc"` (imported
+  into a throwaway keyring for each call and gone after it), or the key in root's own keyring. A passphrase on the
+  secret key is read from `GPG_PASSPHRASE_FILE`.
+- **The restore check** without the secret key checks such an archive by its sha256 manifest and says so in its
+  summary ("checked by sha256 only"); with `GPG_SECRET_KEY_FILE` it does the full cycle.
+- Archives made with the passphrase before the switch still open: keep `GPG_PASSPHRASE_FILE` until they age out.
+- By hand: `gpg -d myapp__2026-05-12.tar.gz.gpg > myapp.tar.gz` where the secret key is.
+
+---
+
+## Object Lock and versioning
+
+Against ransomware the backups need a storage that a key leaked from the server can't wipe. **Object Lock** with a
+default retention does that: no one can delete or overwrite a backup younger than its retention, the server's key
+included (in COMPLIANCE mode — the root account neither).
+
+1. Create the bucket with Object Lock (it can't be turned on later at most providers) and a default retention
+   at least as long as you need — e.g. 30 days, COMPLIANCE.
+2. A lifecycle rule that removes noncurrent versions: with versioning (which Object Lock brings) a delete only
+   hides an object, so the rotation and `drop-project.sh` free no space without it:
+   ```json
+   {"Rules": [{"ID": "expire-deleted-backups", "Status": "Enabled", "Filter": {"Prefix": ""},
+     "NoncurrentVersionExpiration": {"NoncurrentDays": 1},
+     "Expiration": {"ExpiredObjectDeleteMarker": true},
+     "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}}]}
+   ```
+   `aws s3api put-bucket-lifecycle-configuration --bucket my-backups --lifecycle-configuration file://lifecycle.json`
+   — a locked version stays until its retention ends whatever the rule says; then it goes.
+3. In `backup.conf`: `PRIMARY_S3_OBJECT_LOCK="true"` (or the copy's). Such a bucket refuses an upload without a
+   checksum; with the setting aws sends one to that storage (for the others it stays off, see
+   `AWS_REQUEST_CHECKSUM_CALCULATION`). In the menu: Storage settings → the storage → The bucket has Object Lock.
+4. The server's key needs no `s3:BypassGovernanceRetention`, no `s3:PutBucketObjectLockConfiguration` and no
+   `s3:PutLifecycleConfiguration`. To be checked, it needs read access to the bucket's settings:
+   `s3:GetBucketVersioning`, `s3:GetBucketObjectLockConfiguration`, `s3:GetLifecycleConfiguration`.
+
+`validate-config.sh` reads all three for every storage and says what is missing: a locked bucket without the
+setting (uploads would fail), a lock longer than `RETENTION_DAYS` (old backups are hidden by the rotation but kept,
+and billed, until their lock ends), a versioned bucket with no rule that expires noncurrent versions.
+
 ---
 
 ## Notifications
 
 The easiest way: `sudo docker-backup-s3` → **Notifications**. Each channel is set up there with a test message, and
-the same wizards run in `install.sh`. Any channels can be on at once: email, Slack, PagerDuty, a webhook (Discord,
-Mattermost, your own receiver) and Telegram.
+the same wizards run in `install.sh`. Any channels can be on at once: email, Slack, Microsoft Teams, PagerDuty, ntfy,
+a webhook (Discord, Mattermost, your own receiver), Telegram and Apprise (100+ more services).
 
 **Without a sound.** With `NOTIFY_ON="always"` a routine "backup done" shares the chat with the alerts.
-`NOTIFY_SILENT` (default `success`) lists the levels Telegram and Discord deliver silently, so only errors and
-warnings ring; `"success warn"` quiets warnings too, `""` makes every message ring. Slack, PagerDuty, a custom webhook
-and email have no silent delivery. A test message always rings: it checks that an alert would be heard.
+`NOTIFY_SILENT` (default `success`) lists the levels Telegram, Discord and ntfy deliver silently, so only errors and
+warnings ring; `"success warn"` quiets warnings too, `""` makes every message ring. The other channels
+have no silent delivery. A test message always rings: it checks that an alert would be heard.
 
 By hand, in `backup.conf`:
 
@@ -1193,6 +1290,17 @@ Messages use Slack markup (bold head line, `code`), cut on a line under 3,900 ch
 own, so Slack and a Discord webhook can be on together. A `NOTIFY_WEBHOOK_URL` of Slack's from an older setup keeps
 working.
 
+### Microsoft Teams
+
+In the channel: **⋯** → **Workflows** → **Post to a channel when a webhook request is received** → **Add workflow**
+→ copy the URL. (The old Office 365 "Incoming Webhook" connectors are retired by Microsoft.)
+
+```bash
+TEAMS_WEBHOOK_URL="https://prod-00.westeurope.logic.azure.com:443/workflows/…"
+```
+
+The message is an Adaptive Card: the notification line in red, orange or green by level, then the details.
+
 ### PagerDuty
 
 For on-call: a failed run **opens an incident**, the next good run **resolves it**. There is one incident per server
@@ -1218,6 +1326,19 @@ what a failure opened. The summary is the notification line, the details go to `
 to jq and curl in their environment and on stdin, never as an argument. `validate-config.sh` checks the key with a
 **change event**, which pages no one; a real test incident (opened and resolved at once — whoever is on call gets
 paged) is sent from the menu, after a question.
+
+### ntfy
+
+Push to a phone through [ntfy](https://ntfy.sh): subscribe to a topic in the app, then give its URL.
+
+```bash
+NTFY_URL="https://ntfy.sh/backups-7f3c9a1e"   # or your own server
+NTFY_TOKEN=""                                 # tk_… for a protected topic
+```
+
+On ntfy.sh anyone who knows a topic's name can read it: pick a long random one, or use a protected topic and a
+token (sent in a header from a curl config, never on the command line). An error comes at high priority, a level in
+`NOTIFY_SILENT` at low — no sound.
 
 ### Telegram
 
@@ -1273,11 +1394,73 @@ gets `json`:
 `level` is `error`, `warn` or `success`, and `time` is UTC. A reply other than 2xx counts as a failure and goes to the log;
 the other channels are still sent.
 
+### Apprise (Matrix, Gotify, Pushover, Signal, Opsgenie…)
+
+[Apprise](https://github.com/caronc/apprise) reaches 100+ services with one URL each. It needs the `apprise` CLI
+on the host (`pip install apprise`, or the distribution's package):
+
+```bash
+APPRISE_URLS="matrixs://user:pass@matrix.example.org/#backups pover://user@token"
+```
+
+The URLs (with their tokens) go to apprise in a temporary file, not on its command line; the level becomes its
+notification type (failure, warning, success).
+
 ### Notification levels
 
 - `none` — never
 - `error` — problems only: errors and warnings (recommended)
 - `always` — every run
+
+---
+
+## Monitoring
+
+### A monitor's ping (dead man's switch)
+
+A notification can't say that a run **never happened** — the server was off, cron broken, the disk full before the
+start. A monitor that waits for a ping can: no ping in time, and it raises the alarm itself.
+
+```bash
+HEARTBEAT_URL="https://hc-ping.com/<uuid>"                        # the backup
+VERIFY_HEARTBEAT_URL="https://hc-ping.com/<another uuid>"         # the scheduled restore check
+```
+
+- **Healthchecks.io** and compatible (a self-hosted Healthchecks, Better Stack, Cronitor's healthchecks-style
+  URLs): `<url>/start` when a run begins, `<url>` when it is done, `<url>/fail` when it failed — with one run id,
+  so the monitor shows how long it took, and the run's message as the body. `HEARTBEAT_START="false"` for a service
+  without `/start`.
+- **Uptime Kuma**: a push monitor's URL (`…/api/push/<token>`) is recognized: `status=up` or `down` with the
+  message. `HEARTBEAT_FORMAT` (`healthchecks`, `kuma`) when the URL doesn't tell.
+- Set the check's period to the schedule, with a grace of an hour or two (a big backup takes its time). Only whole
+  runs ping: `-p` and `--dry-run` don't. A warning counts as a run that happened; a failed ping is a warning in the log.
+- `validate-config.sh` checks a Healthchecks URL with a `/log` ping, which records it without changing the check's
+  state; a Kuma URL is not pinged from there (it would mark the monitor up). In the menu: Notifications → Monitoring.
+
+### Prometheus metrics
+
+```bash
+METRICS_DIR="/var/lib/node_exporter/textfile_collector"   # node_exporter --collector.textfile.directory
+```
+
+After every whole run, `docker_backup_s3.prom` and `docker_backup_s3_verify.prom` (written to a temporary file and
+moved, so the collector never reads half a file):
+
+| Metric | |
+|---|---|
+| `docker_backup_s3_last_run_timestamp_seconds` | when the last run ended |
+| `docker_backup_s3_last_run_success` | 1 or 0 |
+| `docker_backup_s3_last_success_timestamp_seconds` | when a run last succeeded (kept through failed runs) |
+| `docker_backup_s3_projects`, `_projects_failed` | projects in the run, and those that failed |
+| `docker_backup_s3_uploaded_bytes`, `_duration_seconds` | what went to the primary, how long it took |
+| `docker_backup_s3_verify_*` | the same for the restore check |
+
+An alert that covers a run that never happened too:
+
+```yaml
+- alert: BackupStale
+  expr: time() - docker_backup_s3_last_success_timestamp_seconds > 26 * 3600
+```
 
 ---
 
@@ -1714,7 +1897,7 @@ only to the addresses you put into `backup.conf`.
 | Where to | What | When |
 |---|---|---|
 | Your S3 storages (the endpoints you set) | The backup archives (encrypted with your passphrase if `ENCRYPT_BACKUPS=true`), their `.sha256` manifests | Backup, rotation, sync, restore, checks |
-| Your SMTP server, Slack, PagerDuty, webhook or Telegram bot — only the ones you set | The text of a notification: project names, sizes, times, error reasons. Never a key, a password or file contents | After a run, when a notification is due |
+| Your SMTP server, Slack, Teams, PagerDuty, ntfy, webhook, Telegram bot, Apprise services, a monitor's ping URL — only the ones you set | The text of a notification: project names, sizes, times, error reasons. Never a key, a password or file contents | After a run, when a notification is due |
 | `awscli.amazonaws.com`, your distribution's package mirrors | Nothing of yours: `install.sh` downloads aws-cli and packages from there | Installation |
 
 Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` lists every address in the code.
@@ -1723,7 +1906,7 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 
 | Secret | Where | Who can read it |
 |---|---|---|
-| S3 keys, the SMTP password, the Slack and webhook URLs, the PagerDuty key, the Telegram token | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
+| S3 keys, the SMTP password, the Slack, Teams, webhook and ping URLs, the PagerDuty key, the ntfy and Telegram tokens, the Apprise URLs | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
 | The GPG passphrase | `GPG_PASSPHRASE_FILE` (`/root/.docker-backup-passphrase`) | root only (`600`); gpg reads it from the file, never from an argument |
 | Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
 | Remote database passwords | `backup.conf`, or the file `REMOTE_DB_<NAME>_PASSWORD_FILE` points to | root only (`600`) |
@@ -1734,9 +1917,9 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 so no secret is ever passed as an argument:
 
 - S3 keys go to `aws` through its environment (readable by root only), not as options.
-- The Telegram token and the Slack and webhook URLs (Slack and Discord put their secret in them) go to `curl` as a
-  config on a pipe (`curl -K <(…)`); the PagerDuty key — to jq in its environment and to curl in the body, on
-  stdin; the SMTP password — in a temporary `600` config file, removed right after.
+- The Telegram token, the Slack, Teams, webhook and ping URLs (they carry their secret) and the ntfy token go to
+  `curl` as a config on a pipe (`curl -K <(…)`); the PagerDuty key — to jq in its environment and to curl in the body, on
+  stdin; the SMTP password and the Apprise URLs — in a temporary `600` file, removed right after.
 - Database passwords are read and used **inside the database container**, by a short `sh` script run with
   `docker exec`: from the same variables the image uses (`POSTGRES_PASSWORD`, `MYSQL_ROOT_PASSWORD`,
   `MONGO_INITDB_ROOT_PASSWORD`…) or the files their `*_FILE` twins point to (Docker secrets), and handed to

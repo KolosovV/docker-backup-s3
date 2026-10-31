@@ -97,7 +97,10 @@ require_cmd docker tar gzip aws jq
 # Settings that silently do the wrong thing — in the log now and in this run's notification (CONF_WARNINGS, HTML).
 # Encryption found off with the passphrase in place is the case this is here for.
 CONF_WARNINGS=""
-if [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]]; then
+if [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -n "${GPG_RECIPIENT_FILE:-}" ]]; then
+    log_warn "Encryption is OFF (ENCRYPT_BACKUPS=${ENCRYPT_BACKUPS:-}), but GPG_RECIPIENT_FILE is set — backups go unencrypted"
+    CONF_WARNINGS+="${CONF_WARNINGS:+$'\n'}⚠️ <b>Encryption is off</b> (ENCRYPT_BACKUPS=$(html_esc "${ENCRYPT_BACKUPS:-}")), although a public key is set (GPG_RECIPIENT_FILE): these backups are not encrypted."
+elif [[ "${ENCRYPT_BACKUPS:-false}" != "true" && -f "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}" ]]; then
     log_warn "Encryption is OFF (ENCRYPT_BACKUPS=${ENCRYPT_BACKUPS:-}), but ${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase} exists — backups go unencrypted"
     CONF_WARNINGS+="${CONF_WARNINGS:+$'\n'}⚠️ <b>Encryption is off</b> (ENCRYPT_BACKUPS=$(html_esc "${ENCRYPT_BACKUPS:-}")), although the passphrase file <code>$(html_esc "${GPG_PASSPHRASE_FILE:-/root/.docker-backup-passphrase}")</code> exists: these backups are not encrypted."
 fi
@@ -107,7 +110,7 @@ while IFS=$'\t' read -r _dup _ll _lv _el _ev _lost; do
     log_warn "$_dup: your ${_ev} (line ${_el} of $CONFIG_FILE) is overridden by the default ${_lv} further down (line ${_ll})"
     CONF_WARNINGS+="${CONF_WARNINGS:+$'\n'}⚠️ <code>$(html_esc "$_dup")</code>: your <code>$(html_esc "$_ev")</code> (line ${_el} of backup.conf) is overridden by the default <code>$(html_esc "$_lv")</code> further down (line ${_ll}), so the default is used."
 done < <(conf_duplicates "$CONFIG_FILE" "${SCRIPT_DIR}/backup.conf.example")
-notify_any && require_cmd curl
+{ notify_any || [[ -n "${HEARTBEAT_URL:-}" ]]; } && require_cmd curl
 
 # --- Emergency exit ---
 # Which project is currently stopped/paused. Needed to bring its containers back
@@ -137,6 +140,11 @@ _on_exit() {
     # A remote database's client container, if the run broke off during its dump
     [[ -n "${RDB_CNAME:-}" ]] && { docker rm -f "$RDB_CNAME" >/dev/null 2>&1 || true; }
     release_lock
+    # A run that broke off or never started is a failed run for Prometheus, not a missing one
+    if [[ "${RUN_DONE:-false}" != "true" && -z "$PROJECT_FILTER" ]]; then
+        metrics_write docker_backup_s3 docker_backup_s3 0 projects "${TOTAL_PROJECTS:-0}" projects_failed "${TOTAL_FAILED:-0}" \
+            uploaded_bytes "${TOTAL_UPLOADED_BYTES:-0}" duration_seconds "$(( $(date +%s) - ${SESSION_START:-$(date +%s)} ))"
+    fi
     if [[ "${RUN_DONE:-false}" != "true" ]] && [[ "${RUN_STARTED:-false}" == "true" || -n "${INTERRUPT_SIGNAL:-}" ]]; then
         RUN_DONE=true
         local body="" step="${LAST_STEP:-}"
@@ -188,6 +196,9 @@ if [[ "$DRY_RUN" != "true" ]]; then
     trap '_on_signal INT' INT
     trap '_on_signal TERM' TERM
     trap '_on_signal HUP' HUP
+    # The monitor hears of whole runs only: a run of some projects says nothing about the nightly one
+    [[ -z "$PROJECT_FILTER" ]] && HB_URL="${HEARTBEAT_URL:-}"
+    heartbeat start
 fi
 
 # --- AWS CLI ---
@@ -1220,7 +1231,7 @@ backup_standalone() {
 # _db_<name>: one dump per timestamp, next to it the .sha256 manifest, as with an archive.
 # ==============================================================================
 backup_remote_db() {
-    local name="$1" start problems p
+    local name="$1" start problems p why
     start=$(date +%s)
     log ""
     log "${C_BOLD}${C_BLUE}──────────────────────────────────────────────────${C_RESET}"
@@ -1231,8 +1242,8 @@ backup_remote_db() {
         while IFS= read -r p; do log_err "    $p"; done <<< "$problems"
         return 1
     fi
-    if [[ "${ENCRYPT_BACKUPS:-false}" == "true" && ! -r "${GPG_PASSPHRASE_FILE:-}" ]]; then
-        log_err "  Cannot read the passphrase file ${GPG_PASSPHRASE_FILE:-}: no dump is made, it would go unencrypted"
+    if [[ "${ENCRYPT_BACKUPS:-false}" == "true" ]] && ! why="$(gpg_enc_check)"; then
+        log_err "  ${why}: no dump is made, it would go unencrypted"
         return 1
     fi
     _remote_db_build "$name" dump
@@ -1446,6 +1457,12 @@ if mkdir -p "$(dirname "$LAST_RUN_FILE")" 2>/dev/null; then
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$([[ "$TOTAL_FAILED" -eq 0 ]] && echo true || echo false)" \
         "$TOTAL_PROJECTS" "$TOTAL_FAILED" "$TIMESTAMP" > "${LAST_RUN_FILE}.tmp" && mv "${LAST_RUN_FILE}.tmp" "$LAST_RUN_FILE"
     chmod 644 "$LAST_RUN_FILE" 2>/dev/null || true
+fi
+# The same for Prometheus (METRICS_DIR) — whole runs only, like the monitor's ping
+if [[ -z "$PROJECT_FILTER" ]]; then
+    metrics_write docker_backup_s3 docker_backup_s3 "$([[ "$TOTAL_FAILED" -eq 0 ]] && echo 1 || echo 0)" \
+        projects "$TOTAL_PROJECTS" projects_failed "$TOTAL_FAILED" \
+        uploaded_bytes "$TOTAL_UPLOADED_BYTES" duration_seconds "$TOTAL_DURATION"
 fi
 
 # Summary to the channels: what was saved, where, and what is missing. After last-run.json — a failure here must not

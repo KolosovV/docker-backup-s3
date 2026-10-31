@@ -100,6 +100,10 @@ import http.server, json, sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        if self.path.startswith('/hb/'):   # a monitor's ping: the path (rid dropped) and the first line
+            with open(sys.argv[2] + '.hb', 'a', encoding='utf-8') as f:
+                f.write(self.path.split('?')[0] + '|' + body.decode('utf-8', 'replace').split('\n')[0] + '\n')
+            self.send_response(200); self.end_headers(); return
         with open(sys.argv[2], 'a', encoding='utf-8') as f:
             d = json.loads(body)
             f.write(d['level'] + '|' + d['title'] + '|' + d['details'].replace('\n', ' / ') + '\n')
@@ -262,6 +266,71 @@ else ok "a check of a storage that is off fails"; fi
 check "webhook: restore check did not run, with the reason" grep -q '^error|restore check did not run|.*is not enabled' <<< "$(hook_msgs)"
 
 # ------------------------------------------------------------------------------
+step "Monitoring: a whole run pings the monitor and writes metrics; the deep check"
+mkdir -p "$IT/prom"
+cp "$CONF" "$IT/mon.conf"
+cat >> "$IT/mon.conf" <<EOF
+HEARTBEAT_URL="http://127.0.0.1:${HOOKPORT}/hb/backup"
+VERIFY_HEARTBEAT_URL="http://127.0.0.1:${HOOKPORT}/hb/verify"
+METRICS_DIR="$IT/prom"
+EOF
+chmod 600 "$IT/mon.conf"
+run mvalidate validate-config.sh -c "$IT/mon.conf"
+check "validate-config: the monitor answers a /log ping" grep -q 'HEARTBEAT_URL: the monitor answered' "$IT/mvalidate.out"
+check "and METRICS_DIR is fine" grep -q "METRICS_DIR: $IT/prom" "$IT/mvalidate.out"
+: > "$IT/hook.log.hb"
+if run mbackup docker-backup.sh -c "$IT/mon.conf"; then ok "a whole backup run"; else bad "the whole run failed"; show_tail mbackup; fi
+check "the monitor heard the start, then the success" test "$(cut -d'|' -f1 "$IT/hook.log.hb" | tr '\n' ' ')" == "/hb/backup/start /hb/backup "
+check "the success ping carries the message" grep -q '^/hb/backup|Server it-host: backup done' "$IT/hook.log.hb"
+P="$IT/prom/docker_backup_s3.prom"
+check "metrics: success 1, one project, bytes uploaded" bash -c 'grep -qx "docker_backup_s3_last_run_success 1" "$1" && grep -qx "docker_backup_s3_projects 1" "$1" && grep -qE "^docker_backup_s3_uploaded_bytes [1-9]" "$1"' _ "$P"
+: > "$IT/hook.log.hb"
+if run deep verify-restore.sh -c "$IT/mon.conf" --deep; then ok "verify-restore --deep exit 0"; else bad "verify-restore --deep failed"; show_tail deep; fi
+check "the Postgres dump loads, its tables all there" grep -qE 'postgres_.*: loads into postgres:17-alpine — [1-9][0-9]* tables \(the dump creates [1-9]' "$IT/deep.out"
+check "the MariaDB dump loads into its own version" grep -qE 'mariadb_.*: loads into mariadb:11\.4 — [1-9][0-9]* tables' "$IT/deep.out"
+check "no throwaway database is left" test -z "$(docker ps -aq --filter name=dbs-verify-)"
+check "the monitor heard the check: start, success" test "$(cut -d'|' -f1 "$IT/hook.log.hb" | tr '\n' ' ')" == "/hb/verify/start /hb/verify "
+check "verify metrics written" grep -qx 'docker_backup_s3_verify_last_run_success 1' "$IT/prom/docker_backup_s3_verify.prom"
+# A dump cut off midway: whole gzip, the right header — the standard check passes it, the deep one does not
+mkdir -p "$IT/cut"
+(
+    # shellcheck disable=SC1090
+    source "$IT/mon.conf"; source "$REPO/lib.sh"; LOG_FILE="$IT/cut.log"
+    # shellcheck disable=SC2034 # read by deep_load, eval-ed below
+    VERIFY_DIR="$IT/cut"
+    eval "$(sed -n '/^deep_image()/,/^}/p; /^_deep_tables_expected()/,/^}/p; /^_deep_wait()/,/^}/p; /^deep_load()/,/^}/p' "$REPO/verify-restore.sh")"
+    hdr=$'-- PostgreSQL database dump\n-- Dumped from database version 17.2'
+    { printf '%s\n' "$hdr"; printf 'CREATE TABLE public.a (id int);\nCREATE TABLE public.b (id int);\n'; printf 'CREATE TABLE public.c (id int\n'; } \
+        | deep_load postgres cut.sql "$hdr"
+) > "$IT/cut.out" 2>&1; cut_rc=$?
+check "a cut-off dump fails the deep check" test "$cut_rc" == 1
+check "and says how many tables are missing" grep -q 'only 2 of the dump.s 3 tables are there' "$IT/cut.out"
+
+step "Public-key encryption: this host encrypts, cannot decrypt"
+export GNUPGHOME="$IT/gnupg-owner"; mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+gpg --batch --passphrase '' --quick-gen-key "it-backups@example.test" default default never >/dev/null 2>&1
+gpg --batch --export --armor it-backups@example.test > "$IT/key.pub.asc"
+gpg --batch --pinentry-mode loopback --passphrase '' --export-secret-keys --armor it-backups@example.test > "$IT/key.sec.asc"
+chmod 600 "$IT/key.sec.asc"
+gpgconf --kill gpg-agent >/dev/null 2>&1
+export GNUPGHOME="$IT/gnupg-host"; mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+{ cat "$CONF"; printf 'GPG_RECIPIENT_FILE="%s"\nGPG_PASSPHRASE_FILE="%s"\n' "$IT/key.pub.asc" "$IT/no-passphrase"; } > "$IT/pk.conf"; chmod 600 "$IT/pk.conf"
+run pkvalidate validate-config.sh -c "$IT/pk.conf"
+check "validate-config: the public key, and this host cannot decrypt — as intended" \
+    bash -c 'grep -q "Public key: it-backups@example.test" "$1" && grep -q "This host cannot decrypt" "$1"' _ "$IT/pkvalidate.out"
+if run pkbackup docker-backup.sh -c "$IT/pk.conf" -p "$PROJ"; then ok "a backup with only the public key"; else bad "the public-key backup failed"; show_tail pkbackup; fi
+PKTS="$(s3 s3 ls --recursive "s3://primary/it/$PROJ/" 2>/dev/null | awk '{print $4}' | grep '\.gpg$' | sort | tail -n 1)"
+s3 s3 cp "s3://primary/$PKTS" "$IT/pk.gpg" >/dev/null 2>&1
+check "the archive is encrypted to the key" bash -c 'head -c 4096 "$1" | gpg --batch --list-packets 2>/dev/null | grep -q "^:pubkey enc packet"' _ "$IT/pk.gpg"
+if run pkverify verify-restore.sh -c "$IT/pk.conf" -p "$PROJ"; then ok "verify-restore without the secret key: exit 0"; else bad "verify-restore without the secret key failed"; show_tail pkverify; fi
+check "it says only the sha256 was checked" bash -c 'grep -q "sha256 matches" "$1" && grep -q "checked by sha256 only ($2)" "$1"' _ "$IT/pkverify.out" "$PROJ"
+echo "GPG_SECRET_KEY_FILE=\"$IT/key.sec.asc\"" >> "$IT/pk.conf"
+if run pkverify2 verify-restore.sh -c "$IT/pk.conf" -p "$PROJ"; then ok "with GPG_SECRET_KEY_FILE: the full check passes"; else bad "the full check with the secret key failed"; show_tail pkverify2; fi
+check "it decrypted and checked the dumps" bash -c 'grep -q "Decryption succeeded" "$1" && grep -q "mariadb_.*(MySQL" "$1"' _ "$IT/pkverify2.out"
+check "the secret key stayed out of the host's keyring" test -z "$(gpg --batch --list-secret-keys --with-colons 2>/dev/null | grep '^sec')"
+unset GNUPGHOME
+
+# ------------------------------------------------------------------------------
 step "BACKUP_MODE=stop: the project's containers are stopped and started again"
 started_before="$(docker inspect -f '{{.State.StartedAt}}' "$(docker ps -q --filter "label=com.docker.compose.project=$PROJ" --filter "label=com.docker.compose.service=db")")"
 cp "$CONF" "$IT/stop.conf"; printf 'BACKUP_MODE="stop"\nDB_DUMPS_RETENTION_COUNT=2\n' >> "$IT/stop.conf"
@@ -412,6 +481,15 @@ for n in rpg rmy rmo rre; do
 done
 check "verify-restore knows each kind" bash -c 'grep -q "PostgreSQL dump, intact" "$1" && grep -q "MySQL/MariaDB dump, intact" "$2" && grep -q "MongoDB archive, intact" "$3" && grep -q "Redis RDB, intact" "$4"' _ \
     "$IT/rverify-rpg.out" "$IT/rverify-rmy.out" "$IT/rverify-rmo.out" "$IT/rverify-rre.out"
+for n in rpg rmy rmo rre; do
+    if run "rdeep-$n" verify-restore.sh -c "$IT/remote.conf" -p "_db_$n" --deep; then ok "verify-restore --deep _db_$n"
+    else bad "verify-restore --deep _db_$n failed"; show_tail "rdeep-$n"; fi
+done
+check "each remote dump loads: Postgres, MariaDB, Mongo; the RDB is sound" bash -c \
+    'grep -qE "loads into postgres:17-alpine — [1-9][0-9]* tables" "$1" && grep -qE "loads into mariadb:11\.4 — [1-9][0-9]* tables" "$2" \
+     && grep -qE "loads into mongo:8 — [1-9][0-9]* collections" "$3" && grep -q "the RDB is sound" "$4"' _ \
+    "$IT/rdeep-rpg.out" "$IT/rdeep-rmy.out" "$IT/rdeep-rmo.out" "$IT/rdeep-rre.out"
+check "no throwaway database is left after them" test -z "$(docker ps -aq --filter name=dbs-verify-)"
 # The data is lost on the "remote" servers, and comes back from the dumps docker-restore saves
 RTS="$(grep ' it/_db_rpg/' "$IT/rprimary.ls" | head -n 1 | cut -d/ -f3)"
 for n in rpg rmy rmo rre; do

@@ -733,7 +733,7 @@ restore_one_project() {
     if [[ "$ARCHIVE_NAME" == *.gpg ]]; then
         log "  🔐 Decrypting..."
         backup_archive="$(decrypt_file "$backup_archive")" \
-            || { log_err "Decryption failed — check GPG_PASSPHRASE_FILE"; return 1; }
+            || { log_err "Decryption failed — check GPG_PASSPHRASE_FILE (a public-key backup: GPG_SECRET_KEY_FILE)"; return 1; }
     fi
 
     if [[ "$PROJECT" == _db_* ]]; then
