@@ -17,6 +17,9 @@ unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy
 source "$REPO/lib.sh"
 source "$REPO/ui.sh"
 LOG_FILE="$W/log"
+# Our own WORK_DIR: _aws_setup stops at a WORK_DIR that is not ours (work_dir_ready), and in CI the default
+# /var/tmp/docker-backup is left by the tests that ran as root before this one
+WORK_DIR="$W/work"
 
 section "s3_proxy: the storage's own, else S3_PROXY, none — straight"
 S3_PROXY=""; PRIMARY_S3_PROXY=""; SECONDARY_S3_PROXY=""; TERTIARY_S3_PROXY=""
