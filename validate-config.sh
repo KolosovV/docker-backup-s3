@@ -118,6 +118,12 @@ for role in "${S3_ROLES[@]}"; do
     val="$(s3_var "$role" ADDRESSING_STYLE)"; ok "${P}_ADDRESSING_STYLE = ${val:-path}"
     val="$(s3_var "$role" OPTS_EXTRA)";       ok "${P}_OPTS_EXTRA = ${val:-(empty)}"
     check_no_verify "${P}_OPTS_EXTRA"
+    val="$(s3_var "$role" PROXY)"
+    if ! proxy_valid "$val"; then
+        err "${P}_PROXY = \"$(proxy_masked "$val")\" — not a proxy address: http://host:port or https://host:port (SOCKS isn't supported by aws-cli; none — straight)"
+    elif [[ -n "$(s3_proxy "$role")" ]]; then
+        ok "${P}_PROXY = $(proxy_masked "$(s3_proxy "$role")")$([[ -z "$val" ]] && echo ' (from S3_PROXY)') — aws goes through it"
+    fi
     val="$(s3_var "$role" RESTORE_ACCESS_KEY)"
     [[ -n "$val" ]] && ok "${P}_RESTORE_ACCESS_KEY = ${val:0:4}...${val: -4} (read-only for restore)"
 done
@@ -129,6 +135,11 @@ for var in BACKUP_PREFIX RETENTION_DAYS BACKUP_MODE WORK_DIR LOG_FILE; do
     [[ -z "$val" ]] && err "$var is not set" || ok "$var = $val"
 done
 ok "S3_BANDWIDTH_LIMIT = ${S3_BANDWIDTH_LIMIT:-no limit}"
+if ! proxy_valid "${S3_PROXY:-}"; then
+    err "S3_PROXY = \"$(proxy_masked "$S3_PROXY")\" — not a proxy address: http://host:port or https://host:port (SOCKS isn't supported by aws-cli)"
+elif [[ -n "${S3_PROXY:-}" && "$S3_PROXY" != none ]]; then
+    ok "S3_PROXY = $(proxy_masked "$S3_PROXY") (for every storage without its own <ROLE>_S3_PROXY)"
+fi
 ok "PARALLEL_JOBS = ${PARALLEL_JOBS:-1}"
 ok "ENCRYPT_BACKUPS = ${ENCRYPT_BACKUPS:-false}"
 ok "SCAN_DIRS = ${SCAN_DIRS:-(not set)}"
@@ -277,7 +288,7 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 # AWS CLI must be v2
-if command -v aws >/dev/null 2>&1; then
+if type -P aws >/dev/null 2>&1; then
     aws_major=$(aws --version 2>&1 | sed -n 's#.*aws-cli/\([0-9][0-9]*\).*#\1#p' | head -1)
     aws_major="${aws_major:-0}"
     if [[ "$aws_major" -lt 2 ]]; then
@@ -739,7 +750,7 @@ if crontab -l 2>/dev/null | grep -q "docker-backup.sh"; then
     if [[ -z "$cron_path" ]]; then
         warn "No PATH= line in the crontab — cron only looks in /usr/bin:/bin, aws may not be found"
         echo "    Recreate the job: sudo $SCRIPT_DIR/setup-cron.sh"
-    elif cron_aws="$(PATH="$cron_path" command -v aws 2>/dev/null)"; then
+    elif cron_aws="$(PATH="$cron_path" type -P aws 2>/dev/null)"; then
         ok "aws for cron: $cron_aws"
         if [[ "$cron_aws" == /snap/* ]]; then
             warn "cron uses aws from snap — it updates itself, and such updates have broken uploads before"

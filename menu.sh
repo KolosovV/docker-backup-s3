@@ -400,7 +400,7 @@ menu_schedule() {
 # Current values of a role into ST (the wizard offers them as defaults)
 load_store() {
     local role="$1" f
-    for f in ACCESS_KEY SECRET_KEY ENDPOINT REGION BUCKET ADDRESSING_STYLE OPTS_EXTRA ENABLED REQUIRED; do
+    for f in ACCESS_KEY SECRET_KEY ENDPOINT REGION BUCKET ADDRESSING_STYLE OPTS_EXTRA PROXY ENABLED REQUIRED; do
         ST["$role:$f"]="$(s3_var "$role" "$f")"
     done
     [[ "$role" == "primary" ]] && ST["$role:ENABLED"]="true"
@@ -432,7 +432,8 @@ menu_storages() {
 }
 
 menu_store() {
-    local role="$1" title choice p v key secret
+    local role="$1" title choice p v key secret proxy_txt
+    local S3_CUR_PROXY=""   # the access check goes through this storage's proxy (_s3_probe in ui.sh)
     title="$(s3_label "$role" title)"; p="${role^^}_S3"
     while true; do
         UI_TITLE="$title"
@@ -446,6 +447,11 @@ menu_store() {
         items+=(check "Check access now" rokey "Read-only key for restore…")
         if [[ "$(s3_var "$role" OBJECT_LOCK)" == "true" ]]; then items+=(lock "The bucket has Object Lock: yes (uploads carry a checksum)")
         else items+=(lock "The bucket has Object Lock: no"); fi
+        S3_CUR_PROXY="$(s3_proxy "$role")"
+        if [[ -z "$S3_CUR_PROXY" ]]; then proxy_txt="straight, no proxy"
+        elif [[ -z "$(s3_var "$role" PROXY)" ]]; then proxy_txt="$(proxy_masked "$S3_CUR_PROXY") (the common S3_PROXY)"
+        else proxy_txt="$(proxy_masked "$S3_CUR_PROXY")"; fi
+        items+=(proxy "Proxy: ${proxy_txt}…")
         choice="$(ui_menu "$(store_line "$role")
 Options: $(s3_var "$role" OPTS_EXTRA)" "${items[@]}")" || return 0
         case "$choice" in
@@ -492,6 +498,34 @@ Write ${p}_OPTS_EXTRA=\"${CERT_OPTS}\" to the config?" y; then
                     fi
                 else
                     ui_msg "${CERT_REPORT:-No result — is aws installed?}"
+                fi ;;
+            proxy)
+                ui_note "An HTTP proxy on the way to ${title}, when this host reaches it only that way:"
+                ui_note "http://proxy.example.com:3128 or http://user:password@proxy.example.com:3128 (SOCKS — no: aws-cli can't)."
+                ui_note "Only aws goes through it: notifications and monitor pings go straight."
+                if [[ -n "${S3_PROXY:-}" ]]; then
+                    ui_note "Empty — the common S3_PROXY ($(proxy_masked "$S3_PROXY")); none — straight."
+                else
+                    ui_note "Empty — straight."
+                fi
+                v="$(ui_input "Proxy for ${title}" "$(s3_var "$role" PROXY)")" || continue
+                v="$(trim "$v")"
+                if ! proxy_valid "$v"; then
+                    ui_msg "Not a proxy address: http://host:port or https://host:port (with user:password@ if it needs a login)."
+                    continue
+                fi
+                backup_conf_once
+                conf_set "${p}_PROXY" "$v" --allow-empty
+                reload_conf
+                # Checked right away: a wrong proxy fails every upload, and it's better to hear it now
+                if s3_complete "$role"; then
+                    S3_CUR_PROXY="$(s3_proxy "$role")"
+                    s3_cert_check "$title" "$(s3_var "$role" ACCESS_KEY)" "$(s3_var "$role" SECRET_KEY)" "$(s3_var "$role" REGION)" \
+                        "$(s3_var "$role" ENDPOINT)" "$(s3_var "$role" BUCKET)" "$(s3_var "$role" ADDRESSING_STYLE)" 2>/dev/null >/dev/null
+                    ui_msg "Saved: ${p}_PROXY=\"$(proxy_masked "$v")\".
+${CERT_REPORT:-No check result — is aws installed?}"
+                else
+                    ui_msg "Saved: ${p}_PROXY=\"$(proxy_masked "$v")\"."
                 fi ;;
             rokey)
                 ui_note "A key that can only read — for a restore server: backups can't be deleted or overwritten with it."

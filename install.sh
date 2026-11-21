@@ -346,12 +346,12 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
 
     # Portable version parsing (no grep -P): "aws-cli/2.15.0 …" -> "2"
     aws_major_ver() { aws --version 2>&1 | sed -n 's#.*aws-cli/\([0-9][0-9]*\).*#\1#p' | head -1; }
-    _curr_aws_major="$(command -v aws >/dev/null 2>&1 && aws_major_ver || echo 0)"
+    _curr_aws_major="$(type -P aws >/dev/null 2>&1 && aws_major_ver || echo 0)"
     _curr_aws_major="${_curr_aws_major:-0}"
 
     # Remove an old awscli v1 from the system packages (it gets in the way of v2)
     remove_aws_v1() {
-        command -v aws >/dev/null 2>&1 || return 0
+        type -P aws >/dev/null 2>&1 || return 0
         [[ "$(aws_major_ver || echo 0)" -lt 2 ]] || return 0
         log_warn "Found AWS CLI v1 — removing the packaged version before installing v2"
         case "$PKG_MGR" in
@@ -402,11 +402,11 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         rm -rf "$tmp"; return 1
     }
 
-    if command -v aws >/dev/null 2>&1 && [[ "$_curr_aws_major" -ge 2 ]]; then
+    if type -P aws >/dev/null 2>&1 && [[ "$_curr_aws_major" -ge 2 ]]; then
         log_ok "AWS CLI v2 is already installed ($(aws --version 2>&1))"
         # Installed from snap (older versions of this installer did that) — offer to switch to the official one:
         # snap updates aws-cli by itself, and that has broken uploads (see below).
-        if [[ "$(command -v aws)" == /snap/* ]]; then
+        if [[ "$(type -P aws)" == /snap/* ]]; then
             log_warn "aws-cli is installed from snap — it updates itself, and such updates have broken uploads before"
             if ask_yn "  Install the official aws-cli and remove the snap version?" "y"; then
                 if install_aws_official; then
@@ -417,7 +417,7 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
                         log "    While it is there, the old cron job (with /snap/bin first in its PATH) uses it — recreate it: setup-cron.sh"
                     fi
                     hash -r 2>/dev/null || true
-                    log_ok "aws is now: $(command -v aws) ($(aws --version 2>&1))"
+                    log_ok "aws is now: $(type -P aws) ($(aws --version 2>&1))"
                 else
                     log_warn "The official installer failed — aws from snap stays"
                 fi

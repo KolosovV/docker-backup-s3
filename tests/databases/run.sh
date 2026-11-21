@@ -202,9 +202,15 @@ want decoy-pg-exporter && start decoy-pg-exporter prometheuscommunity/postgres-e
 want decoy-redis-exporter && start decoy-redis-exporter oliver006/redis_exporter:v1.62.0
 
 echo "== Writing the markers"
+# A server that refuses this host's kernel (mongo:8 on Linux 6.19+, SERVER-121912) is the host's limit, not a fault here
+kernel_refused() { docker logs "${PFX}-$1" 2>&1 | grep -q 'cannot start: Linux kernel'; }
+seed_or_refused() { local name="$1"; shift; "$@" || kernel_refused "$name"; }
 try_seed() { local name="$1"; shift; want "$name" || return 0
     docker inspect "${PFX}-${name}" >/dev/null 2>&1 || { bad "$name: the server did not start"; return 0; }
-    if retry 180 "$@"; then SEEDED[$name]=1; else bad "$name: cannot write the marker"; fi
+    if retry 180 seed_or_refused "$name" "$@"; then
+        if kernel_refused "$name"; then echo "  SKIP $name: the server does not start on this kernel ($(uname -r))"; return 0; fi
+        SEEDED[$name]=1
+    else bad "$name: cannot write the marker"; fi
     retry 180 final_server "${PFX}-${name}" || bad "$name: the server did not finish starting"; }
 try_seed pg17             seed_pg "${PFX}-pg17" postgres "$P1" m-pg17
 try_seed pg16-scram-file  seed_pg "${PFX}-pg16-scram-file" app "$P2" m-pg16

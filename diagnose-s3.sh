@@ -41,7 +41,7 @@ trap 'trap - INT; kill -INT $$' INT
 for _d in /usr/local/bin /snap/bin; do
     case ":${PATH}:" in *":${_d}:"*) ;; *) export PATH="${PATH}:${_d}" ;; esac
 done
-command -v aws >/dev/null 2>&1 || { echo "❌ aws not found. Reinstall it: sudo ${SCRIPT_DIR}/install.sh"; exit 1; }
+type -P aws >/dev/null 2>&1 || { echo "❌ aws not found. Reinstall it: sudo ${SCRIPT_DIR}/install.sh"; exit 1; }
 
 # Same as in lib.sh: checksums only where the S3 itself requires them (the explanation is there).
 # Diagnostics must behave like the backup, otherwise they're green while the backup fails.
@@ -74,10 +74,18 @@ run() {
 
 mark() { (( $1 == 0 )) && echo "✓ works" || echo "✗ does not work"; }
 
+# The URL without its password, for the screen (the same as proxy_masked in lib.sh)
+_proxy_masked() {
+    if [[ "$1" =~ ^([a-zA-Z]+://[^:/@]+):.*@([^@]*)$ ]]; then printf '%s:***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    else printf '%s' "$1"; fi
+}
+
 # Full diagnostics of one storage.
 #   $1=label $2=access $3=secret $4=region $5=endpoint $6=bucket $7=addressing $8=opts_extra $9=addressing_var_name
+#   $10=proxy (already resolved: the storage's own, else S3_PROXY; empty — straight)
 diagnose_store() {
     local label="$1" access="$2" secret="$3" region="$4" endpoint="$5" bucket="$6" addressing="$7" opts="$8" var="$9"
+    local proxy="${10:-}"
 
     echo "================================================================"
     echo "  DIAGNOSTICS: ${label} S3"
@@ -92,7 +100,16 @@ diagnose_store() {
     fi
     echo "  ADDRESSING= ${addressing:-path} (from the config)"
     echo "  OPTS_EXTRA= ${opts:-(empty)}"
+    echo "  PROXY     = $( [[ -n "$proxy" ]] && _proxy_masked "$proxy" || echo '(none — straight)')"
     echo
+
+    # This storage's proxy — the way the backup goes to it (lib.sh hands it to aws alone; this script runs
+    # nothing but aws, so exporting is the same thing). Reset for a storage without one.
+    if [[ -n "$proxy" ]]; then
+        export HTTPS_PROXY="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" http_proxy="$proxy"
+    else
+        unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy
+    fi
 
     # This storage's credentials/endpoint — set directly (without lib.sh, to keep it explicit)
     export AWS_ACCESS_KEY_ID="$access"
@@ -202,9 +219,11 @@ for role in primary secondary tertiary; do
         fi
     fi
     addr="$(v ADDRESSING_STYLE)"
+    # Proxy: the storage's own, else the common S3_PROXY; "none" — straight (as s3_proxy in lib.sh)
+    proxy="$(v PROXY)"; [[ -z "$proxy" ]] && proxy="${S3_PROXY:-}"; [[ "$proxy" == none ]] && proxy=""
     diagnose_store "$title" \
         "$(v ACCESS_KEY)" "$(v SECRET_KEY)" "$(v REGION)" "$(v ENDPOINT)" \
-        "$(v BUCKET)" "${addr:-path}" "$(v OPTS_EXTRA)" "${P}_ADDRESSING_STYLE"
+        "$(v BUCKET)" "${addr:-path}" "$(v OPTS_EXTRA)" "${P}_ADDRESSING_STYLE" "$proxy"
 done
 
 echo "=== OVERALL SUMMARY ==="

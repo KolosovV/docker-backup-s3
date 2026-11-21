@@ -15,7 +15,7 @@
 # S3 STORAGES
 # Storages by role: PRIMARY — the main one, SECONDARY and TERTIARY — copies. The settings
 # are the same for all: <ROLE>_S3_ACCESS_KEY, _SECRET_KEY, _ENDPOINT, _REGION, _BUCKET,
-# _ADDRESSING_STYLE, _OPTS_EXTRA, _RESTORE_*; copies also have _ENABLED and _REQUIRED.
+# _ADDRESSING_STYLE, _OPTS_EXTRA, _PROXY, _RESTORE_*; copies also have _ENABLED and _REQUIRED.
 # ==============================================================================
 
 # ==============================================================================
@@ -63,9 +63,20 @@ PRIMARY_S3_OBJECT_LOCK="false"
 # only if it is needed; validate-config.sh suggests a ready line on this error.
 PRIMARY_S3_OPTS_EXTRA=""
 
+# --- A proxy on the way to this storage (optional) ---
+# When the host reaches the storage only through an HTTP proxy (a closed network, a blocked route):
+# "http://proxy.example.com:3128" or "http://user:password@proxy.example.com:3128" (https:// works too;
+# SOCKS — no, aws-cli can't). Only aws goes through it: notifications and monitor pings go straight.
+# Empty — S3_PROXY below (or straight, if that is empty too); "none" — straight even when S3_PROXY is set.
+PRIMARY_S3_PROXY=""
+
 # ==============================================================================
 # GENERAL aws SETTINGS FOR ALL STORAGES
 # ==============================================================================
+
+# --- A proxy for every storage that has no <ROLE>_S3_PROXY of its own ---
+# Same format as PRIMARY_S3_PROXY. Empty — straight.
+S3_PROXY=""
 
 # --- Bandwidth limit for S3 uploads ---
 # So the backup doesn't eat the whole channel while uploading.
@@ -139,6 +150,9 @@ SECONDARY_S3_OBJECT_LOCK="false"
 # "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
 SECONDARY_S3_OPTS_EXTRA=""
 
+# Proxy on the way to this storage (like PRIMARY_S3_PROXY): empty — S3_PROXY, "none" — straight.
+SECONDARY_S3_PROXY=""
+
 # ==============================================================================
 # TERTIARY — THE TERTIARY S3 — a third copy of every archive (optional)
 # ==============================================================================
@@ -180,6 +194,9 @@ TERTIARY_S3_OBJECT_LOCK="false"
 # Extra aws CLI options (like PRIMARY_S3_OPTS_EXTRA). A certificate verification error with a valid one —
 # "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
 TERTIARY_S3_OPTS_EXTRA=""
+
+# Proxy on the way to this storage (like PRIMARY_S3_PROXY): empty — S3_PROXY, "none" — straight.
+TERTIARY_S3_PROXY=""
 
 # ==============================================================================
 # BACKUP SETTINGS
@@ -468,7 +485,7 @@ APPRISE_URLS=""
 VERIFY_DEEP="false"
 VERIFY_DEEP_TIMEOUT="3600"  # seconds a dump may take to load
 # The image for a kind of dump; empty — by the dump's own version (postgres:16-alpine, mariadb:11.4, mysql:8.0,
-# timescale/timescaledb:latest-pg17 when the dump uses TimescaleDB, mongo:8, redis:8-alpine, valkey/valkey:9-alpine).
+# timescale/timescaledb:latest-pg17 when the dump uses TimescaleDB, mongo:7, redis:8-alpine, valkey/valkey:9-alpine).
 # E.g. for PostGIS: VERIFY_DEEP_IMAGE_POSTGRES="postgis/postgis:17-3.5-alpine"
 VERIFY_DEEP_IMAGE_POSTGRES=""
 

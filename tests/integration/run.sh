@@ -253,10 +253,14 @@ check "its output is in the backup log too" grep -q "ALL CHECKS PASSED" "$(bash 
 
 # A backup under way (its lock, held by a live process) — the check waits for it, then checks
 LOCKF="$(bash -c 'source "$1"; printf %s "${LOCK_FILE:-/var/run/docker-backup.lock}"' _ "$CONF")"
-mkdir -p "${LOCKF}.d"; sleep 5 & holder=$!; echo "$holder" > "${LOCKF}.d/pid"
-if run verify-wait verify-restore.sh -c "$CONF" -p "$PROJ"; then ok "verify-restore during a backup: exit 0"
+# The "backup" holds its lock until the check says it waits (a fixed sleep raced a slow host: arm64 under qemu)
+mkdir -p "${LOCKF}.d"; sleep 600 & holder=$!; echo "$holder" > "${LOCKF}.d/pid"
+"$REPO/verify-restore.sh" -c "$CONF" -p "$PROJ" > "$IT/verify-wait.out" 2>&1 & vw=$!
+for _ in $(seq 1 180); do grep -q 'A backup is under way' "$IT/verify-wait.out" 2>/dev/null && break; kill -0 "$vw" 2>/dev/null || break; sleep 1; done
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+if wait "$vw"; then ok "verify-restore during a backup: exit 0"
 else bad "verify-restore during a backup failed"; show_tail verify-wait; fi
-wait "$holder" 2>/dev/null; rm -rf "${LOCKF}.d"
+rm -rf "${LOCKF}.d"
 check "it waited for the backup" grep -q "A backup is under way (PID $holder)" "$IT/verify-wait.out"
 check "and checked once it was over" grep -q "The backup finished — checking" "$IT/verify-wait.out"
 
@@ -273,6 +277,7 @@ cat >> "$IT/mon.conf" <<EOF
 HEARTBEAT_URL="http://127.0.0.1:${HOOKPORT}/hb/backup"
 VERIFY_HEARTBEAT_URL="http://127.0.0.1:${HOOKPORT}/hb/verify"
 METRICS_DIR="$IT/prom"
+BACKUP_STANDALONE="false"   # a whole run: the test host's own containers are not ours to back up
 EOF
 chmod 600 "$IT/mon.conf"
 run mvalidate validate-config.sh -c "$IT/mon.conf"
@@ -487,7 +492,7 @@ for n in rpg rmy rmo rre; do
 done
 check "each remote dump loads: Postgres, MariaDB, Mongo; the RDB is sound" bash -c \
     'grep -qE "loads into postgres:17-alpine — [1-9][0-9]* tables" "$1" && grep -qE "loads into mariadb:11\.4 — [1-9][0-9]* tables" "$2" \
-     && grep -qE "loads into mongo:8 — [1-9][0-9]* collections" "$3" && grep -q "the RDB is sound" "$4"' _ \
+     && grep -qE "loads into mongo:7 — [1-9][0-9]* collections" "$3" && grep -q "the RDB is sound" "$4"' _ \
     "$IT/rdeep-rpg.out" "$IT/rdeep-rmy.out" "$IT/rdeep-rmo.out" "$IT/rdeep-rre.out"
 check "no throwaway database is left after them" test -z "$(docker ps -aq --filter name=dbs-verify-)"
 # The data is lost on the "remote" servers, and comes back from the dumps docker-restore saves

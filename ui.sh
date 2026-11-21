@@ -351,6 +351,11 @@ _s3_probe() {
             AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_MAX_ATTEMPTS=2 \
             AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}" \
             AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
+        # The storage's proxy (S3_CUR_PROXY — the caller sets it): `timeout aws` runs the binary, past the aws()
+        # wrapper in lib.sh, so it is handed over here, inside this subshell only.
+        if [[ -n "${S3_CUR_PROXY:-}" ]]; then
+            export HTTPS_PROXY="$S3_CUR_PROXY" https_proxy="$S3_CUR_PROXY" HTTP_PROXY="$S3_CUR_PROXY" http_proxy="$S3_CUR_PROXY"
+        fi
         # shellcheck disable=SC2069 # on purpose: only stderr goes to the caller
         "${cmd[@]}" 2>&1 >/dev/null
     )
@@ -403,7 +408,10 @@ store_wizard() {
         ui_later "⚠ ${title}: some fields are empty — fill in ${role^^}_S3_* later in ${CONF_FILE}"
     fi
 
-    # Whether aws trusts the certificate — checked, not asked (see s3_cert_check)
+    # Whether aws trusts the certificate — checked, not asked (see s3_cert_check). Through the storage's proxy, if
+    # it has one (<ROLE>_S3_PROXY, else S3_PROXY; "none" — straight): without it a closed host fails the check.
+    local S3_CUR_PROXY="${ST[$role:PROXY]:-${S3_PROXY:-}}"
+    [[ "$S3_CUR_PROXY" == none ]] && S3_CUR_PROXY=""
     s3_cert_check "$title" "$key" "$secret" "$region" "$ep" "$bucket" "$addr"
     [[ -n "$CERT_REPORT" ]] && ui_later "$CERT_REPORT"
 
@@ -463,7 +471,7 @@ s3_cert_check() {
     local label="$1" access="$2" secret="$3" region="$4" endpoint="$5" bucket="$6" addressing="$7"
     local out rc bundle
     CERT_OPTS=""; CERT_REPORT=""; CERT_DECIDED=""
-    command -v aws >/dev/null 2>&1 || return 0
+    type -P aws >/dev/null 2>&1 || return 0
     [[ -n "$access" && -n "$secret" && -n "$endpoint" && -n "$bucket" ]] || return 0
 
     out="$(_s3_probe "$access" "$secret" "$region" "$endpoint" "$bucket" "$addressing")" && rc=0 || rc=$?

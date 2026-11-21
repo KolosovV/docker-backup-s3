@@ -338,6 +338,29 @@ s3_var() {
     printf '%s' "${!n:-}"
 }
 
+# s3_proxy <role> — the proxy aws goes through to this storage: <ROLE>_S3_PROXY, else S3_PROXY (every storage);
+# "none" — straight even when S3_PROXY is set. Empty output — straight.
+s3_proxy() {
+    local p; p="$(s3_var "$1" PROXY)"
+    [[ -z "$p" ]] && p="${S3_PROXY:-}"
+    [[ "$p" == none ]] && p=""
+    printf '%s' "$p"
+}
+
+# proxy_valid <value> — aws can use it: empty, "none" or http(s)://[user[:password]@]host[:port][/].
+# Not SOCKS: aws-cli has no SOCKS support, and such a value would fail every upload with an obscure error.
+_PROXY_RE='^https?://([^@/[:space:]]+@)?([^@/:[:space:]]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?/?$'
+proxy_valid() {
+    [[ -z "$1" || "$1" == none || "$1" =~ $_PROXY_RE ]]
+}
+
+# proxy_masked <url> — the URL without its password, for logs and screens: http://user:***@host:3128
+proxy_masked() {
+    # Up to the LAST @: a password may carry one too, and all of it must be hidden
+    if [[ "$1" =~ ^([a-zA-Z]+://[^:/@]+):.*@([^@]*)$ ]]; then printf '%s:***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    else printf '%s' "$1"; fi
+}
+
 # s3_label <role> [title|to|in|from] — label for humans. No second argument — "secondary S3",
 # title — capitalized ("Secondary S3"), to — "to secondary S3", in — "in secondary S3",
 # from — "from secondary S3".
@@ -424,6 +447,7 @@ _aws_setup() {
 
     S3_CUR_BUCKET="$(s3_var "$role" BUCKET)"
     S3_CUR_ENDPOINT="$(s3_var "$role" ENDPOINT)"
+    S3_CUR_PROXY="$(s3_proxy "$role")"   # not exported: the aws() wrapper below hands it to aws alone
     S3_OPTS=(--endpoint-url "$S3_CUR_ENDPOINT")
     extra="$(s3_var "$role" OPTS_EXTRA)"
     if [[ -n "$extra" ]]; then
@@ -432,6 +456,19 @@ _aws_setup() {
         ((${#_extra[@]})) && S3_OPTS+=("${_extra[@]}")
     fi
     return 0
+}
+
+# Every aws call goes through the current storage's proxy (S3_CUR_PROXY, set by _aws_setup from s3_proxy).
+# Only aws gets it, for this one call: curl — notifications, monitor pings — keeps going straight, and the
+# proxy is never exported, so a pre-backup hook doesn't see it (it may carry a password). A call through
+# `timeout aws` skips a shell function — such places set the proxy themselves (_s3_probe in ui.sh).
+aws() {
+    if [[ -n "${S3_CUR_PROXY:-}" ]]; then
+        HTTPS_PROXY="$S3_CUR_PROXY" https_proxy="$S3_CUR_PROXY" HTTP_PROXY="$S3_CUR_PROXY" http_proxy="$S3_CUR_PROXY" \
+            command aws "$@"
+    else
+        command aws "$@"
+    fi
 }
 
 # Quiet aws call with SSL warnings filtered out

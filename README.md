@@ -467,11 +467,13 @@ Everything else has sensible defaults.
 | `PRIMARY_S3_BUCKET` | empty | bucket name (create it beforehand) |
 | `PRIMARY_S3_OPTS_EXTRA` | empty | extra aws options; `--ca-bundle /etc/ssl/certs/ca-certificates.crt` if aws doesn't trust a valid certificate (the installer checks and sets it itself) |
 | `PRIMARY_S3_ADDRESSING_STYLE` | `path` | path/virtual |
+| `PRIMARY_S3_PROXY` | empty | an HTTP(S) proxy on the way to this storage (`http://host:3128`, `http://user:password@host:3128`); empty — `S3_PROXY`, `none` — straight. See [Through a proxy](#through-a-proxy) |
 | `PRIMARY_S3_RESTORE_ACCESS_KEY`, `_SECRET_KEY` | empty | optional read-only key for restore, status, verify-restore |
 | `SECONDARY_S3_*`, `TERTIARY_S3_*` | — | copies: the same fields as `PRIMARY_S3_*`, the region required too |
 | `SECONDARY_S3_ENABLED`, `TERTIARY_S3_ENABLED` | `false` | enable the copy |
 | `SECONDARY_S3_REQUIRED`, `TERTIARY_S3_REQUIRED` | `false` | `true` = a failed upload to this copy makes the project fail |
 | `S3_BANDWIDTH_LIMIT` | empty | upload speed limit (shared by all storages) |
+| `S3_PROXY` | empty | the proxy for every storage without its own `<ROLE>_S3_PROXY` |
 | `S3_MULTIPART_THRESHOLD` | empty | smaller files go in one request rather than in parts (shared) |
 | `S3_MAX_ATTEMPTS` | `8` | aws attempts per request (shared) |
 | `S3_UPLOAD_TRIES` | `3` | attempts of a whole file upload, or of deleting an old backup, on a transient storage error (OperationAborted, SlowDown, 5xx, a broken connection); a failed attempt's multipart parts are aborted, and the rotation step of every full run aborts any older leftovers |
@@ -616,7 +618,7 @@ SECONDARY_S3_OPTS_EXTRA=""
 
 # --- TERTIARY: the tertiary S3 — the same fields ---
 TERTIARY_S3_ENABLED="false"
-# TERTIARY_S3_ACCESS_KEY, _SECRET_KEY, _ENDPOINT, _REGION, _BUCKET, _ADDRESSING_STYLE, _OPTS_EXTRA, _REQUIRED
+# TERTIARY_S3_ACCESS_KEY, _SECRET_KEY, _ENDPOINT, _REGION, _BUCKET, _ADDRESSING_STYLE, _OPTS_EXTRA, _PROXY, _REQUIRED
 ```
 
 The list of roles is defined in one place — `S3_ROLES` in `lib.sh`; every script walks it. To
@@ -648,6 +650,31 @@ You can change it any time by editing this value in `backup.conf`
 If your bucket is reachable only in virtual-hosted mode and you get access
 errors — set `virtual`. The `diagnose-s3.sh` diagnostics try both
 variants for each storage and tell you which one works.
+
+### Through a proxy
+
+When the host reaches a storage only through an HTTP proxy (a closed network, a route that is blocked
+on the way), give the proxy to that storage:
+
+```bash
+PRIMARY_S3_PROXY="http://proxy.example.com:3128"
+SECONDARY_S3_PROXY="none"                      # this copy is reachable straight
+# or one proxy for every storage that has no <ROLE>_S3_PROXY of its own:
+S3_PROXY="http://user:password@proxy.example.com:3128"
+```
+
+Or in the menu: **Storage settings** → the storage → **Proxy**. After saving, the menu checks the bucket
+through the new proxy right away.
+
+- **Only aws goes through it.** Notifications (Telegram, email, webhooks…) and monitor pings keep going
+  straight, as before. The proxy is given to each aws call alone and is never exported, so a
+  pre-backup hook doesn't see it (the URL may carry a password).
+- **Each storage has its own.** A copy behind its own proxy and a primary reached straight work in one
+  run; `sync-s3.sh` reads through the source's proxy and writes through the target's.
+- **http:// and https:// proxies.** SOCKS is not supported by aws-cli; `validate-config.sh` rejects such a
+  value instead of letting every upload fail with an obscure error.
+- The password is never shown: `validate-config.sh`, `diagnose-s3.sh` and the menu print
+  `http://user:***@host:3128`. `diagnose-s3.sh` runs its checks through the storage's proxy, like the backup.
 
 ### Synchronizing copies (`sync-s3.sh`)
 
@@ -1086,11 +1113,12 @@ server can't read, needing an extension. The deep check loads each one, after th
 |---|---|---|
 | PostgreSQL | `postgres:<the dump's major>-alpine`; `timescale/timescaledb:latest-pg<major>` when it uses TimescaleDB | tables in every database, against the dump's `CREATE TABLE`s |
 | MySQL / MariaDB | `mysql:<x.y>` / `mariadb:<x.y>` of the dump's `Server version` | tables outside the system schemas, against the dump's |
-| MongoDB | `mongo:8`, with `mongorestore --archive` | collections |
+| MongoDB | `mongo:7` (it starts on more kernels than 8), with `mongorestore --archive` | collections |
 | Redis / Valkey RDB | `redis-check-rdb` of `redis:8-alpine` / `valkey/valkey:9-alpine` | keys read |
 
 - The container has **no network**, is labelled so the backup leaves it alone, and is removed after the dump (and
-  when the script is stopped). The images are pulled the first time.
+  when the script is stopped). The images are pulled the first time. A server that does not start on this host
+  (memory, the kernel) is a warning — "not loaded" — not a failed dump.
 - **Fewer tables than the dump creates fails the check.** Errors while loading (an extension the image lacks,
   say) are warnings with the first of them shown; for an image of your own — PostGIS, an extension —
   `VERIFY_DEEP_IMAGE_POSTGRES` (`_MYSQL`, `_MARIADB`, `_MONGO`, `_REDIS`, `_VALKEY`).

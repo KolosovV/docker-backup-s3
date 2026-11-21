@@ -10,6 +10,23 @@ The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
 ## [Unreleased]
 
+### Added
+- **A proxy on the way to a storage.** `<ROLE>_S3_PROXY` (`http://host:3128`, `http://user:password@host:3128`,
+  https:// too) for a host that reaches a storage only through an HTTP proxy; `S3_PROXY` — for every storage
+  without its own, `none` — straight even then. Only aws goes through it, one call at a time: notifications and
+  monitor pings keep going straight, and the proxy is never exported, so a pre-backup hook doesn't see it. Each
+  storage has its own, `sync-s3.sh` included (it reads through the source's and writes through the target's).
+  In the menu: Storage settings → the storage → Proxy, with a bucket check through it right after saving; the
+  installer's and the menu's bucket checks and `diagnose-s3.sh` go through it too. `validate-config.sh` rejects a
+  value aws-cli can't use (SOCKS, no scheme); the password is shown as `***` everywhere.
+
+### Fixed
+- **The deep restore check no longer fails a good dump when its database server can't run on the host.** A
+  throwaway container that does not start, or a server that does not come up (memory, the kernel, the image), is
+  now a warning — "not loaded" — and the standard checks still stand; before, it counted as a broken dump.
+- **MongoDB dumps load into `mongo:7` by default** (`VERIFY_DEEP_IMAGE_MONGO`): `mongo:8` refuses to start on
+  Linux 6.19 and newer.
+
 ## [2.2.0] — 2026-11-01
 
 ### Added

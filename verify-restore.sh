@@ -205,7 +205,7 @@ deep_image() {
             v="$(grep -m 1 -E '^-- Server version' <<< "$head" | grep -oE '[0-9]+\.[0-9]+' | head -n 1 || true)"
             if grep -qi 'mariadb' <<< "$head"; then printf '%s' "${VERIFY_DEEP_IMAGE_MARIADB:-mariadb:${v:-11.4}}"
             else printf '%s' "${VERIFY_DEEP_IMAGE_MYSQL:-mysql:${v:-8.4}}"; fi ;;
-        mongo)  printf '%s' "${VERIFY_DEEP_IMAGE_MONGO:-mongo:8}" ;;
+        mongo)  printf '%s' "${VERIFY_DEEP_IMAGE_MONGO:-mongo:7}" ;;
         redis)  printf '%s' "${VERIFY_DEEP_IMAGE_REDIS:-redis:8-alpine}" ;;
         valkey) printf '%s' "${VERIFY_DEEP_IMAGE_VALKEY:-valkey/valkey:9-alpine}" ;;
     esac
@@ -233,7 +233,7 @@ _deep_wait() {
 }
 
 # deep_load <kind: postgres|mysql|mongo|redis> <name> <the dump's first lines> — the uncompressed dump on stdin.
-# 0 — it loads; 1 — it does not; 2 — not checked (no image). What it found goes to the log.
+# 0 — it loads; 1 — it does not; 2 — not checked (no image, or its server would not start here). What it found goes to the log.
 deep_load() {
     local kind="$1" name="$2" head="$3" image c d out rc=0 n expected errs dbs db tmo="${VERIFY_DEEP_TIMEOUT:-3600}"
     [[ "$kind" == redis && "$head" == VALKEY* ]] && kind=valkey
@@ -267,9 +267,11 @@ deep_load() {
                       -e MYSQL_ALLOW_EMPTY_PASSWORD=yes -e MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1 "$image" >/dev/null 2>"$d/run" || rc=$? ;;
         mongo)    docker run -d --name "$c" --label docker-backup-s3.skip=true --network none "$image" >/dev/null 2>"$d/run" || rc=$? ;;
     esac
+    # A server that does not start is this host's trouble (memory, the kernel, the image), not the dump's:
+    # "not loaded", a warning — the standard checks above still stand
     if (( rc != 0 )); then
-        log_err "    $name: the database container did not start: $(head -n 1 "$d/run")"
-        cat > /dev/null; rm -rf "$d"; return 1
+        log_warn "    $name: the $image container did not start, the dump is not loaded: $(head -n 1 "$d/run")"
+        cat > /dev/null; rm -rf "$d"; return 2
     fi
     # Over TCP: the images first run a temporary server for their setup, then restart it
     local cli="mariadb"; [[ "$kind" == mysql && "$image" == mysql:* ]] && cli="mysql"
@@ -280,8 +282,8 @@ deep_load() {
         mongo)    ready=(mongosh --quiet --eval 'db.runCommand({ping: 1}).ok') ;;
     esac
     if ! _deep_wait "$c" "${ready[@]}"; then
-        log_err "    $name: the $image server did not come up: $(docker logs --tail 3 "$c" 2>&1 | tr '\n' ' ')"
-        cat > /dev/null; docker rm -f -v "$c" >/dev/null 2>&1; rm -rf "$d"; return 1
+        log_warn "    $name: the $image server did not come up on this host, the dump is not loaded (VERIFY_DEEP_IMAGE_${kind^^} picks another image): $(docker logs --tail 3 "$c" 2>&1 | tr '\n' ' ' | cut -c1-300)"
+        cat > /dev/null; docker rm -f -v "$c" >/dev/null 2>&1; rm -rf "$d"; return 2
     fi
 
     rc=0
