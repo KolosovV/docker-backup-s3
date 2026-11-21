@@ -241,6 +241,13 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
     }
     # pm_install <package…> — exit code of the package manager. Its output (dpkg prints pages even with -qq) is
     # shown only when it fails: the last lines, which say why.
+    # Arch: never "pacman -Sy" followed by "pacman -S" — that is a partial upgrade, which Arch does not support:
+    # a package from the fresh list can need a newer library than the system has, and the install fails ("conflicting
+    # files" when openssl was split into openssl-3, 11.2026) or leaves the system half-updated. So the first try is
+    # "pacman -S" against the system's own package list (its versions match what is installed); only if that is not
+    # enough (no list at all in a fresh container, or the versions are gone from the mirrors) — a full upgrade,
+    # "pacman -Syu", the one supported way, after a question (pacman_full_upgrade_ok).
+    PACMAN_FULL=""
     pm_install() {
         local out rc=0
         out="$(case "$PKG_MGR" in
@@ -248,12 +255,26 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
             apt-get) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -qq "$@" ;;
             dnf|yum) "$PKG_MGR" install -y -q "$@" ;;
             zypper)  zypper --non-interactive -q install -y "$@" ;;
-            pacman)  pacman -S --noconfirm --needed "$@" ;;
+            pacman)
+                if [[ -n "$PACMAN_FULL" ]]; then pacman -Syu --noconfirm --needed "$@"
+                else pacman -S --noconfirm --needed "$@"; fi ;;
             apk)     apk add --no-cache -q "$@" ;;
             *)       exit 1 ;;
         esac 2>&1)" || rc=$?
         (( rc == 0 )) || printf '%s\n' "$out" | tail -n 15 | sed 's/^/    /' >&2
         return "$rc"
+    }
+    # pacman_full_upgrade_ok — Arch: the system's package list was not enough; a full upgrade is the supported way.
+    # Asked once (with -y — yes); sets PACMAN_FULL for the rest of the run. 1 if declined.
+    pacman_full_upgrade_ok() {
+        [[ -n "$PACMAN_FULL" ]] && return 0
+        log_warn "Arch: the packages could not be installed from the system's current package list."
+        log "    Arch supports only a full upgrade for this (pacman -Syu): installing a package after a bare -Sy breaks libraries."
+        ask_yn "  Upgrade the system and install the packages (pacman -Syu)?" "y" || {
+            log "    Then: sudo pacman -Syu, and run install.sh again"
+            return 1
+        }
+        PACMAN_FULL=1
     }
     install_base_deps() {
         local -a want=() failed=()
@@ -273,7 +294,10 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
         log "  Installing: $(IFS=' '; printf '%s' "${want[*]}")"
         case "$PKG_MGR" in
             apt-get) apt-get -o DPkg::Lock::Timeout=300 update -qq || true ;;
-            pacman)  pacman -Sy --noconfirm >/dev/null || true ;;
+            # No "pacman -Sy" here (see pm_install): the system's own list first, a full upgrade only if it is not enough
+            pacman)
+                if pm_install "${want[@]}" 2>/dev/null; then log_ok "Base packages installed"; return 0; fi
+                pacman_full_upgrade_ok || return 1 ;;
         esac
         # A package manager busy right after boot (dnf-makecache, unattended-upgrades, packagekit) fails
         # the first try: wait and try again before going package by package
@@ -444,6 +468,10 @@ if [[ "$SKIP_DEPS" != "true" ]]; then
                 pacman) _aws_pkg="aws-cli-v2" ;;
                 dnf)    _aws_pkg="awscli2" ;;
             esac
+            # Arch: the same rule as for the base packages — the system's list, then a full upgrade if needed
+            if [[ -n "$_aws_pkg" && "$PKG_MGR" == pacman ]] && ! pm_install "$_aws_pkg" >/dev/null 2>&1; then
+                pacman_full_upgrade_ok || _aws_pkg=""
+            fi
             if [[ -n "$_aws_pkg" ]] && pm_install "$_aws_pkg" >/dev/null 2>&1; then
                 hash -r 2>/dev/null || true
                 if [[ "$(aws_major_ver || echo 0)" -ge 2 ]]; then

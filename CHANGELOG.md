@@ -8,6 +8,19 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
+## [2.3.1] — 2026-11-21
+
+### Fixed
+- **Installing on Arch no longer does a partial upgrade.** `install.sh` refreshed the package list (`pacman -Sy`) and
+  then installed from it — a partial upgrade, which Arch does not support: a package from the fresh list can need a
+  newer library than the system has. With openssl split into openssl-3 (11.2026) that fails with "conflicting
+  files", and on another day it leaves the system half-updated. Now the packages come from the system's own list
+  first; if that is not enough (no list in a fresh container, versions gone from the mirrors), the installer asks for
+  a full upgrade, `pacman -Syu` — the supported way (with `-y` — yes).
+- **A proxy login or password with non-ASCII characters is encoded right on Alpine.** The encoding counted on bash
+  working byte by byte under `LC_ALL=C`, which musl does not do; it now takes the bytes from `od`.
+- The distribution tests install their own python the same way on Arch, and say plainly when it is missing.
+
 ## [2.3.0] — 2026-11-21
 
 ### Added
@@ -568,7 +581,8 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
-[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.3.1
 [2.3.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.3.0
 [2.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.2.0
 [2.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.1.0

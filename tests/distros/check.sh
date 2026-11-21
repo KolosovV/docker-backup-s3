@@ -19,7 +19,9 @@ pm_install() {
     elif command -v dnf     >/dev/null 2>&1; then dnf install -y -q "$@" >/dev/null 2>&1
     elif command -v yum     >/dev/null 2>&1; then yum install -y -q "$@" >/dev/null 2>&1
     elif command -v zypper  >/dev/null 2>&1; then zypper --non-interactive -q install -y "$@" >/dev/null 2>&1
-    elif command -v pacman  >/dev/null 2>&1; then pacman -Sy --noconfirm --needed "$@" >/dev/null 2>&1
+    # Arch: a full upgrade, never -Sy alone — a partial upgrade breaks on split packages (openssl → openssl-3, 11.2026:
+    # "conflicting files"), and Arch doesn't support it. tests/systemd/run.sh does the same.
+    elif command -v pacman  >/dev/null 2>&1; then pacman -Syu --noconfirm --needed "$@" >/dev/null 2>&1
     elif command -v apk     >/dev/null 2>&1; then apk add --no-cache -q "$@" >/dev/null 2>&1
     fi
 }
@@ -63,6 +65,8 @@ fi
 
 echo "-- tests"
 if command -v python3 >/dev/null 2>&1 || pm_install python3 || pm_install python; then :; fi
+# Said here, plainly: without it every test below fails with "Missing: python3", which reads like a broken script
+check "python3 for the tests" command -v python3
 if bash /src/tests/run.sh > "$LOGS/unit.log" 2>&1; then ok "tests/run.sh"
 else bad "tests/run.sh"; grep -E 'FAIL|^==|Missing' "$LOGS/unit.log" | head -30; fi
 

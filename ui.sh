@@ -298,15 +298,18 @@ proxy_masked() {
     else printf '%s' "$1"; fi
 }
 
-# proxy_urlenc <text> — percent-encoding of a login or a password: anything but A-Z a-z 0-9 . _ ~ - (byte by byte)
+# proxy_urlenc <text> — percent-encoding of a login or a password: anything but A-Z a-z 0-9 . _ ~ - , byte by byte.
+# The bytes come from od, not from bash's characters: "LC_ALL=C makes bash count bytes" does not hold on musl (Alpine),
+# where a non-ASCII password came out encoded wrong.
 proxy_urlenc() {
-    local LC_ALL=C s="$1" out="" c i
-    for (( i = 0; i < ${#s}; i++ )); do
-        c="${s:i:1}"
-        case "$c" in
-            [A-Za-z0-9._~-]) out+="$c" ;;
-            *) printf -v c '%%%02X' "'$c"; out+="$c" ;;
-        esac
+    local IFS=$' \t\n' out="" h c ch
+    for h in $(printf '%s' "$1" | od -An -v -tx1); do
+        c=$(( 16#$h ))
+        if (( (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95 || c == 126 )); then
+            printf -v ch "\\x$h"; out+="$ch"
+        else
+            out+="%${h^^}"
+        fi
     done
     printf '%s' "$out"
 }

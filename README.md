@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.3.0-2496ED" alt="version 2.3.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.3.1-2496ED" alt="version 2.3.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4.4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4.4+">
   <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20x86__64%20%7C%20arm64-FCC624?logo=linux&logoColor=black" alt="Linux · x86_64 | arm64">
@@ -267,7 +267,9 @@ The installer does everything itself:
 1. Installs the missing dependencies via the system package manager — `apt`/`dnf`/`yum`/`zypper`/`pacman`/`apk`:
    `jq`, `tar`, `gzip`, `dos2unix`, `curl`, `gpg` (with `gpg-agent`), `unzip`, cron, `whiptail`, `logrotate`,
    `util-linux`, `findutils`, `procps` (on Alpine also the GNU `coreutils`, `grep`, `sed`, `tar`). Only what is missing,
-   one package at a time if the whole list fails; a package manager busy right after boot is waited for
+   one package at a time if the whole list fails; a package manager busy right after boot is waited for. On Arch —
+   from the system's own package list first, and a full upgrade (`pacman -Syu`) only if that is not enough, after a
+   question: a bare `pacman -Sy` before installing is a partial upgrade, which Arch does not support
 2. Installs AWS CLI v2 with the official AWS installer into `/usr/local/bin` and checks that it runs; where it cannot
    (musl: Alpine), the distro's package if it is v2; snap is the last fallback. If aws is already installed from snap,
    it offers to switch to the official one: snap updates aws-cli by itself, and such updates have broken uploads
