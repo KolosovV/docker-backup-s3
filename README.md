@@ -59,6 +59,7 @@ sudo docker-backup-s3                      # the menu: status, backup, restore, 
 - ⚡ **Parallel volume backup**
 - 🎯 **Single-project backup** with `-p NAME` for urgent jobs
 - 🚦 **Bandwidth limit** for S3 uploads
+- 🔀 **A proxy to the storages** — for a server that reaches S3 only through an HTTP proxy: asked by the installer, switched in the menu, a route per storage (through the common proxy, straight, or its own); only aws goes through it ([details](#through-a-proxy))
 - 🔐 **GPG encryption** of archives (optional) — with a passphrase, or to a public key: then the host that makes the backups cannot read them ([details](#gpg-encryption))
 - 🛡 **Object Lock** buckets — the checksum uploads to them need, and a check that the lock, versioning and lifecycle rules work together ([details](#object-lock-and-versioning))
 - 🔒 **Secrets stay on your server** — no telemetry; keys and passwords never go on a command line, in the log or in a notification ([details](#where-your-keys-and-passwords-live))
@@ -153,7 +154,7 @@ The installer links `/usr/local/bin/docker-backup-s3` → `menu.sh`. Without arg
 | Checks and diagnostics | `validate-config.sh`, quick/full/deep restore verification (of any storage, all projects or one), `diagnose-s3.sh`, `diagnose-cron.sh` |
 | Logs | the last lines, errors, the last run, today's errors, one project, follow live |
 | Scheduled runs | the current setup, a method (cron / systemd timer) and a preset or your own schedule, the restore check on a schedule, removal |
-| Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key, Object Lock |
+| Storage settings | for each storage: the connection wizard (keys, endpoint, bucket, addressing — with the bucket and certificate check), enable/disable and required/optional for copies, an access check, the read-only restore key, Object Lock, its route; **Proxy to the storages**: the common proxy (on, change, off), each storage's route, a check of every storage through its route |
 | Notifications | when to notify (problems only / every run / never), the server name in messages, which of them arrive without a sound, and email, Slack, Teams, PagerDuty, ntfy, the webhook, Telegram and Apprise: set up, test, turn off; every change is checked with a test message (PagerDuty's after a question: it pages); Monitoring: the monitor's ping URLs and the metrics folder |
 
 Destructive actions (an in-place restore, `--prune`, writing to the primary from a copy) ask for confirmation first;
@@ -277,8 +278,12 @@ The installer does everything itself:
    (`backup.conf.imported-<time>`)
 5. `dos2unix` + `chmod +x` + `chmod 600 backup.conf`
 6. Asks for the settings interactively (in whiptail dialogs if whiptail is installed, plain prompts otherwise):
+   - **A proxy to the storages** — only if the server reaches S3 through an HTTP proxy (the answer is "no" by default):
+     the address, a login and a hidden password; asked first, so the checks below already go through it
+     ([details](#through-a-proxy))
    - **Primary S3**: Access/Secret/Endpoint/Region/Bucket + addressing style (path/virtual); then checks the bucket and certificate trust itself (see below)
-   - **Secondary and tertiary S3** — whether to enable, keys/endpoint/region/bucket, addressing style, whether required; the same check
+   - **Secondary and tertiary S3** — whether to enable, through the same proxy or straight (when there is one),
+     keys/endpoint/region/bucket, addressing style, whether required; the same check
    - **Prefix in the bucket** (`BACKUP_PREFIX`)
    - **Retention** (`RETENTION_DAYS`)
    - Directories to scan (`SCAN_DIRS`)
@@ -296,8 +301,8 @@ The installer does everything itself:
 
 The installer doesn't ask about the certificate — the answer is unknown at install time (a wrong "no" leaves
 a copy that silently stops accepting archives). Instead of asking, after the
-keys, endpoint, bucket and addressing style are entered it runs `aws s3api head-bucket` — with the same keys
-and `AWS_REQUEST_CHECKSUM_CALCULATION`/`AWS_RESPONSE_CHECKSUM_VALIDATION` as the backup, without `~/.aws`:
+keys, endpoint, bucket and addressing style are entered it runs `aws s3api head-bucket` — with the same keys,
+`AWS_REQUEST_CHECKSUM_CALCULATION`/`AWS_RESPONSE_CHECKSUM_VALIDATION` and proxy as the backup, without `~/.aws`:
 - passed — no options needed, `<ROLE>_S3_OPTS_EXTRA` stays empty;
 - `CERTIFICATE_VERIFY_FAILED` — retries with `--ca-bundle` of the system CA bundle
   (`/etc/ssl/certs/ca-certificates.crt`, on RHEL — `/etc/pki/tls/certs/ca-bundle.crt`).
@@ -661,7 +666,7 @@ the way. Nothing to edit by hand:
 - **The menu:** `sudo docker-backup-s3` → **Storage settings** → **Proxy to the storages**:
 
   ```
-  Common proxy: proxy.example.com:3128 — change…
+  Common proxy: http://proxy.example.com:3128 — change…
   Turn the common proxy off
   Primary S3: through the common proxy http://proxy.example.com:3128…
   Secondary S3: straight, no proxy…
@@ -1719,7 +1724,8 @@ sudo /opt/docker-backup-s3/status.sh
 
 Shows on one screen:
 - **Compose projects on the host** — list, container states, databases for auto-dump
-- **Backups in each storage** — latest, oldest, size, per project; for copies — the object count compared with the primary
+- **Backups in each storage** — latest, oldest, size, per project; for copies — the object count compared with the primary;
+  the route, when a storage goes through a proxy (`🔀 through the common proxy http://proxy.example.com:3128`)
 - **Rotation** — what will be deleted on the next run
 - **Scheduled runs** — whether cron / a systemd timer is set up, when it fires
 - **Configuration** — mode, retention, encryption, auto-dump
@@ -1941,6 +1947,7 @@ only to the addresses you put into `backup.conf`.
 | Where to | What | When |
 |---|---|---|
 | Your S3 storages (the endpoints you set) | The backup archives (encrypted with your passphrase if `ENCRYPT_BACKUPS=true`), their `.sha256` manifests | Backup, rotation, sync, restore, checks |
+| Your HTTP proxy (`S3_PROXY`, `<ROLE>_S3_PROXY`) — only if you set one | The same S3 traffic on its way. With an `https://` endpoint TLS to the storage goes through the proxy as a tunnel, so the proxy sees the storage's host name, not the archives or the keys; with an `http://` endpoint it sees everything | Whenever aws talks to that storage |
 | Your SMTP server, Slack, Teams, PagerDuty, ntfy, webhook, Telegram bot, Apprise services, a monitor's ping URL — only the ones you set | The text of a notification: project names, sizes, times, error reasons. Never a key, a password or file contents | After a run, when a notification is due |
 | `awscli.amazonaws.com`, your distribution's package mirrors | Nothing of yours: `install.sh` downloads aws-cli and packages from there | Installation |
 
@@ -1950,7 +1957,7 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 
 | Secret | Where | Who can read it |
 |---|---|---|
-| S3 keys, the SMTP password, the Slack, Teams, webhook and ping URLs, the PagerDuty key, the ntfy and Telegram tokens, the Apprise URLs | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
+| S3 keys, the proxy's login and password, the SMTP password, the Slack, Teams, webhook and ping URLs, the PagerDuty key, the ntfy and Telegram tokens, the Apprise URLs | `backup.conf` | root only (`chmod 600`, set by `install.sh`; `validate-config.sh` warns if it is not) |
 | The GPG passphrase | `GPG_PASSPHRASE_FILE` (`/root/.docker-backup-passphrase`) | root only (`600`); gpg reads it from the file, never from an argument |
 | Database passwords | Where they already are: your containers' environment and secret files | Read **inside** the database container at dump time (see below); never copied to the host |
 | Remote database passwords | `backup.conf`, or the file `REMOTE_DB_<NAME>_PASSWORD_FILE` points to | root only (`600`) |
@@ -1960,7 +1967,9 @@ Nothing else. You can check it: `grep -rnoE 'https?://[a-zA-Z0-9.-]+' *.sh` list
 **Never on a command line.** Any user of a Linux host can see every process's command line (`ps aux`),
 so no secret is ever passed as an argument:
 
-- S3 keys go to `aws` through its environment (readable by root only), not as options.
+- S3 keys go to `aws` through its environment (readable by root only), not as options. So does the proxy URL with
+  its password — and only to that one aws call: it is never exported, so curl and the hooks don't get it, and every
+  screen shows it as `http://user:***@host:3128`.
 - The Telegram token, the Slack, Teams, webhook and ping URLs (they carry their secret) and the ntfy token go to
   `curl` as a config on a pipe (`curl -K <(…)`); the PagerDuty key — to jq in its environment and to curl in the body, on
   stdin; the SMTP password and the Apprise URLs — in a temporary `600` file, removed right after.
@@ -1973,7 +1982,7 @@ so no secret is ever passed as an argument:
 - A remote database's password goes to its client container through the environment: exported in a subshell
   and passed as `-e PGPASSWORD` (`MYSQL_PWD`, `REDISCLI_AUTH`) without a value; `mongodump` reads it on its stdin.
   The container runs with `--log-driver none`, so the dump passing through it is not kept in Docker's log either.
-- Hooks (`pre-backup-hook.sh`) run without the S3 keys in their environment.
+- Hooks (`pre-backup-hook.sh`) run without the S3 keys and the proxy in their environment.
 
 **Never in the log or in a notification.** Messages say which account a dump used (`user app`) and why
 something failed (`Access denied`, `WRONGPASS`), never a password. `validate-config.sh` shows the first and
@@ -2048,6 +2057,14 @@ Newer aws-cli (since 2.23) sends a new-style checksum with every upload, and som
 S3-compatible storages (it has been seen) drop the connection on it. The scripts set
 `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required`
 themselves (`lib.sh`, `diagnose-s3.sh`). If the error is still there — update the scripts (`update.sh`).
+
+### The storage is reachable only through a SOCKS proxy
+
+aws-cli speaks only HTTP proxies (`http://`, and `https://` for a proxy that itself talks TLS), so
+`socks5://…` is rejected by the menu and by `validate-config.sh` instead of failing every upload. Put a small
+SOCKS → HTTP converter next to it — privoxy (`forward-socks5t / host:1080 .`) or gost
+(`gost -L http://127.0.0.1:3128 -F socks5://host:1080`) — and give its address as the proxy:
+`S3_PROXY="http://127.0.0.1:3128"` (or in the menu: Storage settings → Proxy to the storages).
 
 ### `make_bucket failed: argument of type 'NoneType' is not a container or iterable`
 
