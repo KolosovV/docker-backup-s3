@@ -8,17 +8,20 @@ on update (a config change that `update.sh` can't do for you), **minor** — new
 
 The installed version: `docker-backup-s3 version` (or the `VERSION` file).
 
-## [Unreleased]
+## [2.3.0] — 2026-11-21
 
 ### Added
-- **A proxy on the way to a storage.** `<ROLE>_S3_PROXY` (`http://host:3128`, `http://user:password@host:3128`,
-  https:// too) for a host that reaches a storage only through an HTTP proxy; `S3_PROXY` — for every storage
-  without its own, `none` — straight even then. Only aws goes through it, one call at a time: notifications and
-  monitor pings keep going straight, and the proxy is never exported, so a pre-backup hook doesn't see it. Each
-  storage has its own, `sync-s3.sh` included (it reads through the source's and writes through the target's).
-  In the menu: Storage settings → the storage → Proxy, with a bucket check through it right after saving; the
-  installer's and the menu's bucket checks and `diagnose-s3.sh` go through it too. `validate-config.sh` rejects a
-  value aws-cli can't use (SOCKS, no scheme); the password is shown as `***` everywhere.
+- **A proxy to the storages**, for a server that reaches S3 only through an HTTP proxy. The installer asks
+  for it before the storages (and, for each copy, whether it goes through the same proxy); the menu has
+  **Storage settings → Proxy to the storages**: the common proxy — on, change, off — and each storage's route
+  (through the common proxy, straight, or its own proxy), checked through the route right after a change.
+  The address, the login and the password are asked one at a time, the password hidden and every special
+  character encoded for you. In `backup.conf`: `S3_PROXY` — the common one, `<ROLE>_S3_PROXY` — a storage's
+  route (empty — the common one, `none` — straight, a URL — its own). Only aws goes through it, one call at a
+  time: notifications and monitor pings keep going straight, and the proxy is never exported, so a pre-backup
+  hook doesn't see it. `sync-s3.sh` reads through the source's route and writes through the target's;
+  `status.sh` shows the route, `diagnose-s3.sh` checks through it, `validate-config.sh` rejects a value aws-cli
+  can't use (SOCKS, no scheme). The password is shown as `***` everywhere.
 
 ### Fixed
 - **The deep restore check no longer fails a good dump when its database server can't run on the host.** A
@@ -565,7 +568,8 @@ The first public release.
 - `update.sh` with a backup copy, `--rollback` and config migration (`S3_*` → `PRIMARY_S3_*`).
 - The `docker-backup` command: a menu for everything above, plus subcommands for scripts.
 
-[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/KolosovV/docker-backup-s3/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.3.0
 [2.2.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.2.0
 [2.1.0]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.1.0
 [2.0.1]: https://github.com/KolosovV/docker-backup-s3/releases/tag/v2.0.1

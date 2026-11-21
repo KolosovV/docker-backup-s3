@@ -15,6 +15,7 @@ export PATH="$W/bin:$PATH" AWS_STUB_OUT="$W/aws.env"
 unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy
 
 source "$REPO/lib.sh"
+source "$REPO/ui.sh"
 LOG_FILE="$W/log"
 
 section "s3_proxy: the storage's own, else S3_PROXY, none — straight"
@@ -47,6 +48,66 @@ check "a password with : and @ inside" test "$(proxy_masked 'http://u:a:b@c@prox
 check "no password — as is" test "$(proxy_masked 'http://proxy:3128')" == 'http://proxy:3128'
 check "a user without a password — as is" test "$(proxy_masked 'http://user@proxy:3128')" == 'http://user@proxy:3128'
 
+section "proxy_build / proxy_split: entered in parts, kept as one URL"
+check "host:port → http://" test "$(proxy_build 'proxy.example.com:3128')" == 'http://proxy.example.com:3128'
+check "spaces and a trailing slash dropped" test "$(proxy_build '  http://proxy:3128/ ')" == 'http://proxy:3128'
+check "https:// kept, scheme lowercased" test "$(proxy_build 'HTTPS://proxy:443')" == 'https://proxy:443'
+check "empty address — no proxy" test -z "$(proxy_build '' user pass)"
+check "login and password" test "$(proxy_build proxy:3128 user secret)" == 'http://user:secret@proxy:3128'
+check "a login without a password" test "$(proxy_build proxy:3128 user '')" == 'http://user@proxy:3128'
+u="$(proxy_build proxy:3128 'dom\user' 'p@ss:w/rd %+é')"
+check "special characters percent-encoded ($u)" test "$u" == 'http://dom%5Cuser:p%40ss%3Aw%2Frd%20%25%2B%C3%A9@proxy:3128'
+check "the encoded URL is a valid proxy" proxy_valid "$u"
+proxy_split "$u"
+check "split: the address" test "$PROXY_ADDR" == 'http://proxy:3128'
+check "split: the login decoded" test "$PROXY_USER" == 'dom\user'
+check "split: the password decoded" test "$PROXY_PASS" == 'p@ss:w/rd %+é'
+check "a pasted URL with a login, login field empty — kept" \
+    test "$(proxy_build 'http://u:p@proxy:3128' '' '')" == 'http://u:p@proxy:3128'
+check "the login fields win over one typed into the address" \
+    test "$(proxy_build 'http://old@proxy:3128' new pw)" == 'http://new:pw@proxy:3128'
+proxy_split ""
+check "split of nothing — empty parts" test -z "$PROXY_ADDR$PROXY_USER$PROXY_PASS"
+
+section "proxy_wizard (answers from a file, as typed)"
+UI_MODE=plain; UI_IN=9
+printf 'proxy.example.com:3128\nuser\n' > "$W/answers"; printf 'secret\n' >> "$W/answers"
+exec 9<"$W/answers"; proxy_wizard "" 2>/dev/null; rc=$?; exec 9<&-
+check "address, login, password → one URL (rc $rc)" test "$PROXY_URL" == 'http://user:secret@proxy.example.com:3128'
+printf '\n\n\n' > "$W/answers"
+exec 9<"$W/answers"; proxy_wizard "http://user:secret@proxy.example.com:3128" 2>/dev/null; exec 9<&-
+check "Enter on every question keeps the address, the login and the password" \
+    test "$PROXY_URL" == 'http://user:secret@proxy.example.com:3128'
+printf 'socks5://p:1080\n\nproxy:8080\n\n' > "$W/answers"
+exec 9<"$W/answers"; proxy_wizard "" 2>/dev/null; exec 9<&-
+check "a SOCKS address is asked again, the next one taken" test "$PROXY_URL" == 'http://proxy:8080'
+printf '\n' > "$W/answers"
+exec 9<"$W/answers"; proxy_wizard "" 2>/dev/null; exec 9<&-
+check "an empty address — no proxy" test -z "$PROXY_URL"
+UI_MODE=""
+
+section "s3_proxy_route: what the screens say"
+S3_PROXY="http://common:8080"; PRIMARY_S3_PROXY=""; SECONDARY_S3_PROXY="none"; TERTIARY_S3_PROXY="http://own:3128"
+check "empty → common" test "$(s3_proxy_route primary)" == common
+check "none → direct" test "$(s3_proxy_route secondary)" == direct
+check "a URL → own" test "$(s3_proxy_route tertiary)" == own
+S3_PROXY=""
+check "no common proxy → direct" test "$(s3_proxy_route primary)" == direct
+check "the line says it" test "$(proxy_route_line own 'http://u:pw@own:3128')" == 'through its own proxy http://u:***@own:3128'
+
+section "store_save writes the route only when there is one"
+CONF_FILE="$W/conf"; : > "$CONF_FILE"
+log() { :; }; log_ok() { :; }; log_warn() { :; }
+declare -A ST=([primary:ACCESS_KEY]=k [primary:SECRET_KEY]=s [primary:ENDPOINT]=e [primary:REGION]=r [primary:BUCKET]=b)
+store_save primary
+if grep -q '^PRIMARY_S3_PROXY=' "$CONF_FILE"; then bad "an old config got an empty PRIMARY_S3_PROXY line"
+else ok "no route — no new line in an old config"; fi
+ST[primary:PROXY]="none"; store_save primary
+check "a route is written" grep -qx 'PRIMARY_S3_PROXY="none"' "$CONF_FILE"
+ST[primary:PROXY]=""; store_save primary
+check "and reset back to empty once the line exists" grep -qx 'PRIMARY_S3_PROXY=""' "$CONF_FILE"
+S3_PROXY=""; PRIMARY_S3_PROXY=""; SECONDARY_S3_PROXY=""; TERTIARY_S3_PROXY=""
+
 section "aws() hands the proxy to aws alone"
 check "type -P still finds the aws binary, not the function" test "$(type -P aws)" == "$W/bin/aws"
 S3_CUR_PROXY="http://u:pw@proxy:3128"
@@ -55,7 +116,7 @@ check "aws got HTTPS_PROXY" grep -qx 'HTTPS_PROXY=http://u:pw@proxy:3128' "$AWS_
 check "aws got https_proxy" grep -qx 'https_proxy=http://u:pw@proxy:3128' "$AWS_STUB_OUT"
 check "aws got HTTP_PROXY" grep -qx 'HTTP_PROXY=http://u:pw@proxy:3128' "$AWS_STUB_OUT"
 check "the shell itself has no HTTPS_PROXY after the call (curl goes straight)" test -z "${HTTPS_PROXY:-}${https_proxy:-}"
-if env | grep -qi '_proxy='; then bad "a proxy variable is in the environment of other programs"
+if env | grep -qE '^(HTTPS?_PROXY|https?_proxy)='; then bad "a proxy variable is in the environment of other programs"
 else ok "other programs (curl, a hook) see no proxy"; fi
 if env | grep -q 'S3_CUR_PROXY'; then bad "S3_CUR_PROXY is exported"; else ok "S3_CUR_PROXY is not exported"; fi
 S3_CUR_PROXY=""

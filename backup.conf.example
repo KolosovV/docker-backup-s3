@@ -19,6 +19,22 @@
 # ==============================================================================
 
 # ==============================================================================
+# PROXY TO THE STORAGES (optional)
+# Only for a server that reaches S3 through an HTTP proxy — a closed network, a blocked route.
+# The easy way: sudo docker-backup-s3 → Storage settings → Proxy to the storages (address, login and
+# password asked one by one, every storage checked through it). The installer asks too.
+#
+# S3_PROXY — the common proxy, for every storage without a route of its own:
+#   "http://proxy.example.com:3128", "http://user:password@proxy.example.com:3128" (special characters in the
+#   login and password percent-encoded: @ → %40, : → %3A); https:// if the proxy itself speaks TLS.
+#   SOCKS is not supported by aws-cli. Empty — no proxy.
+# <ROLE>_S3_PROXY (in each storage's block below) — that storage's route:
+#   empty — through S3_PROXY (or straight, if it is empty);  "none" — straight;  a URL — its own proxy.
+# Only aws goes through a proxy: notifications and monitor pings go straight, as always.
+# ==============================================================================
+S3_PROXY=""
+
+# ==============================================================================
 # PRIMARY — THE PRIMARY S3
 # The archive is created once and uploaded HERE FIRST. This is the "source of truth" —
 # rotation, integrity checks, restore and sync-s3 work with this bucket by default.
@@ -63,20 +79,12 @@ PRIMARY_S3_OBJECT_LOCK="false"
 # only if it is needed; validate-config.sh suggests a ready line on this error.
 PRIMARY_S3_OPTS_EXTRA=""
 
-# --- A proxy on the way to this storage (optional) ---
-# When the host reaches the storage only through an HTTP proxy (a closed network, a blocked route):
-# "http://proxy.example.com:3128" or "http://user:password@proxy.example.com:3128" (https:// works too;
-# SOCKS — no, aws-cli can't). Only aws goes through it: notifications and monitor pings go straight.
-# Empty — S3_PROXY below (or straight, if that is empty too); "none" — straight even when S3_PROXY is set.
+# Route to this storage (see PROXY TO THE STORAGES above): empty — S3_PROXY, "none" — straight, a URL — its own.
 PRIMARY_S3_PROXY=""
 
 # ==============================================================================
 # GENERAL aws SETTINGS FOR ALL STORAGES
 # ==============================================================================
-
-# --- A proxy for every storage that has no <ROLE>_S3_PROXY of its own ---
-# Same format as PRIMARY_S3_PROXY. Empty — straight.
-S3_PROXY=""
 
 # --- Bandwidth limit for S3 uploads ---
 # So the backup doesn't eat the whole channel while uploading.
@@ -150,7 +158,7 @@ SECONDARY_S3_OBJECT_LOCK="false"
 # "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
 SECONDARY_S3_OPTS_EXTRA=""
 
-# Proxy on the way to this storage (like PRIMARY_S3_PROXY): empty — S3_PROXY, "none" — straight.
+# Route to this storage (see PROXY TO THE STORAGES above): empty — S3_PROXY, "none" — straight, a URL — its own.
 SECONDARY_S3_PROXY=""
 
 # ==============================================================================
@@ -195,7 +203,7 @@ TERTIARY_S3_OBJECT_LOCK="false"
 # "--ca-bundle /etc/ssl/certs/ca-certificates.crt"; install.sh checks and sets it itself.
 TERTIARY_S3_OPTS_EXTRA=""
 
-# Proxy on the way to this storage (like PRIMARY_S3_PROXY): empty — S3_PROXY, "none" — straight.
+# Route to this storage (see PROXY TO THE STORAGES above): empty — S3_PROXY, "none" — straight, a URL — its own.
 TERTIARY_S3_PROXY=""
 
 # ==============================================================================

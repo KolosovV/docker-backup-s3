@@ -105,9 +105,9 @@ wizard_run() {
     printf '%s\n' "$@" > "$W/answers"
     UI_PLAIN=true UI_TTY="$W/answers" bash "$d/install.sh" --skip-deps --no-cron --skip-validate --target "$d" > "$W/wizard.log" 2>&1
 }
-#  continue?, access, secret, endpoint, region, bucket, addressing, secondary?, tertiary?, prefix, retention, scan dirs,
-#  encrypt?, server name, telegram?, webhook?, email?, logrotate?
-answers=(y AKIAWIZARD123 wizard-secret https://s3.wizard.example "" wiz-bucket path n n "" "" "" y web-7 n n n y)
+#  continue?, a proxy?, access, secret, endpoint, region, bucket, addressing, secondary?, tertiary?, prefix, retention,
+#  scan dirs, encrypt?, server name, telegram?, webhook?, email?, logrotate?
+answers=(y n AKIAWIZARD123 wizard-secret https://s3.wizard.example "" wiz-bucket path n n "" "" "" y web-7 n n n y)
 PASS_FILE=/root/.docker-backup-passphrase
 had_pass=false; [[ -f "$PASS_FILE" ]] && { had_pass=true; cp -p "$PASS_FILE" "$W/pass.keep"; }
 
@@ -128,6 +128,20 @@ check "no passphrase: the wizard warns what it means" grep -q "Without the passp
 check "and does: mode 600, not empty" test "$(stat -c %a "$PASS_FILE" 2>/dev/null)" == 600 -a -s "$PASS_FILE"
 check "it says to copy it off the server" grep -q 'copy it off the server' "$W/wizard.log"
 check "ENCRYPT_BACKUPS=true written" test "$(val "$c" ENCRYPT_BACKUPS)" == true
+check "no proxy asked for — S3_PROXY stays empty" test -z "$(val "$c" S3_PROXY)"
+
+section "the wizard with a proxy"
+# a proxy? yes → address, login, password; the rest as above
+p_answers=(y y proxy.example.com:3128 'dom\user' 'p@ss' "${answers[@]:2}")
+rm -f "$PASS_FILE"
+wizard_run "$W/opt/wiz3" "${p_answers[@]}"
+c="$W/opt/wiz3/backup.conf"
+check "S3_PROXY written as one URL, the login and the password encoded" \
+    test "$(val "$c" S3_PROXY)" == 'http://dom%5Cuser:p%40ss@proxy.example.com:3128'
+check "the primary goes through it (no route of its own)" test -z "$(val "$c" PRIMARY_S3_PROXY)"
+check "the storage written as before" test "$(val "$c" PRIMARY_S3_BUCKET)" == wiz-bucket
+if grep -q 'p@ss' "$W/wizard.log"; then bad "the proxy password is in the installer's output"
+else ok "the proxy password is not in the installer's output"; fi
 
 rm -f "$PASS_FILE"; $had_pass && cp -p "$W/pass.keep" "$PASS_FILE"
 rm -f /usr/local/bin/docker-backup-s3 /etc/logrotate.d/docker-backup

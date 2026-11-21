@@ -347,19 +347,17 @@ s3_proxy() {
     printf '%s' "$p"
 }
 
-# proxy_valid <value> — aws can use it: empty, "none" or http(s)://[user[:password]@]host[:port][/].
-# Not SOCKS: aws-cli has no SOCKS support, and such a value would fail every upload with an obscure error.
-_PROXY_RE='^https?://([^@/[:space:]]+@)?([^@/:[:space:]]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?/?$'
-proxy_valid() {
-    [[ -z "$1" || "$1" == none || "$1" =~ $_PROXY_RE ]]
+# s3_proxy_route <role> — how this storage is reached, for screens: "common" (S3_PROXY), "own" (its own
+# <ROLE>_S3_PROXY), "direct" (none set, or "none"). The address is s3_proxy's.
+s3_proxy_route() {
+    local own; own="$(s3_var "$1" PROXY)"
+    if [[ "$own" == none ]]; then printf 'direct'
+    elif [[ -n "$own" ]]; then printf 'own'
+    elif [[ -n "${S3_PROXY:-}" && "${S3_PROXY}" != none ]]; then printf 'common'
+    else printf 'direct'; fi
 }
-
-# proxy_masked <url> — the URL without its password, for logs and screens: http://user:***@host:3128
-proxy_masked() {
-    # Up to the LAST @: a password may carry one too, and all of it must be hidden
-    if [[ "$1" =~ ^([a-zA-Z]+://[^:/@]+):.*@([^@]*)$ ]]; then printf '%s:***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
-    else printf '%s' "$1"; fi
-}
+# The proxy helpers for screens and input (proxy_valid, proxy_masked, proxy_build, proxy_wizard) are in ui.sh:
+# the installer has only ui.sh.
 
 # s3_label <role> [title|to|in|from] — label for humans. No second argument — "secondary S3",
 # title — capitalized ("Secondary S3"), to — "to secondary S3", in — "in secondary S3",

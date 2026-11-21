@@ -35,6 +35,8 @@ source "$CONFIG_FILE"
 
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=ui.sh
+source "${SCRIPT_DIR}/ui.sh"   # proxy_masked / proxy_route_line: the route to each storage
 
 require_cmd docker aws jq
 _aws_setup primary read
@@ -194,6 +196,8 @@ show_store() {
     fi
 
     _aws_setup "$role" read
+    # Shown only when a proxy is in play: the usual straight route needs no line
+    [[ -n "$S3_CUR_PROXY" ]] && echo "  🔀 $(proxy_route_line "$(s3_proxy_route "$role")" "$S3_CUR_PROXY")"
     if listing=$(aws_q s3api list-objects-v2 \
         --bucket "$S3_CUR_BUCKET" --prefix "${BACKUP_PREFIX}/" \
         --query 'Contents[].[Key,Size,LastModified]' --output text 2>/dev/null); then
@@ -206,6 +210,7 @@ show_store() {
         echo "  $(status_dot err) ${C_RED}Cannot access: $(s3_label "$role")${C_RESET}"
         echo "    Endpoint: $S3_CUR_ENDPOINT"
         echo "    Bucket:   $S3_CUR_BUCKET"
+        [[ -n "$S3_CUR_PROXY" ]] && echo "    Proxy:    $(proxy_masked "$S3_CUR_PROXY") — is it up? sudo $SCRIPT_DIR/diagnose-s3.sh"
         echo "    Check:    sudo $SCRIPT_DIR/validate-config.sh"
         echo
         _aws_setup primary read

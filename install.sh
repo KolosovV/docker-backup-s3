@@ -636,6 +636,17 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     ui_note "Now let's set the minimum required settings."
     ui_note "All other parameters can be edited later in $TARGET_DIR/backup.conf or with: sudo docker-backup-s3"
 
+    # ─── A proxy to the storages (before them: the bucket checks below go through it) ───
+    ui_title "Proxy to the storages (optional)"
+    ui_note "Only if this server reaches S3 through an HTTP proxy — a closed network, a blocked route. Most don't."
+    ui_note "Only aws goes through it; notifications go straight. Each storage can be switched later in the menu."
+    S3_PROXY=""
+    if ask_yn "  Does this server need a proxy to reach S3?" "n"; then
+        proxy_wizard "" || { echo "Cancelled." >&2; exit 130; }
+        S3_PROXY="$PROXY_URL"
+        [[ -n "$S3_PROXY" ]] && ui_later "🔀 S3 through the proxy $(proxy_masked "$S3_PROXY")"
+    fi
+
     # ─── Storages: the primary and the copies ───
     # Answers go to ST["role:FIELD"] (store_wizard, ui.sh); written to backup.conf below, by store_save.
     ui_title "Primary S3 — connection settings"
@@ -652,6 +663,10 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
         ST["$_role:ENABLED"]="false"; ST["$_role:REQUIRED"]="false"
         ask_yn "  Enable ${_low}?" "n" || continue
         ST["$_role:ENABLED"]="true"
+        # Another provider may be reachable straight while the primary needs the proxy — asked, not assumed
+        if [[ -n "$S3_PROXY" ]] && ! ask_yn "  Reach ${_low} through the same proxy too?" "y"; then
+            ST["$_role:PROXY"]="none"
+        fi
         store_wizard "$_role" "$_title" "https://s3.other.com" || { echo "Cancelled." >&2; exit 130; }
 
         ui_note "If the primary upload succeeded but ${_low} failed:"
@@ -749,6 +764,9 @@ if [[ "$NEED_FILL_CONF" == "true" ]]; then
     for _role in primary secondary tertiary; do
         store_save "$_role"
     done
+    if [[ -n "$S3_PROXY" ]] || grep -q '^S3_PROXY=' "$CONF_FILE" 2>/dev/null; then
+        conf_set S3_PROXY "$S3_PROXY" --allow-empty
+    fi
     conf_set BACKUP_PREFIX  "$BACKUP_PREFIX_VAL"
     conf_set RETENTION_DAYS "$RETENTION_VAL" --raw
     conf_set SCAN_DIRS      "$SCAN_DIRS"

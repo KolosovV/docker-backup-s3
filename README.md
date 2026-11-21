@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml"><img src="https://github.com/KolosovV/docker-backup-s3/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.2.0-2496ED" alt="version 2.2.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-2.3.0-2496ED" alt="version 2.3.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/bash-4.4%2B-4EAA25?logo=gnubash&logoColor=white" alt="bash 4.4+">
   <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20x86__64%20%7C%20arm64-FCC624?logo=linux&logoColor=black" alt="Linux · x86_64 | arm64">
@@ -653,18 +653,34 @@ variants for each storage and tell you which one works.
 
 ### Through a proxy
 
-When the host reaches a storage only through an HTTP proxy (a closed network, a route that is blocked
-on the way), give the proxy to that storage:
+For a server that reaches S3 only through an HTTP proxy — a closed network, a route that is blocked on
+the way. Nothing to edit by hand:
+
+- **The installer asks** «Does this server need a proxy to reach S3?» before the storages, so the bucket
+  checks already go through it; for each copy — «through the same proxy too?».
+- **The menu:** `sudo docker-backup-s3` → **Storage settings** → **Proxy to the storages**:
+
+  ```
+  Common proxy: proxy.example.com:3128 — change…
+  Turn the common proxy off
+  Primary S3: through the common proxy http://proxy.example.com:3128…
+  Secondary S3: straight, no proxy…
+  Check every storage through its route
+  ```
+
+  The address (`host:port`), the login and the password are asked one at a time, the password hidden;
+  special characters are encoded for you. Each storage picks its route — **through the common proxy**,
+  **straight**, or **through its own proxy** — and is checked through it right after the change.
+- `status.sh` shows the route of every storage that goes through a proxy (`🔀 through the common proxy …`).
+
+In `backup.conf` this is one block at the top and one line per storage:
 
 ```bash
-PRIMARY_S3_PROXY="http://proxy.example.com:3128"
-SECONDARY_S3_PROXY="none"                      # this copy is reachable straight
-# or one proxy for every storage that has no <ROLE>_S3_PROXY of its own:
-S3_PROXY="http://user:password@proxy.example.com:3128"
+S3_PROXY="http://user:password@proxy.example.com:3128"   # the common proxy
+PRIMARY_S3_PROXY=""                    # empty — through S3_PROXY
+SECONDARY_S3_PROXY="none"              # straight
+TERTIARY_S3_PROXY="http://other:8080"  # its own proxy
 ```
-
-Or in the menu: **Storage settings** → the storage → **Proxy**. After saving, the menu checks the bucket
-through the new proxy right away.
 
 - **Only aws goes through it.** Notifications (Telegram, email, webhooks…) and monitor pings keep going
   straight, as before. The proxy is given to each aws call alone and is never exported, so a

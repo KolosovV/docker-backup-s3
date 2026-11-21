@@ -277,6 +277,115 @@ normalize_endpoint() {
     printf '%s' "$url"
 }
 
+# ==============================================================================
+# PROXY TO THE STORAGES
+# ==============================================================================
+# A proxy is entered in parts — the address, a login, a password — and kept in backup.conf as one URL:
+# http://user:password@host:3128, the login and the password percent-encoded (aws-cli decodes them).
+# S3_PROXY — for every storage; <ROLE>_S3_PROXY — the storage's own, or "none" (straight even with S3_PROXY).
+
+# proxy_valid <value> — aws can use it: empty, "none" or http(s)://[user[:password]@]host[:port][/].
+# Not SOCKS: aws-cli has no SOCKS support, and such a value would fail every upload with an obscure error.
+_PROXY_RE='^https?://([^@/[:space:]]+@)?([^@/:[:space:]]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?/?$'
+proxy_valid() {
+    [[ -z "$1" || "$1" == none || "$1" =~ $_PROXY_RE ]]
+}
+
+# proxy_masked <url> — the URL without its password, for logs and screens: http://user:***@host:3128
+proxy_masked() {
+    # Up to the LAST @: a password may carry one too, and all of it must be hidden
+    if [[ "$1" =~ ^([a-zA-Z]+://[^:/@]+):.*@([^@]*)$ ]]; then printf '%s:***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    else printf '%s' "$1"; fi
+}
+
+# proxy_urlenc <text> — percent-encoding of a login or a password: anything but A-Z a-z 0-9 . _ ~ - (byte by byte)
+proxy_urlenc() {
+    local LC_ALL=C s="$1" out="" c i
+    for (( i = 0; i < ${#s}; i++ )); do
+        c="${s:i:1}"
+        case "$c" in
+            [A-Za-z0-9._~-]) out+="$c" ;;
+            *) printf -v c '%%%02X' "'$c"; out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+proxy_urldec() { local s="${1//+/%2B}"; printf '%b' "${s//%/\\x}"; }
+
+# proxy_build <address> [login] [password] — the URL to keep. The address: host:port, or with http:// / https://
+# (http:// is assumed). Prints nothing for an empty address.
+proxy_build() {
+    local addr; addr="$(trim "$1")"
+    [[ -z "$addr" ]] && return 0
+    [[ "$addr" == *://* ]] || addr="http://${addr}"
+    addr="${addr%/}"
+    local scheme="${addr%%://*}" hostport="${addr#*://}"
+    # A whole URL pasted into the address, login included, with the login field left empty — kept as typed
+    if [[ -z "${2:-}" && "$hostport" == *@* ]]; then printf '%s://%s' "${scheme,,}" "$hostport"; return 0; fi
+    hostport="${hostport##*@}"   # otherwise the fields give the login
+    if [[ -n "${2:-}" ]]; then
+        printf '%s://%s%s@%s' "${scheme,,}" "$(proxy_urlenc "$2")" "${3:+:$(proxy_urlenc "$3")}" "$hostport"
+    else
+        printf '%s://%s' "${scheme,,}" "$hostport"
+    fi
+}
+
+# proxy_split <url> — the parts of a kept URL: PROXY_ADDR (scheme://host:port), PROXY_USER, PROXY_PASS (decoded)
+proxy_split() {
+    local u="$1" rest cred
+    PROXY_ADDR=""; PROXY_USER=""; PROXY_PASS=""
+    [[ -z "$u" || "$u" == none ]] && return 0
+    rest="${u#*://}"
+    if [[ "$rest" == *@* ]]; then
+        cred="${rest%@*}"; rest="${rest##*@}"
+        PROXY_USER="$(proxy_urldec "${cred%%:*}")"
+        [[ "$cred" == *:* ]] && PROXY_PASS="$(proxy_urldec "${cred#*:}")"
+    fi
+    PROXY_ADDR="${u%%://*}://${rest}"
+    return 0
+}
+
+# proxy_wizard [current URL] — asks the address, a login and a password one at a time; the URL goes to PROXY_URL
+# (empty when the address was left empty — "no proxy"). 1 if cancelled.
+proxy_wizard() {
+    local cur="${1:-}" addr user pass shown
+    proxy_split "$cur"
+    shown="${PROXY_ADDR#http://}"
+    while true; do
+        ui_note "The proxy's address: host:port, e.g. proxy.example.com:3128 (http:// is assumed;"
+        ui_note "https://… only if the proxy itself speaks TLS). SOCKS proxies are not supported by aws-cli."
+        ui_note "Empty — no proxy."
+        addr="$(ui_input "  Proxy address" "$shown")" || return 1
+        addr="$(trim "$addr")"
+        if [[ -z "$addr" ]]; then PROXY_URL=""; return 0; fi
+        ui_note "A login, if the proxy asks for one. Empty — no login."
+        user="$(ui_input "  Login" "$PROXY_USER")" || return 1
+        user="$(trim "$user")"; pass=""
+        if [[ -n "$user" ]]; then
+            if [[ -n "$PROXY_PASS" && "$user" == "$PROXY_USER" ]]; then
+                pass="$(ui_password "  Password (hidden input; empty — keep the current one)")" || return 1
+                [[ -z "$pass" ]] && pass="$PROXY_PASS"
+            else
+                pass="$(ui_password "  Password (hidden input; empty — none)")" || return 1
+            fi
+        fi
+        PROXY_URL="$(proxy_build "$addr" "$user" "$pass")"
+        proxy_valid "$PROXY_URL" && return 0
+        ui_note "⚠ \"$(proxy_masked "$PROXY_URL")\" is not a proxy address: host:port, e.g. proxy.example.com:3128."
+        [[ "$UI_MODE" == "none" ]] && return 1
+        shown="$addr"
+    done
+}
+
+# proxy_route_line <route> <url> — "through the common proxy host:3128", "straight" — for menus and status
+proxy_route_line() {
+    case "$1" in
+        common) printf 'through the common proxy %s' "$(proxy_masked "$2")" ;;
+        own)    printf 'through its own proxy %s' "$(proxy_masked "$2")" ;;
+        *)      printf 'straight, no proxy' ;;
+    esac
+}
+
 # Trims whitespace on both ends (a common copy-paste mistake). usage: v=$(trim "$v")
 trim() {
     local s="$1"
@@ -443,6 +552,11 @@ store_save() {
         conf_set "${p}_${f}" "${ST[$role:$f]:-}"
     done
     conf_set "${p}_OPTS_EXTRA" "${ST[$role:OPTS_EXTRA]:-}" --allow-empty
+    # The route to it: empty — the common S3_PROXY (or straight), "none" — straight, a URL — its own proxy.
+    # An old config without the line gets it only when there is something to say.
+    if [[ -n "${ST[$role:PROXY]:-}" ]] || grep -q "^${p}_PROXY=" "${CONF_FILE:?}" 2>/dev/null; then
+        conf_set "${p}_PROXY" "${ST[$role:PROXY]:-}" --allow-empty
+    fi
 }
 
 # A line of the certificate check report: logged now and collected in CERT_REPORT,
